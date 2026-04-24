@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.venv/
+*.egg-info/
+dist/
+build/
+
+# uv
+uv.lock
+
+# MLflow
+mlruns/
+mlruns.db
+
+# Models & large binaries
+*.bin
+*.safetensors
+*.gguf
+*.pt
+*.ckpt
+
+# Experiment outputs
+reports/*.json
+reports/*.csv
+benchmarks/results/
+
+# Environment
+.env
+*.env
+
+# IDE
+.vscode/settings.json
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
