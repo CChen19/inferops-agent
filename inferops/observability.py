@@ -94,6 +94,7 @@ def log_experiment_result(result: Any) -> None:
             "gpu_memory_utilization": cfg.gpu_memory_utilization,
             "enforce_eager": cfg.enforce_eager,
             "enable_chunked_prefill": cfg.enable_chunked_prefill,
+            "enable_prefix_caching": cfg.enable_prefix_caching,
             "scheduler_policy": cfg.scheduler_policy.value,
             "workload": cfg.workload.name,
             "concurrency": cfg.workload.concurrency,

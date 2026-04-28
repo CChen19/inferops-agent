@@ -64,6 +64,7 @@ class ExperimentConfig(BaseModel):
     gpu_memory_utilization: float = Field(default=0.90, ge=0.1, le=1.0)
     enforce_eager: bool = False
     enable_chunked_prefill: bool = False
+    enable_prefix_caching: bool = False
     scheduler_policy: SchedulerPolicy = SchedulerPolicy.FCFS
     tensor_parallel_size: int = Field(default=1, ge=1)
 
