@@ -91,6 +91,7 @@ def log_experiment_result(result: Any) -> None:
             "model_size": cfg.model_size.value,
             "max_num_seqs": cfg.max_num_seqs,
             "max_num_batched_tokens": cfg.max_num_batched_tokens,
+            "max_model_len": cfg.max_model_len,
             "gpu_memory_utilization": cfg.gpu_memory_utilization,
             "enforce_eager": cfg.enforce_eager,
             "enable_chunked_prefill": cfg.enable_chunked_prefill,

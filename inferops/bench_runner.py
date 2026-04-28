@@ -73,9 +73,11 @@ def run_experiment(
 
         proc = VLLMProcess(cfg, host=VLLM_HOST, port=VLLM_PORT)
         proc.start()
+        if proc.log_path:
+            log(f"  vLLM log → {proc.log_path}")
 
         try:
-            ready = proc.wait_ready()
+            ready = proc.wait_ready_verbose(log)
 
             if not ready:
                 if proc.oom_in_log():

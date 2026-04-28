@@ -28,6 +28,7 @@ def _build_cmd(cfg: ExperimentConfig, host: str, port: int) -> list[str]:
         "--gpu-memory-utilization", str(cfg.gpu_memory_utilization),
         "--max-num-seqs", str(cfg.max_num_seqs),
         "--max-num-batched-tokens", str(cfg.max_num_batched_tokens),
+        "--max-model-len", str(cfg.max_model_len),
         "--dtype", "auto",
         "--trust-remote-code",
         "--served-model-name", "qwen",
@@ -102,11 +103,16 @@ class VLLMProcess:
             )
 
     def wait_ready(self) -> bool:
-        """Block until /health returns 200 or timeout. Returns False on timeout/crash."""
+        return self.wait_ready_verbose(None)
+
+    def wait_ready_verbose(self, log_fn) -> bool:
+        """Block until /health returns 200, printing last log line while waiting."""
         deadline = time.time() + STARTUP_TIMEOUT_S
         url = f"{self.base_url}/health"
+        last_reported_line = ""
+        elapsed_ticks = 0
+
         while time.time() < deadline:
-            # Check process is still alive
             if self._proc and self._proc.poll() is not None:
                 return False  # crashed during startup
             try:
@@ -115,6 +121,19 @@ class VLLMProcess:
                     return True
             except Exception:
                 pass
+
+            # Every ~15s, tail the log so the user can see what vLLM is doing
+            if log_fn and self.log_path and self.log_path.exists() and elapsed_ticks % 5 == 0:
+                lines = self.log_path.read_text(errors="replace").splitlines()
+                # Find last non-empty meaningful line
+                for line in reversed(lines):
+                    line = line.strip()
+                    if line and line != last_reported_line and not line.startswith("{"):
+                        log_fn(f"  [vLLM] {line[-120:]}")
+                        last_reported_line = line
+                        break
+
+            elapsed_ticks += 1
             time.sleep(HEALTH_POLL_S)
         return False
 

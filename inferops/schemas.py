@@ -59,9 +59,10 @@ class ExperimentConfig(BaseModel):
     engine: InferenceEngine = InferenceEngine.VLLM
 
     # vLLM knobs under test
-    max_num_seqs: int = Field(default=256, ge=1)
+    max_num_seqs: int = Field(default=128, ge=1)
     max_num_batched_tokens: int = Field(default=2048, ge=128)
-    gpu_memory_utilization: float = Field(default=0.90, ge=0.1, le=1.0)
+    max_model_len: int = Field(default=2048, ge=128)
+    gpu_memory_utilization: float = Field(default=0.80, ge=0.1, le=1.0)
     enforce_eager: bool = False
     enable_chunked_prefill: bool = False
     enable_prefix_caching: bool = False
