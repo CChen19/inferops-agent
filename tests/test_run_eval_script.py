@@ -28,7 +28,7 @@ def test_run_eval_mock_writes_report(tmp_path):
     assert (tmp_path / "unitsha.json").exists()
 
 
-def test_run_eval_without_mock_exits_with_error(tmp_path):
+def test_run_eval_without_mock_or_prefix_exits_with_error(tmp_path):
     cmd = [
         ".venv/bin/python",
         "scripts/run_eval.py",
@@ -41,4 +41,26 @@ def test_run_eval_without_mock_exits_with_error(tmp_path):
     proc = subprocess.run(cmd, text=True, capture_output=True, check=False)
 
     assert proc.returncode == 2
-    assert "Only --mock mode" in proc.stdout
+    assert "Provide --mock" in proc.stdout
+
+
+def test_run_eval_real_mode_requires_matching_session(tmp_path):
+    cmd = [
+        ".venv/bin/python",
+        "scripts/run_eval.py",
+        "--commit-sha",
+        "unitsha",
+        "--prefix",
+        "missing_",
+        "--ground-truth",
+        "tests/fixtures/ground_truth",
+        "--output-dir",
+        str(tmp_path),
+        "--workloads",
+        "chat_short",
+    ]
+
+    proc = subprocess.run(cmd, text=True, capture_output=True, check=False)
+
+    assert proc.returncode == 1
+    assert "No session results found" in proc.stdout

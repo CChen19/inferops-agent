@@ -32,3 +32,9 @@ jobs:
             --workloads chat_short long_generation \
             --budget 2 \
             --seed 7
+
+      - name: Upload eval report
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-reports
+          path: eval_reports/

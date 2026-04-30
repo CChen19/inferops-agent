@@ -4,7 +4,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from inferops.eval.harness import render_markdown_report, run_mock_eval, write_eval_outputs
+from inferops.eval.harness import (
+    render_markdown_report,
+    run_mock_eval,
+    run_session_eval,
+    write_eval_outputs,
+)
 
 
 FIXTURES = Path("tests/fixtures/ground_truth")
@@ -49,3 +54,35 @@ def test_write_eval_outputs_writes_markdown_and_json(tmp_path):
     assert json_path.exists()
     assert md_path.name == "abc123.md"
     assert json_path.name == "abc123.json"
+
+
+def test_run_session_eval_wraps_runner_scores(monkeypatch):
+    from inferops.eval.metrics import OutcomeMetrics, WorkloadScore, compute_efficiency
+
+    outcome = OutcomeMetrics(
+        workload_name="chat_short",
+        primary_metric="throughput_rps",
+        ground_truth_value=10.0,
+        agent_value=9.0,
+        gap_pct=10.0,
+    )
+    score = WorkloadScore(
+        workload_name="chat_short",
+        outcome=outcome,
+        efficiency=compute_efficiency(3, 120.0),
+        trajectory_score=None,
+        composite=0.8,
+    )
+    monkeypatch.setattr("inferops.eval.harness.evaluate", lambda **kwargs: [score])
+
+    report = run_session_eval(
+        commit_sha="abc123",
+        prefix="agent_",
+        ground_truth_dir=FIXTURES,
+        workloads=["chat_short"],
+        wall_clock_s=120.0,
+    )
+
+    assert report["mode"] == "session"
+    assert report["prefix"] == "agent_"
+    assert report["strategies"]["agent_session"][0]["gap_pct"] == 10.0

@@ -132,6 +132,22 @@ reports/
 - `max_model_len=2048` — must be set explicitly; Qwen2.5's native 32768-token context causes OOM on 6 GB
 - `max_num_seqs=128` — realistic ceiling for concurrency ≤ 16
 
+## Phase 5 eval harness
+
+```bash
+# CI-safe mock eval from committed fixture data
+python scripts/run_eval.py --mock --commit-sha $(git rev-parse --short HEAD) \
+  --ground-truth tests/fixtures/ground_truth --workloads chat_short long_generation \
+  --budget 2 --seed 7
+
+# Real/manual eval for an agent session already saved in experiment memory
+python scripts/run_eval.py --prefix agent_chat_short_abc123_ --workloads chat_short \
+  --ground-truth data/ground_truth
+```
+
+Reports are written to `eval_reports/<sha>.md` and `<sha>.json`. Pass
+`--baseline-report eval_reports/<old_sha>.json` to enable the regression gate.
+
 ## Roadmap
 
 - **Phase 0** ✅ repo skeleton, vLLM + Qwen2.5-0.5B baseline, LangGraph mental model

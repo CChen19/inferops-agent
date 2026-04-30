@@ -15,7 +15,7 @@ from inferops.eval.metrics import (
     compute_efficiency,
     compute_outcome,
 )
-from inferops.eval.runner import ALL_WORKLOAD_NAMES, load_ground_truth
+from inferops.eval.runner import ALL_WORKLOAD_NAMES, evaluate, load_ground_truth
 
 
 def run_mock_eval(
@@ -51,6 +51,32 @@ def run_mock_eval(
         "budget": budget,
         "strategies": strategies,
         "aggregates": aggregates,
+    }
+
+
+def run_session_eval(
+    commit_sha: str,
+    prefix: str,
+    ground_truth_dir: str | Path,
+    workloads: list[str] | None = None,
+    wall_clock_s: float | None = None,
+) -> dict[str, Any]:
+    """Evaluate a real/manual agent session already persisted in experiment memory."""
+    names = workloads or ALL_WORKLOAD_NAMES
+    scores = evaluate(
+        prefix=prefix,
+        ground_truth_dir=ground_truth_dir,
+        workload_names=names,
+        wall_clock_s=wall_clock_s,
+    )
+    rows = [_score_to_row(score) for score in scores]
+    return {
+        "commit_sha": commit_sha,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "mode": "session",
+        "prefix": prefix,
+        "strategies": {"agent_session": rows},
+        "aggregates": {"agent_session": aggregate_scores(scores)},
     }
 
 
@@ -120,6 +146,20 @@ def _score_baseline_run(ground_truth: dict[str, Any], run: BaselineRun) -> dict[
         "trajectory_score": trajectory_score,
         "composite": comp,
         "best_experiment_id": run.best_result.get("experiment_id", ""),
+    }
+
+
+def _score_to_row(score: WorkloadScore) -> dict[str, Any]:
+    return {
+        "workload_name": score.workload_name,
+        "primary_metric": score.outcome.primary_metric,
+        "ground_truth_value": score.outcome.ground_truth_value,
+        "agent_value": score.outcome.agent_value,
+        "gap_pct": score.outcome.gap_pct,
+        "n_experiments": score.efficiency.n_experiments,
+        "trajectory_score": score.trajectory_score or 0.0,
+        "composite": score.composite,
+        "best_experiment_id": "",
     }
 
 
