@@ -1,0 +1,12 @@
+Eval report written: eval_reports/regression-demo-current.md
+Eval JSON written: eval_reports/regression-demo-current.json
+Regression gate failed:
+  - greedy_agent/chat_short composite dropped by -0.082 (0.950 -> 0.868)
+  - greedy_agent/long_context_qa composite dropped by -0.080 (0.950 -> 0.870)
+  - greedy_agent/high_concurrency_short_out gap regressed by 1.88pp (0.00% -> 1.88%)
+  - greedy_agent/high_concurrency_short_out composite dropped by -0.089 (0.950 -> 0.861)
+  - greedy_agent/long_generation composite dropped by -0.080 (0.950 -> 0.870)
+  - greedy_agent/mixed_traffic gap regressed by 10.22pp (0.00% -> 10.22%)
+  - greedy_agent/mixed_traffic composite dropped by -0.131 (0.950 -> 0.819)
+
+exit_code=1

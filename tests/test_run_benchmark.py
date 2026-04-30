@@ -60,6 +60,15 @@ def test_run_benchmark_rejects_unknown_patch_key():
         ))
 
 
+def test_run_benchmark_rejects_batched_tokens_below_model_len():
+    with pytest.raises(ValueError, match="max_num_batched_tokens must be >= max_model_len"):
+        run_benchmark(RunBenchmarkInput(
+            experiment_id="bad_batched",
+            config_patch={"max_model_len": 4096},
+            workload_name="chat_short",
+        ))
+
+
 def test_run_benchmark_unknown_workload():
     with pytest.raises(ValueError, match="Unknown workload"):
         run_benchmark(RunBenchmarkInput(

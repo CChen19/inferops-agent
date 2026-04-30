@@ -103,7 +103,7 @@ WORKLOAD_DESCRIPTIONS: dict[str, str] = {
 
 # Search space exposed to the agent (keeps it within safe RTX 3060 bounds)
 AGENT_SEARCH_SPACE: dict[str, list[Any]] = {
-    "max_num_batched_tokens": [1024, 2048, 4096],
+    "max_num_batched_tokens": [2048, 3072, 4096],
     "max_num_seqs":           [64, 128, 256],
     "enable_chunked_prefill": [False, True],
     "enable_prefix_caching":  [False, True],

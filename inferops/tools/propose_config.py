@@ -11,7 +11,7 @@ from inferops.observability import span
 
 # The knobs the LLM is allowed to propose changes for
 TUNABLE_PARAMS = {
-    "max_num_batched_tokens": {"type": float, "min": 512,  "max": 8192, "step": 512},
+    "max_num_batched_tokens": {"type": float, "min": 2048, "max": 8192, "step": 512},
     "max_num_seqs":           {"type": float, "min": 16,   "max": 256,  "step": 16},
     "max_model_len":          {"type": float, "min": 512,  "max": 4096, "step": 512},
     "gpu_memory_utilization": {"type": float, "min": 0.50, "max": 0.85, "step": 0.05},

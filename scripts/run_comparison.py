@@ -43,7 +43,8 @@ DEFAULT_WORKLOADS = ["chat_short", "long_context_qa", "high_concurrency_short_ou
 
 # Same grid axes as run_grid_sweep.py
 _GRID_AXES = {
-    "max_num_batched_tokens": [1024, 2048, 4096],
+    # vLLM requires max_num_batched_tokens >= max_model_len.
+    "max_num_batched_tokens": [2048, 3072, 4096],
     "enable_chunked_prefill": [False, True],
     "enable_prefix_caching":  [False, True],
 }

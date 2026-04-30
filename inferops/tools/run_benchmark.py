@@ -17,7 +17,7 @@ from workloads.definitions import ALL_WORKLOADS, get_prompts
 _SAFE_RANGES: dict[str, tuple[Any, Any]] = {
     "gpu_memory_utilization": (0.50, 0.85),
     "max_num_seqs": (16, 256),
-    "max_num_batched_tokens": (512, 8192),
+    "max_num_batched_tokens": (2048, 8192),
     "max_model_len": (512, 4096),
 }
 _ALLOWED_PATCH_KEYS = {
@@ -103,6 +103,11 @@ def run_benchmark(inp: RunBenchmarkInput) -> RunBenchmarkOutput:
     patched = base_cfg.model_copy(
         update={**inp.config_patch, "experiment_id": inp.experiment_id}
     )
+    if patched.max_num_batched_tokens < patched.max_model_len:
+        raise ValueError(
+            "max_num_batched_tokens must be >= max_model_len for vLLM "
+            f"({patched.max_num_batched_tokens} < {patched.max_model_len})"
+        )
 
     prompts = get_prompts(workload)
 
