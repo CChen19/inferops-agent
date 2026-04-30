@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 import signal
 import subprocess
@@ -12,16 +13,25 @@ import httpx
 
 from inferops.schemas import ExperimentConfig
 
-VLLM_PYTHON = "/home/chris/miniconda3/envs/vllm-dev/bin/python"
+DEFAULT_VLLM_PYTHON = "/home/chris/miniconda3/envs/vllm-dev/bin/python"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8000
 STARTUP_TIMEOUT_S = 180  # CUDA graph compilation can be slow
 HEALTH_POLL_S = 3
 
 
+def get_vllm_python() -> str:
+    """Return the Python executable used to launch the external vLLM server."""
+    return (
+        os.environ.get("INFEROPS_VLLM_PYTHON")
+        or os.environ.get("VLLM_PYTHON")
+        or DEFAULT_VLLM_PYTHON
+    )
+
+
 def _build_cmd(cfg: ExperimentConfig, host: str, port: int) -> list[str]:
     cmd = [
-        VLLM_PYTHON, "-m", "vllm.entrypoints.openai.api_server",
+        get_vllm_python(), "-m", "vllm.entrypoints.openai.api_server",
         "--model", cfg.model_name,
         "--host", host,
         "--port", str(port),

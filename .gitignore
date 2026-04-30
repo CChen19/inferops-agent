@@ -13,6 +13,7 @@ uv.lock
 # MLflow
 mlruns/
 mlruns.db
+inferops_memory.db
 
 # Models & large binaries
 *.bin

@@ -10,8 +10,8 @@ from configs.search_space import make_configs
 from inferops.bench_runner import run_experiment
 from inferops.memory.db import save_result
 from inferops.observability import span
-from inferops.schemas import ExperimentConfig, ExperimentResult
-from workloads.definitions import CHAT_SHORT, LONG_CONTEXT_QA, get_prompts
+from inferops.schemas import ExperimentResult
+from workloads.definitions import ALL_WORKLOADS, get_prompts
 
 # Safe parameter ranges for RTX 3060 Laptop (6 GB, WSL2)
 _SAFE_RANGES: dict[str, tuple[Any, Any]] = {
@@ -19,6 +19,12 @@ _SAFE_RANGES: dict[str, tuple[Any, Any]] = {
     "max_num_seqs": (16, 256),
     "max_num_batched_tokens": (512, 8192),
     "max_model_len": (512, 4096),
+}
+_ALLOWED_PATCH_KEYS = {
+    *set(_SAFE_RANGES),
+    "enable_chunked_prefill",
+    "enable_prefix_caching",
+    "enforce_eager",
 }
 
 
@@ -33,7 +39,10 @@ class RunBenchmarkInput(BaseModel):
     )
     workload_name: str = Field(
         default="chat_short",
-        description="Workload to benchmark: 'chat_short' or 'long_context_qa'.",
+        description=(
+            "Workload to benchmark. One of the workload names in "
+            "workloads.definitions.ALL_WORKLOADS."
+        ),
     )
     persist: bool = Field(
         default=True,
@@ -71,14 +80,23 @@ def run_benchmark(inp: RunBenchmarkInput) -> RunBenchmarkOutput:
     """
     # Validate patch ranges
     for key, val in inp.config_patch.items():
+        if key not in _ALLOWED_PATCH_KEYS:
+            raise ValueError(
+                f"Unknown config_patch key: {key}. "
+                f"Allowed keys: {', '.join(sorted(_ALLOWED_PATCH_KEYS))}"
+            )
         if key in _SAFE_RANGES:
             lo, hi = _SAFE_RANGES[key]
             if not (lo <= val <= hi):
                 raise ValueError(f"{key}={val} outside safe range [{lo}, {hi}] for RTX 3060")
 
-    workload = {"chat_short": CHAT_SHORT, "long_context_qa": LONG_CONTEXT_QA}.get(inp.workload_name)
+    workload_map = {w.name: w for w in ALL_WORKLOADS}
+    workload = workload_map.get(inp.workload_name)
     if workload is None:
-        raise ValueError(f"Unknown workload: {inp.workload_name}")
+        raise ValueError(
+            f"Unknown workload: {inp.workload_name}. "
+            f"Valid workloads: {', '.join(sorted(workload_map))}"
+        )
 
     # Build config by patching the default
     base_cfg = make_configs(workload)[0]  # default variant as base
@@ -88,7 +106,10 @@ def run_benchmark(inp: RunBenchmarkInput) -> RunBenchmarkOutput:
 
     prompts = get_prompts(workload)
 
-    with span("tool.run_benchmark", {"experiment_id": inp.experiment_id, "workload": inp.workload_name}):
+    with span(
+        "tool.run_benchmark",
+        {"experiment_id": inp.experiment_id, "workload": inp.workload_name},
+    ):
         result: ExperimentResult = run_experiment(patched, prompts)
 
     if inp.persist:

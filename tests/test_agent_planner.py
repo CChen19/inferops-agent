@@ -100,6 +100,18 @@ def test_validate_coerces_bool():
     assert result[0]["value"] is True
 
 
+def test_validate_coerces_false_string_to_false():
+    state = _base_state()
+    raw = [{
+        "param": "enable_chunked_prefill",
+        "value": "false",
+        "rationale": "TTFT p99=69ms is high",
+    }]
+    result = _validate_hypotheses(raw, state)
+    assert len(result) == 1
+    assert result[0]["value"] is False
+
+
 # ---------------------------------------------------------------------------
 # planner_node
 # ---------------------------------------------------------------------------

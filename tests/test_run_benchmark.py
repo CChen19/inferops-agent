@@ -51,6 +51,15 @@ def test_run_benchmark_unsafe_param():
         ))
 
 
+def test_run_benchmark_rejects_unknown_patch_key():
+    with pytest.raises(ValueError, match="Unknown config_patch key"):
+        run_benchmark(RunBenchmarkInput(
+            experiment_id="bad_key",
+            config_patch={"not_a_vllm_knob": 123},
+            workload_name="chat_short",
+        ))
+
+
 def test_run_benchmark_unknown_workload():
     with pytest.raises(ValueError, match="Unknown workload"):
         run_benchmark(RunBenchmarkInput(

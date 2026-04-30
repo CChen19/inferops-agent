@@ -31,8 +31,8 @@ def tool_run_benchmark(config_patch: dict, workload_name: str = "chat_short", ex
         config_patch: Dict of vLLM knobs to override, e.g. {"max_num_batched_tokens": 4096}.
                       Allowed keys: max_num_batched_tokens, max_num_seqs, max_model_len,
                       gpu_memory_utilization, enable_chunked_prefill, enable_prefix_caching.
-        workload_name: "chat_short" (high-concurrency, short sequences) or
-                       "long_context_qa" (low-concurrency, 1024-token inputs).
+        workload_name: One of: chat_short, long_context_qa,
+                       high_concurrency_short_out, long_generation, mixed_traffic.
         experiment_id: Unique name for this run. Auto-generated if empty.
         persist: Save result to experiment memory DB (default True).
 
@@ -143,7 +143,7 @@ def tool_query_experiment_memory(workload_name: str = "", sort_by: str = "throug
     been tried, use the stored result instead of re-running.
 
     Args:
-        workload_name: Filter by workload ("chat_short", "long_context_qa", or "" for all).
+        workload_name: Filter by workload, or "" for all workloads.
         sort_by: Rank by this metric (throughput_rps, ttft_p50_ms, e2e_p50_ms, etc.).
         top_k: Number of results to return (1–50).
     """

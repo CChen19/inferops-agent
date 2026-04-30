@@ -21,7 +21,8 @@ nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader \
   && ok "NVIDIA GPU detected" || fail "nvidia-smi failed — is the NVIDIA driver loaded?"
 
 # 2. CUDA from Python (vllm-dev conda env)
-CONDA_PYTHON="/home/chris/miniconda3/envs/vllm-dev/bin/python"
+CONDA_PYTHON="${INFEROPS_VLLM_PYTHON:-${VLLM_PYTHON:-/home/chris/miniconda3/envs/vllm-dev/bin/python}}"
+[[ -x "$CONDA_PYTHON" ]] || fail "vLLM Python not executable: $CONDA_PYTHON"
 "$CONDA_PYTHON" -c "
 import torch
 assert torch.cuda.is_available(), 'CUDA not available'
@@ -34,6 +35,7 @@ print(f'  torch {torch.__version__}, CUDA {torch.version.cuda}, device: {torch.c
 
 # 4. LangGraph (uv venv)
 UV_PYTHON="$PROJECT_ROOT/.venv/bin/python"
+[[ -x "$UV_PYTHON" ]] || fail "Project venv Python not executable: $UV_PYTHON"
 "$UV_PYTHON" -c "
 import importlib.metadata, langgraph
 v = importlib.metadata.version('langgraph')

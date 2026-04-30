@@ -140,7 +140,16 @@ def _validate_hypotheses(raw_hyps: list[dict], state: AgentState) -> list[dict]:
         allowed_vals = AGENT_SEARCH_SPACE[param]
         # Coerce bool params
         if isinstance(allowed_vals[0], bool):
-            value = bool(value)
+            if isinstance(value, str):
+                lowered = value.strip().lower()
+                if lowered in ("true", "1", "yes"):
+                    value = True
+                elif lowered in ("false", "0", "no"):
+                    value = False
+                else:
+                    continue
+            else:
+                value = bool(value)
         else:
             try:
                 value = type(allowed_vals[0])(value)
