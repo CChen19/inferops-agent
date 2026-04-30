@@ -2,10 +2,31 @@
 
 from __future__ import annotations
 
-import tempfile
 from pathlib import Path
 
 import pytest
+
+
+# ---------------------------------------------------------------------------
+# Silence OTel noise
+# ---------------------------------------------------------------------------
+# BatchSpanProcessor uses a background thread that outlives pytest's stdout
+# capture, causing "ValueError: I/O operation on closed file" at teardown.
+# Replace the global tracer with a synchronous in-memory exporter for all tests.
+
+@pytest.fixture(scope="session", autouse=True)
+def _silence_otel():
+    from opentelemetry import trace as otel_trace
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    import inferops.observability as obs
+
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(InMemorySpanExporter()))
+    otel_trace.set_tracer_provider(provider)
+    obs._tracer = otel_trace.get_tracer("inferops-test")
 
 from inferops.schemas import (
     ExperimentConfig,
