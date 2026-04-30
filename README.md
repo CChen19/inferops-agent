@@ -91,15 +91,26 @@ inferops/
     registry.py            — ALL_TOOLS list: @tool-decorated LangGraph wrappers
 configs/
   search_space.py       — default + chunked + prefix_cache + big_batch variants
+  eval/
+    metrics.py          — OutcomeMetrics (gap%), EfficiencyMetrics, composite_score
+    judge.py            — LLM-as-judge (4-criterion rubric; heuristic fallback)
+    runner.py           — eval_runner CLI: load ground truth → query DB → summary table
 workloads/
-  definitions.py        — chat_short and long_context_qa prompt sets + WorkloadSpec
+  definitions.py        — 5 golden workloads + prompt generators (chat_short,
+                          long_context_qa, high_concurrency_short_out,
+                          long_generation, mixed_traffic)
+configs/
+  search_space.py       — default + chunked + prefix_cache + big_batch variants
 scripts/
-  run_baseline.py       — entry point: runs N configs × M workloads, writes report
+  run_baseline.py       — Phase 1 entry point: runs N configs × M workloads
+  run_grid_sweep.py     — Phase 3 sweep: 12 configs × 5 workloads → data/ground_truth/
   start_vllm.sh         — manual vLLM server launcher (0.5B / 1.5B)
   verify_env.sh         — 5-point environment health check
+data/
+  ground_truth/         — one JSON per workload after run_grid_sweep.py completes
 tests/
   conftest.py           — shared pytest fixtures (result, tmp_db, tmp_report, …)
-  test_*.py             — 37 unit tests, all tools mocked (no vLLM required)
+  test_*.py             — 50 unit tests, all tools mocked (no vLLM required)
 reports/
   phase1_baseline.md        — full Phase 1 report (Chinese)
   phase1_baseline_en.md     — full Phase 1 report (English)
@@ -116,4 +127,5 @@ reports/
 - **Phase 0** ✅ repo skeleton, vLLM + Qwen2.5-0.5B baseline, LangGraph mental model
 - **Phase 1** ✅ benchmark pipeline, 8-run baseline sweep, bilingual report
 - **Phase 2** ✅ 8 LangGraph tools, SQLite experiment memory, OTel spans, 37 unit tests
-- **Phase 3**: autonomous agent loop (plan → run → analyze), multi-objective Pareto search, RAG config knowledge base
+- **Phase 3** ✅ 5 golden workloads, grid sweep (60 experiments → ground truth), eval framework (outcome / efficiency / LLM-as-judge), 50 unit tests
+- **Phase 4**: autonomous LangGraph agent loop (plan → run → analyze), Pareto multi-objective search
