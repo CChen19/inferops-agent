@@ -116,7 +116,7 @@ data/
   ground_truth/         — one JSON per workload after run_grid_sweep.py completes
 tests/
   conftest.py           — shared pytest fixtures (result, tmp_db, tmp_report, …)
-  test_*.py             — 76 unit tests, all tools + agent nodes mocked (no vLLM required)
+  test_*.py             — 113 unit tests, all tools + agent nodes mocked (no vLLM required)
 reports/
   phase1_baseline.md        — full Phase 1 report (Chinese)
   phase1_baseline_en.md     — full Phase 1 report (English)
@@ -134,5 +134,5 @@ reports/
 - **Phase 1** ✅ benchmark pipeline, 8-run baseline sweep, bilingual report
 - **Phase 2** ✅ 8 LangGraph tools, SQLite experiment memory, OTel spans, 37 unit tests
 - **Phase 3** ✅ 5 golden workloads, grid sweep (60 experiments → ground truth), eval framework (outcome / efficiency / LLM-as-judge), 50 unit tests
-- **Phase 4** ✅ Plan-Execute-Reflect LangGraph agent (DeepSeek V3 / Claude Sonnet), config dedup, budget control, bottleneck-switch replan, 76 unit tests; `run_comparison.py` for Agent vs Default vs Random
+- **Phase 4** ✅ Plan-Execute-Reflect LangGraph agent (DeepSeek V3 / Claude Sonnet), config dedup, budget control, bottleneck-switch replan, 113 unit tests; `run_comparison.py` for Agent vs Default vs Random
 - **Phase 5**: Pareto multi-objective search, LangSmith tracing, report auto-publish
