@@ -22,8 +22,7 @@ Autonomous LLM inference optimization agent — uses LangGraph to iteratively tu
 # 1. Create + activate venv
 uv venv --python /home/chris/miniconda3/envs/vllm-dev/bin/python3.11 .venv
 source .venv/bin/activate
-uv pip install openai pynvml matplotlib numpy langgraph langchain langchain-community \
-               pydantic mlflow opentelemetry-sdk httpx tenacity rich typer
+uv pip install -e ".[dev]"
 
 # 2. Verify environment (GPU, CUDA, vLLM, LangGraph, MLflow)
 bash scripts/verify_env.sh
@@ -36,7 +35,8 @@ python scripts/run_baseline.py --workload chat_short --variants default,big_batc
 ```
 
 > **Note:** The benchmark script launches vLLM using the `vllm-dev` conda env directly —
-> no need to activate it manually.
+> no need to activate it manually or install vLLM into `.venv`. To use a different
+> vLLM environment, set `INFEROPS_VLLM_PYTHON=/path/to/python`.
 
 ## Phase 1 results (Qwen2.5-0.5B, RTX 3060 Laptop)
 
@@ -72,8 +72,18 @@ inferops/
   schemas.py            — ExperimentConfig, ExperimentResult, WorkloadSpec, AgentState
   observability.py      — MLflow (SQLite) + OpenTelemetry (console or OTLP/Jaeger)
   bench_runner.py       — orchestrator: start vLLM → load → collect metrics → MLflow
+  cli.py                — Typer console entry point (`inferops ...`)
   agent/
-    coin_flip.py        — LangGraph warm-up (2-node loop, conditional edges, interrupt)
+    state.py            — AgentState TypedDict, Hypothesis, ExperimentSummary, helpers
+    planner.py          — Planner node: LLM generates 1-3 evidence-based hypotheses
+    executor.py         — Executor node: propose_config → run_benchmark → analyze → compare
+    reflector.py        — Reflector node: improvement check, streak control, routing
+    graph.py            — LangGraph StateGraph assembly + run_agent() entry point
+    coin_flip.py        — LangGraph warm-up example
+  eval/
+    metrics.py          — OutcomeMetrics (gap%), EfficiencyMetrics, composite_score
+    judge.py            — LLM-as-judge (4-criterion rubric; heuristic fallback)
+    runner.py           — eval runner: load ground truth → query DB → summary table
   memory/
     db.py               — SQLite CRUD for experiment results (save, query, upsert)
   tools/
@@ -91,22 +101,10 @@ inferops/
     registry.py            — ALL_TOOLS list: @tool-decorated LangGraph wrappers
 configs/
   search_space.py       — default + chunked + prefix_cache + big_batch variants
-  eval/
-    metrics.py          — OutcomeMetrics (gap%), EfficiencyMetrics, composite_score
-    judge.py            — LLM-as-judge (4-criterion rubric; heuristic fallback)
-    runner.py           — eval_runner CLI: load ground truth → query DB → summary table
-  agent/
-    state.py            — AgentState TypedDict, Hypothesis, ExperimentSummary, helpers
-    planner.py          — Planner node: LLM generates 1-3 evidence-based hypotheses
-    executor.py         — Executor node: propose_config → run_benchmark → analyze → compare
-    reflector.py        — Reflector node: improvement check, streak control, routing
-    graph.py            — LangGraph StateGraph assembly + run_agent() entry point
 workloads/
   definitions.py        — 5 golden workloads + prompt generators (chat_short,
                           long_context_qa, high_concurrency_short_out,
                           long_generation, mixed_traffic)
-configs/
-  search_space.py       — default + chunked + prefix_cache + big_batch variants
 scripts/
   run_baseline.py       — Phase 1 entry point: runs N configs × M workloads
   run_grid_sweep.py     — Phase 3 sweep: 12 configs × 5 workloads → data/ground_truth/
@@ -118,7 +116,7 @@ data/
   ground_truth/         — one JSON per workload after run_grid_sweep.py completes
 tests/
   conftest.py           — shared pytest fixtures (result, tmp_db, tmp_report, …)
-  test_*.py             — 71 unit tests, all tools + agent nodes mocked (no vLLM required)
+  test_*.py             — 76 unit tests, all tools + agent nodes mocked (no vLLM required)
 reports/
   phase1_baseline.md        — full Phase 1 report (Chinese)
   phase1_baseline_en.md     — full Phase 1 report (English)
@@ -136,5 +134,5 @@ reports/
 - **Phase 1** ✅ benchmark pipeline, 8-run baseline sweep, bilingual report
 - **Phase 2** ✅ 8 LangGraph tools, SQLite experiment memory, OTel spans, 37 unit tests
 - **Phase 3** ✅ 5 golden workloads, grid sweep (60 experiments → ground truth), eval framework (outcome / efficiency / LLM-as-judge), 50 unit tests
-- **Phase 4** ✅ Plan-Execute-Reflect LangGraph agent (DeepSeek V3 / Claude Sonnet), config dedup, budget control, bottleneck-switch replan, 71 unit tests; `run_comparison.py` for Agent vs Default vs Random
+- **Phase 4** ✅ Plan-Execute-Reflect LangGraph agent (DeepSeek V3 / Claude Sonnet), config dedup, budget control, bottleneck-switch replan, 76 unit tests; `run_comparison.py` for Agent vs Default vs Random
 - **Phase 5**: Pareto multi-objective search, LangSmith tracing, report auto-publish
