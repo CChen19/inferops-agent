@@ -13,7 +13,7 @@ Autonomous LLM inference optimization agent — uses LangGraph to iteratively tu
 | Agent framework | LangGraph 1.x |
 | Data validation | Pydantic v2 |
 | Experiment tracking | MLflow (SQLite backend) |
-| Observability | OpenTelemetry → console |
+| Observability | OpenTelemetry → console / Jaeger (OTLP) |
 | Dependency mgmt | uv |
 
 ## Quick start
@@ -70,17 +70,25 @@ Full report: [reports/phase1_baseline_en.md](reports/phase1_baseline_en.md) | [�
 ```
 inferops/
   schemas.py            — ExperimentConfig, ExperimentResult, WorkloadSpec, AgentState
-  observability.py      — MLflow (SQLite) + OpenTelemetry bootstrap
+  observability.py      — MLflow (SQLite) + OpenTelemetry (console or OTLP/Jaeger)
   bench_runner.py       — orchestrator: start vLLM → load → collect metrics → MLflow
   agent/
     coin_flip.py        — LangGraph warm-up (2-node loop, conditional edges, interrupt)
+  memory/
+    db.py               — SQLite CRUD for experiment results (save, query, upsert)
   tools/
     vllm_process.py     — vLLM subprocess lifecycle, OOM detection, startup timeout
     traffic.py          — async SSE load generator; measures TTFT / E2E / throughput
     gpu_monitor.py      — background pynvml sampler (GPU util + VRAM)
-  eval/                 — metric analysis (Phase 2)
-  rag/                  — retrieval for config knowledge base (Phase 3)
-  memory/               — long-term experiment memory (Phase 3)
+    run_benchmark.py    — tool: run one vLLM experiment, persist to memory DB
+    propose_config.py   — tool: validate + materialise a single-param config change
+    read_gpu_metrics.py — tool: sample GPU util + VRAM over a short window
+    profile_cpu.py      — tool: py-spy CPU hotspot profiler (top-N functions)
+    analyze_bottleneck.py  — tool: rule-based bottleneck classifier (compute/memory/scheduling/kv)
+    compare_experiments.py — tool: bootstrap CI comparison of two experiment results
+    experiment_memory.py   — tool: query past results from SQLite memory
+    write_report.py        — tool: append H2 section to a Markdown report file
+    registry.py            — ALL_TOOLS list: @tool-decorated LangGraph wrappers
 configs/
   search_space.py       — default + chunked + prefix_cache + big_batch variants
 workloads/
@@ -89,6 +97,9 @@ scripts/
   run_baseline.py       — entry point: runs N configs × M workloads, writes report
   start_vllm.sh         — manual vLLM server launcher (0.5B / 1.5B)
   verify_env.sh         — 5-point environment health check
+tests/
+  conftest.py           — shared pytest fixtures (result, tmp_db, tmp_report, …)
+  test_*.py             — 37 unit tests, all tools mocked (no vLLM required)
 reports/
   phase1_baseline.md        — full Phase 1 report (Chinese)
   phase1_baseline_en.md     — full Phase 1 report (English)
@@ -104,5 +115,5 @@ reports/
 
 - **Phase 0** ✅ repo skeleton, vLLM + Qwen2.5-0.5B baseline, LangGraph mental model
 - **Phase 1** ✅ benchmark pipeline, 8-run baseline sweep, bilingual report
-- **Phase 2**: 3-node LangGraph agent (plan → run → analyze), automated config search
-- **Phase 3**: multi-objective Pareto optimization, RAG config knowledge base, LangSmith tracing
+- **Phase 2** ✅ 8 LangGraph tools, SQLite experiment memory, OTel spans, 37 unit tests
+- **Phase 3**: autonomous agent loop (plan → run → analyze), multi-objective Pareto search, RAG config knowledge base
