@@ -42,6 +42,53 @@ WEIGHTS: dict[str, float] = {
 }
 
 
+FEW_SHOT_EXAMPLES: list[dict[str, Any]] = [
+    {
+        "name": "evidence-driven replanning",
+        "trajectory": [
+            {
+                "step": 1,
+                "action": "run_benchmark(max_num_batched_tokens=4096)",
+                "reasoning": "baseline throughput_rps=14.9 and GPU util=91% suggest compute-bound.",
+                "result": {
+                    "throughput_rps": 17.2,
+                    "ttft_p99_ms": 65,
+                    "bottleneck": "compute-bound",
+                },
+            },
+            {
+                "step": 2,
+                "action": "reflect",
+                "reasoning": (
+                    "bottleneck changed to scheduling-bound; "
+                    "replan around TTFT p99=175ms."
+                ),
+            },
+        ],
+        "score": {
+            "evidence_based": 1.0,
+            "no_repeat": 1.0,
+            "replan": 1.0,
+            "efficient": 0.9,
+        },
+    },
+    {
+        "name": "random duplicate search",
+        "trajectory": [
+            {"step": 1, "action": "run_benchmark(random)", "reasoning": ""},
+            {"step": 2, "action": "run_benchmark(random)", "reasoning": ""},
+            {"step": 3, "action": "run_benchmark(random)", "reasoning": ""},
+        ],
+        "score": {
+            "evidence_based": 0.0,
+            "no_repeat": 0.4,
+            "replan": 0.0,
+            "efficient": 0.2,
+        },
+    },
+]
+
+
 # ---------------------------------------------------------------------------
 # Output schema
 # ---------------------------------------------------------------------------
@@ -54,6 +101,14 @@ class JudgeScore:
     efficient: float        # 0–1
     overall: float          # weighted average
     reasoning: str
+
+
+@dataclass
+class ConsistencyResult:
+    trials: int
+    scores: list[float]
+    max_delta: float
+    consistent: bool
 
 
 # ---------------------------------------------------------------------------
@@ -90,6 +145,9 @@ benchmarks, analyzing results, and iteratively proposing parameter changes.
 RUBRIC (score each criterion 0.0–1.0):
 {rubric_text}
 
+FEW-SHOT CALIBRATION EXAMPLES:
+{_format_few_shot_examples()}
+
 AGENT TRAJECTORY:
 {traj_text}
 
@@ -125,6 +183,25 @@ Respond with a JSON object only — no markdown fences, no extra text:
     )
 
 
+def judge_consistency(
+    trajectory: list[dict[str, Any]],
+    llm,
+    trials: int = 3,
+    tolerance: float = 0.05,
+) -> ConsistencyResult:
+    """Run the same judge call several times and report score stability."""
+    if trials < 2:
+        raise ValueError("trials must be >= 2")
+    scores = [judge_trajectory(trajectory, llm=llm).overall for _ in range(trials)]
+    max_delta = max(scores) - min(scores)
+    return ConsistencyResult(
+        trials=trials,
+        scores=scores,
+        max_delta=round(max_delta, 4),
+        consistent=max_delta <= tolerance,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -145,12 +222,22 @@ def _format_trajectory(trajectory: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+def _format_few_shot_examples() -> str:
+    lines: list[str] = []
+    for ex in FEW_SHOT_EXAMPLES:
+        lines.append(f"Example: {ex['name']}")
+        lines.append(_format_trajectory(ex["trajectory"]).rstrip())
+        lines.append(f"Expected score: {json.dumps(ex['score'], sort_keys=True)}")
+        lines.append("")
+    return "\n".join(lines)
+
+
 def _heuristic_judge(trajectory: list[dict[str, Any]]) -> JudgeScore:
     """
     Rule-based fallback when no LLM is configured.
 
     Checks three observable signals from the trajectory dict keys:
-      - evidence_based: does each step have a non-empty "reasoning" field?
+      - evidence_based: does each decision cite a numeric metric in "reasoning"?
       - no_repeat: are all action experiment_ids unique?
       - replan: does any step mention "replan" or "bottleneck changed" in reasoning?
       - efficient: did it take ≤6 steps to reach a decision?
@@ -158,7 +245,10 @@ def _heuristic_judge(trajectory: list[dict[str, Any]]) -> JudgeScore:
     if not trajectory:
         return JudgeScore(0.5, 0.5, 0.5, 0.5, 0.5, "Empty trajectory.")
 
-    has_reasoning = sum(1 for s in trajectory if s.get("reasoning")) / len(trajectory)
+    evidence_based = sum(
+        1 for s in trajectory
+        if re.search(r"\d+(\.\d+)?", str(s.get("reasoning", "")))
+    ) / len(trajectory)
 
     seen_ids: set[str] = set()
     duplicates = 0
@@ -178,7 +268,7 @@ def _heuristic_judge(trajectory: list[dict[str, Any]]) -> JudgeScore:
     efficient = max(0.0, 1.0 - max(0, len(trajectory) - 6) / 6)
 
     scores = {
-        "evidence_based": round(has_reasoning, 2),
+        "evidence_based": round(evidence_based, 2),
         "no_repeat":      round(no_repeat, 2),
         "replan":         round(replan, 2),
         "efficient":      round(efficient, 2),
@@ -188,5 +278,8 @@ def _heuristic_judge(trajectory: list[dict[str, Any]]) -> JudgeScore:
     return JudgeScore(
         **scores,
         overall=round(overall, 4),
-        reasoning="Heuristic fallback — pass a LangChain ChatModel to judge_trajectory() for LLM scoring.",
+        reasoning=(
+            "Heuristic fallback — pass a LangChain ChatModel to judge_trajectory() "
+            "for LLM scoring."
+        ),
     )

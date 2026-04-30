@@ -81,8 +81,11 @@ inferops/
     graph.py            — LangGraph StateGraph assembly + run_agent() entry point
     coin_flip.py        — LangGraph warm-up example
   eval/
+    baselines.py        — CI-safe random/greedy baseline agent simulators
+    harness.py          — commit-level eval report generation
     metrics.py          — OutcomeMetrics (gap%), EfficiencyMetrics, composite_score
-    judge.py            — LLM-as-judge (4-criterion rubric; heuristic fallback)
+    judge.py            — LLM-as-judge rubric, few-shot calibration, consistency checks
+    regression.py       — regression gate for commit-to-commit eval comparisons
     runner.py           — eval runner: load ground truth → query DB → summary table
   memory/
     db.py               — SQLite CRUD for experiment results (save, query, upsert)
@@ -110,13 +113,14 @@ scripts/
   run_grid_sweep.py     — Phase 3 sweep: 12 configs × 5 workloads → data/ground_truth/
   run_agent.py          — Phase 4: run agent on one workload (--llm deepseek|claude)
   run_comparison.py     — Phase 4: Agent vs Default vs Random on 3 workloads
+  run_eval.py           — Phase 5: commit eval dashboard + regression gate
   start_vllm.sh         — manual vLLM server launcher (0.5B / 1.5B)
   verify_env.sh         — 5-point environment health check
 data/
   ground_truth/         — one JSON per workload after run_grid_sweep.py completes
 tests/
   conftest.py           — shared pytest fixtures (result, tmp_db, tmp_report, …)
-  test_*.py             — 113 unit tests, all tools + agent nodes mocked (no vLLM required)
+  test_*.py             — 126 unit tests, all tools + agent nodes mocked (no vLLM required)
 reports/
   phase1_baseline.md        — full Phase 1 report (Chinese)
   phase1_baseline_en.md     — full Phase 1 report (English)
@@ -134,5 +138,5 @@ reports/
 - **Phase 1** ✅ benchmark pipeline, 8-run baseline sweep, bilingual report
 - **Phase 2** ✅ 8 LangGraph tools, SQLite experiment memory, OTel spans, 37 unit tests
 - **Phase 3** ✅ 5 golden workloads, grid sweep (60 experiments → ground truth), eval framework (outcome / efficiency / LLM-as-judge), 50 unit tests
-- **Phase 4** ✅ Plan-Execute-Reflect LangGraph agent (DeepSeek V3 / Claude Sonnet), config dedup, budget control, bottleneck-switch replan, 113 unit tests; `run_comparison.py` for Agent vs Default vs Random
-- **Phase 5**: Pareto multi-objective search, LangSmith tracing, report auto-publish
+- **Phase 4** ✅ Plan-Execute-Reflect LangGraph agent (DeepSeek V3 / Claude Sonnet), config dedup, budget control, bottleneck-switch replan, 126 unit tests; `run_comparison.py` for Agent vs Default vs Random
+- **Phase 5** 🚧 Evaluation harness + regression gate: commit-level eval reports, random/greedy baselines, mock CI gate

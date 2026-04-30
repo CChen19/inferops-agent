@@ -1,0 +1,42 @@
+{
+  "workload_name": "long_generation",
+  "primary_metric": "tokens_per_second",
+  "higher_is_better": true,
+  "best_experiment_id": "grid_long_generation_t2048_c1_p0",
+  "best_value": 520.0,
+  "experiments": [
+    {
+      "experiment_id": "grid_long_generation_t2048_c0_p0",
+      "workload_name": "long_generation",
+      "max_num_batched_tokens": 2048,
+      "enable_chunked_prefill": false,
+      "enable_prefix_caching": false,
+      "throughput_rps": 1.0,
+      "tokens_per_second": 450.0,
+      "ttft_p99_ms": 90.0,
+      "e2e_p50_ms": 2100.0
+    },
+    {
+      "experiment_id": "grid_long_generation_t2048_c1_p0",
+      "workload_name": "long_generation",
+      "max_num_batched_tokens": 2048,
+      "enable_chunked_prefill": true,
+      "enable_prefix_caching": false,
+      "throughput_rps": 1.1,
+      "tokens_per_second": 520.0,
+      "ttft_p99_ms": 75.0,
+      "e2e_p50_ms": 1800.0
+    },
+    {
+      "experiment_id": "grid_long_generation_t4096_c0_p0",
+      "workload_name": "long_generation",
+      "max_num_batched_tokens": 4096,
+      "enable_chunked_prefill": false,
+      "enable_prefix_caching": false,
+      "throughput_rps": 0.9,
+      "tokens_per_second": 430.0,
+      "ttft_p99_ms": 95.0,
+      "e2e_p50_ms": 2200.0
+    }
+  ]
+}

@@ -25,6 +25,7 @@ inferops_memory.db
 # Experiment outputs
 reports/*.json
 reports/*.csv
+eval_reports/
 benchmarks/results/
 
 # Environment

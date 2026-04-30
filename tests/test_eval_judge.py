@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-from inferops.eval.judge import _format_trajectory, judge_trajectory
+from inferops.eval.judge import _format_trajectory, judge_consistency, judge_trajectory
 
 
 def test_heuristic_judge_empty_trajectory_is_neutral():
@@ -21,7 +21,7 @@ def test_heuristic_judge_penalizes_duplicate_actions_and_detects_replan():
             "step": 2,
             "action": "run e1",
             "experiment_id": "e1",
-            "reasoning": "bottleneck changed, replan",
+            "reasoning": "TTFT p99=70ms, bottleneck changed, replan",
         },
     ]
 
@@ -65,3 +65,23 @@ def test_format_trajectory_includes_key_result_fields():
     assert "rps=2.0" in text
     assert "throughput_rps" in text
     assert "ignored" not in text
+
+
+def test_judge_consistency_reports_stable_self_scores():
+    llm = MagicMock()
+    resp = MagicMock()
+    resp.content = (
+        '{"evidence_based": 1, "no_repeat": 1, "replan": 1, '
+        '"efficient": 1, "reasoning": "stable"}'
+    )
+    llm.invoke.return_value = resp
+
+    result = judge_consistency(
+        [{"step": 1, "action": "run", "reasoning": "throughput_rps=2.0"}],
+        llm=llm,
+        trials=3,
+        tolerance=0.01,
+    )
+
+    assert result.consistent is True
+    assert result.scores == [1.0, 1.0, 1.0]

@@ -1,0 +1,42 @@
+{
+  "workload_name": "chat_short",
+  "primary_metric": "throughput_rps",
+  "higher_is_better": true,
+  "best_experiment_id": "grid_chat_short_t4096_c0_p0",
+  "best_value": 17.2,
+  "experiments": [
+    {
+      "experiment_id": "grid_chat_short_t2048_c0_p0",
+      "workload_name": "chat_short",
+      "max_num_batched_tokens": 2048,
+      "enable_chunked_prefill": false,
+      "enable_prefix_caching": false,
+      "throughput_rps": 15.0,
+      "tokens_per_second": 1900.0,
+      "ttft_p99_ms": 70.0,
+      "e2e_p50_ms": 1000.0
+    },
+    {
+      "experiment_id": "grid_chat_short_t4096_c0_p0",
+      "workload_name": "chat_short",
+      "max_num_batched_tokens": 4096,
+      "enable_chunked_prefill": false,
+      "enable_prefix_caching": false,
+      "throughput_rps": 17.2,
+      "tokens_per_second": 2200.0,
+      "ttft_p99_ms": 66.0,
+      "e2e_p50_ms": 880.0
+    },
+    {
+      "experiment_id": "grid_chat_short_t2048_c1_p0",
+      "workload_name": "chat_short",
+      "max_num_batched_tokens": 2048,
+      "enable_chunked_prefill": true,
+      "enable_prefix_caching": false,
+      "throughput_rps": 16.0,
+      "tokens_per_second": 2050.0,
+      "ttft_p99_ms": 82.0,
+      "e2e_p50_ms": 930.0
+    }
+  ]
+}
