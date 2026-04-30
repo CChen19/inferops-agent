@@ -14,13 +14,21 @@ from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExport
 
 _tracer: trace.Tracer | None = None
 
+# Set OTEL_EXPORTER=otlp to send spans to Jaeger (docker run jaegertracing/all-in-one)
+# Default is console — zero external deps.
+_OTEL_EXPORTER = os.getenv("OTEL_EXPORTER", "console")
+_OTLP_ENDPOINT = os.getenv("OTLP_ENDPOINT", "http://localhost:4317")
+
 
 # ---------------------------------------------------------------------------
 # OpenTelemetry
 # ---------------------------------------------------------------------------
 
 def init_otel(service_name: str = "inferops-agent") -> trace.Tracer:
-    """Configure a console-exporting OTel tracer (swap exporter later for LangSmith/OTLP)."""
+    """Bootstrap OTel tracer. Exporter is chosen by OTEL_EXPORTER env var:
+      console (default) — prints spans to stdout, no external deps
+      otlp              — sends to Jaeger via gRPC on OTLP_ENDPOINT
+    """
     global _tracer
     if _tracer is not None:
         return _tracer
@@ -28,8 +36,13 @@ def init_otel(service_name: str = "inferops-agent") -> trace.Tracer:
     resource = Resource.create({"service.name": service_name})
     provider = TracerProvider(resource=resource)
 
-    # Console exporter — zero external deps, easy to grep
-    provider.add_span_processor(BatchSpanProcessor(ConsoleSpanExporter()))
+    if _OTEL_EXPORTER == "otlp":
+        from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+        exporter = OTLPSpanExporter(endpoint=_OTLP_ENDPOINT, insecure=True)
+    else:
+        exporter = ConsoleSpanExporter()
+
+    provider.add_span_processor(BatchSpanProcessor(exporter))
     trace.set_tracer_provider(provider)
     _tracer = trace.get_tracer(service_name)
     return _tracer
@@ -43,20 +56,24 @@ def get_tracer() -> trace.Tracer:
 
 @contextmanager
 def span(name: str, attributes: dict[str, Any] | None = None) -> Generator[trace.Span, None, None]:
-    """Thin context manager: `with span("my-step", {"k": v}): ...`"""
+    """Thin context manager: `with span("tool.run_benchmark", {"workload": "chat_short"}): ...`"""
     tracer = get_tracer()
     with tracer.start_as_current_span(name) as s:
         if attributes:
             for k, v in attributes.items():
                 s.set_attribute(k, str(v))
-        yield s
+        try:
+            yield s
+        except Exception as exc:
+            s.set_status(trace.StatusCode.ERROR, str(exc))
+            raise
 
 
 # ---------------------------------------------------------------------------
 # MLflow
 # ---------------------------------------------------------------------------
 
-_MLFLOW_TRACKING_URI = os.getenv("MLFLOW_TRACKING_URI", "sqlite:///mlruns.db")  # local SQLite
+_MLFLOW_TRACKING_URI = os.getenv("MLFLOW_TRACKING_URI", "sqlite:///mlruns.db")
 
 
 def init_mlflow(experiment_name: str = "inferops") -> str:

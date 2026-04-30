@@ -125,6 +125,8 @@ def run_experiment(
             e2e_latency=LatencyPercentiles(**e2e_p),
             gpu_memory_used_gb=gpu_summary.max_mem_used_gb,
             gpu_utilization_pct=gpu_summary.avg_util_pct,
+            raw_ttft_ms=load.ttft_ms,
+            raw_e2e_ms=load.e2e_ms,
             mlflow_run_id=run.info.run_id,
         )
 

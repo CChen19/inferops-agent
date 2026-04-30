@@ -109,6 +109,10 @@ class ExperimentResult(BaseModel):
     gpu_memory_used_gb: float | None = None
     gpu_utilization_pct: float | None = None
 
+    # Raw per-request latency (populated by bench_runner; needed for bootstrap CI)
+    raw_ttft_ms: list[float] = Field(default_factory=list)
+    raw_e2e_ms: list[float] = Field(default_factory=list)
+
     # Agent bookkeeping
     mlflow_run_id: str | None = None
     notes: str = ""
