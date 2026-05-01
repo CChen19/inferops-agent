@@ -22,7 +22,7 @@ jobs:
       - name: Run unit tests
         run: .venv/bin/python -m pytest -q
 
-      - name: Run mock eval harness
+      - name: Run mock eval harness + regression gate
         run: |
           .venv/bin/python scripts/run_eval.py \
             --mock \
@@ -31,10 +31,13 @@ jobs:
             --output-dir eval_reports \
             --workloads chat_short long_generation \
             --budget 2 \
-            --seed 7
+            --seed 7 \
+            --baseline-report tests/fixtures/ci_baseline.json \
+            --gate-strategy greedy_agent
 
       - name: Upload eval report
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: eval-reports
+          name: eval-reports-${{ github.sha }}
           path: eval_reports/

@@ -1,0 +1,70 @@
+{
+  "commit_sha": "ci_baseline",
+  "generated_at": "2026-05-01T04:52:39.752309+00:00",
+  "mode": "mock",
+  "budget": 2,
+  "strategies": {
+    "random_agent": [
+      {
+        "workload_name": "chat_short",
+        "primary_metric": "throughput_rps",
+        "ground_truth_value": 17.2,
+        "agent_value": 16.0,
+        "gap_pct": 6.98,
+        "n_experiments": 2,
+        "trajectory_score": 0.45,
+        "composite": 0.8051,
+        "best_experiment_id": "grid_chat_short_t2048_c1_p0"
+      },
+      {
+        "workload_name": "long_generation",
+        "primary_metric": "tokens_per_second",
+        "ground_truth_value": 520.0,
+        "agent_value": 450.0,
+        "gap_pct": 13.46,
+        "n_experiments": 2,
+        "trajectory_score": 0.45,
+        "composite": 0.7727,
+        "best_experiment_id": "grid_long_generation_t2048_c0_p0"
+      }
+    ],
+    "greedy_agent": [
+      {
+        "workload_name": "chat_short",
+        "primary_metric": "throughput_rps",
+        "ground_truth_value": 17.2,
+        "agent_value": 17.2,
+        "gap_pct": 0.0,
+        "n_experiments": 2,
+        "trajectory_score": 0.6,
+        "composite": 0.87,
+        "best_experiment_id": "grid_chat_short_t4096_c0_p0"
+      },
+      {
+        "workload_name": "long_generation",
+        "primary_metric": "tokens_per_second",
+        "ground_truth_value": 520.0,
+        "agent_value": 520.0,
+        "gap_pct": 0.0,
+        "n_experiments": 2,
+        "trajectory_score": 0.6,
+        "composite": 0.87,
+        "best_experiment_id": "grid_long_generation_t2048_c1_p0"
+      }
+    ]
+  },
+  "aggregates": {
+    "random_agent": {
+      "mean_gap_pct": 10.22,
+      "mean_n_experiments": 2.0,
+      "mean_wall_clock_min": 0.0,
+      "mean_composite": 0.7889
+    },
+    "greedy_agent": {
+      "mean_gap_pct": 0.0,
+      "mean_n_experiments": 2.0,
+      "mean_wall_clock_min": 0.0,
+      "mean_composite": 0.87
+    }
+  }
+}
