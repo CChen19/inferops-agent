@@ -6,7 +6,13 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from inferops.agent.graph import _run_baseline, make_llm, prepare_initial_state, run_agent
+from inferops.agent.graph import (
+    _run_baseline,
+    build_graph,
+    make_llm,
+    prepare_initial_state,
+    run_agent,
+)
 
 
 def test_make_llm_rejects_unknown_backend():
@@ -89,3 +95,13 @@ def test_prepare_initial_state_includes_baseline_and_best():
     assert state["tried_experiment_ids"] == ["sess_baseline"]
     assert state["current_bottleneck"] == "compute-bound"
     assert state["experiments_remaining"] == 4
+
+
+def test_build_graph_can_render_mermaid():
+    graph = build_graph(object())
+
+    mermaid = graph.get_graph().draw_mermaid()
+
+    assert "planner" in mermaid
+    assert "executor" in mermaid
+    assert "reflector" in mermaid

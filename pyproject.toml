@@ -7,6 +7,7 @@ name = "inferops-agent"
 version = "0.1.0"
 description = "LLM inference optimization agent — automated experiment orchestration on vLLM"
 requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
 dependencies = [
     # Agent framework
     "langgraph>=0.3.0",
