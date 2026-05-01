@@ -1,0 +1,42 @@
+{
+  "workload_name": "mixed_traffic",
+  "primary_metric": "throughput_rps",
+  "higher_is_better": true,
+  "best_experiment_id": "grid_mixed_traffic_t4096_c0_p0",
+  "best_value": 10.66,
+  "experiments": [
+    {
+      "experiment_id": "grid_mixed_traffic_t2048_c0_p0",
+      "workload_name": "mixed_traffic",
+      "max_num_batched_tokens": 2048,
+      "enable_chunked_prefill": false,
+      "enable_prefix_caching": false,
+      "throughput_rps": 9.57,
+      "tokens_per_second": 1340.0,
+      "ttft_p99_ms": 310.0,
+      "e2e_p50_ms": 1850.0
+    },
+    {
+      "experiment_id": "grid_mixed_traffic_t4096_c0_p0",
+      "workload_name": "mixed_traffic",
+      "max_num_batched_tokens": 4096,
+      "enable_chunked_prefill": false,
+      "enable_prefix_caching": false,
+      "throughput_rps": 10.66,
+      "tokens_per_second": 1490.0,
+      "ttft_p99_ms": 275.0,
+      "e2e_p50_ms": 1700.0
+    },
+    {
+      "experiment_id": "grid_mixed_traffic_t4096_c1_p0",
+      "workload_name": "mixed_traffic",
+      "max_num_batched_tokens": 4096,
+      "enable_chunked_prefill": true,
+      "enable_prefix_caching": false,
+      "throughput_rps": 10.12,
+      "tokens_per_second": 1418.0,
+      "ttft_p99_ms": 220.0,
+      "e2e_p50_ms": 1780.0
+    }
+  ]
+}

@@ -1,9 +1,10 @@
-"""Planner node — LLM-driven hypothesis generation.
+"""Planner node — LLM-driven hypothesis generation with RAG grounding.
 
-The planner reads the experiment history and current bottleneck, then asks the
-LLM for 1-3 (param, value, rationale) hypotheses. The prompt explicitly requires
-citing metric evidence; responses without evidence are rejected and the LLM is
-asked to try again (once).
+The planner:
+  1. Queries the knowledge corpus for chunks relevant to the current bottleneck.
+  2. Passes those chunks to the LLM as grounding context.
+  3. Requires each hypothesis rationale to cite a numeric metric AND a [source:] tag.
+  4. Rejects hypotheses without evidence or citations and retries once.
 """
 
 from __future__ import annotations
@@ -33,12 +34,13 @@ _SYSTEM = """\
 You are an expert vLLM inference optimization engineer. Your task is to find the best \
 serving configuration for a specific workload on an RTX 3060 Laptop (6 GB VRAM, WSL2).
 
-You will be shown experiment history and asked to generate hypotheses for the next \
-parameter change. Each hypothesis MUST:
+You will be shown experiment history, relevant documentation excerpts, and asked to \
+generate hypotheses for the next parameter change. Each hypothesis MUST:
   1. Cite at least one specific metric value from the history (e.g., "TTFT p99=120ms").
-  2. Change exactly ONE parameter.
-  3. Not repeat a (param, value) pair that has already been tried.
-  4. Be consistent with the identified bottleneck type.
+  2. Include a [source: <document>] tag referencing one of the provided knowledge chunks.
+  3. Change exactly ONE parameter.
+  4. Not repeat a (param, value) pair that has already been tried.
+  5. Be consistent with the identified bottleneck type.
 
 Respond with valid JSON only. No markdown, no prose outside the JSON.\
 """
@@ -75,11 +77,18 @@ BOTTLENECK GUIDANCE:
   memory-bound      → try reducing max_num_seqs (less KV pressure)
   kv-bound          → try enable_prefix_caching=true or reduce max_num_seqs
 
-Generate {n_hypotheses} hypothesis/hypotheses. Respond with:
+KNOWLEDGE CONTEXT (cite these in your rationale using [source: <source>]):
+{knowledge_context}
+
+Generate {n_hypotheses} hypothesis/hypotheses. Each rationale MUST include:
+  - a specific metric value (e.g., "rps=15.0")
+  - a [source: <source>] tag from the knowledge context above
+
+Respond with:
 {{
   "analysis": "<one paragraph citing specific metric values and explaining the bottleneck>",
   "hypotheses": [
-    {{"param": "...", "value": ..., "rationale": "... [MUST cite a specific metric value] ..."}},
+    {{"param": "...", "value": ..., "rationale": "... metric=X.Y ... [source: <doc>] ..."}},
     ...
   ]
 }}\
@@ -159,8 +168,10 @@ def _validate_hypotheses(raw_hyps: list[dict], state: AgentState) -> list[dict]:
             continue
         if is_duplicate(state, param, value):
             continue
-        # Evidence check: rationale must contain a number (metric value)
+        # Evidence check: rationale must contain a number AND a [source:] citation
         if not re.search(r"\d+(\.\d+)?", rationale):
+            continue
+        if not re.search(r"\[source:", rationale, re.IGNORECASE):
             continue
         h["param"] = param
         h["value"] = value
@@ -178,16 +189,47 @@ def _parse_llm_response(content: str) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# RAG helpers
+# ---------------------------------------------------------------------------
+
+def _retrieve_knowledge(bottleneck: str, workload: str, top_k: int = 4) -> str:
+    """
+    Query the corpus for chunks relevant to the current bottleneck + workload.
+    Falls back to an empty string if the index has not been built.
+    """
+    try:
+        from inferops.tools.knowledge_retriever import (
+            KnowledgeRetrieverInput,
+            knowledge_retriever,
+        )
+        query = f"{bottleneck} optimization {workload} vLLM"
+        result = knowledge_retriever(KnowledgeRetrieverInput(query=query, top_k=top_k))
+        if result.index_empty or not result.chunks:
+            return "(knowledge index not built — run scripts/build_corpus.py)"
+        lines = []
+        for c in result.chunks:
+            lines.append(f"[source: {c.source}] §{c.section}\n{c.text[:300]}…")
+        return "\n\n".join(lines)
+    except Exception:
+        return "(knowledge retrieval unavailable)"
+
+
+# ---------------------------------------------------------------------------
 # Node
 # ---------------------------------------------------------------------------
 
 def planner_node(state: AgentState, llm) -> dict:
     """
-    Generate 1–3 hypotheses using the LLM, enforcing evidence-based reasoning.
+    Generate 1–3 hypotheses using the LLM, with RAG-grounded evidence citation.
     Returns a state patch with updated hypotheses and messages.
     """
     # How many hypotheses to request (fewer when budget is tight)
     n = 1 if state["experiments_remaining"] <= 2 else (2 if state["experiments_remaining"] <= 4 else 3)
+
+    knowledge_context = _retrieve_knowledge(
+        bottleneck=state["current_bottleneck"],
+        workload=state["workload_name"],
+    )
 
     user_msg = _USER_TEMPLATE.format(
         workload_name=state["workload_name"],
@@ -201,6 +243,7 @@ def planner_node(state: AgentState, llm) -> dict:
         tried_pairs=_tried_pairs(state["experiment_summaries"]),
         batched_values=str(AGENT_SEARCH_SPACE["max_num_batched_tokens"]),
         seqs_values=str(AGENT_SEARCH_SPACE["max_num_seqs"]),
+        knowledge_context=knowledge_context,
         n_hypotheses=n,
     )
 

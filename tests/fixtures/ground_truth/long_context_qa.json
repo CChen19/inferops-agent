@@ -1,0 +1,42 @@
+{
+  "workload_name": "long_context_qa",
+  "primary_metric": "throughput_rps",
+  "higher_is_better": true,
+  "best_experiment_id": "grid_long_context_qa_t4096_c0_p1",
+  "best_value": 2.83,
+  "experiments": [
+    {
+      "experiment_id": "grid_long_context_qa_t2048_c0_p0",
+      "workload_name": "long_context_qa",
+      "max_num_batched_tokens": 2048,
+      "enable_chunked_prefill": false,
+      "enable_prefix_caching": false,
+      "throughput_rps": 2.41,
+      "tokens_per_second": 154.0,
+      "ttft_p99_ms": 820.0,
+      "e2e_p50_ms": 3200.0
+    },
+    {
+      "experiment_id": "grid_long_context_qa_t4096_c0_p1",
+      "workload_name": "long_context_qa",
+      "max_num_batched_tokens": 4096,
+      "enable_chunked_prefill": false,
+      "enable_prefix_caching": true,
+      "throughput_rps": 2.83,
+      "tokens_per_second": 181.0,
+      "ttft_p99_ms": 640.0,
+      "e2e_p50_ms": 2750.0
+    },
+    {
+      "experiment_id": "grid_long_context_qa_t4096_c1_p0",
+      "workload_name": "long_context_qa",
+      "max_num_batched_tokens": 4096,
+      "enable_chunked_prefill": true,
+      "enable_prefix_caching": false,
+      "throughput_rps": 2.65,
+      "tokens_per_second": 170.0,
+      "ttft_p99_ms": 580.0,
+      "e2e_p50_ms": 2900.0
+    }
+  ]
+}

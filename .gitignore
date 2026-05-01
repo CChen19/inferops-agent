@@ -15,6 +15,9 @@ mlruns/
 mlruns.db
 inferops_memory.db
 
+# RAG vector store (built locally via scripts/build_corpus.py)
+data/chroma/
+
 # Models & large binaries
 *.bin
 *.safetensors

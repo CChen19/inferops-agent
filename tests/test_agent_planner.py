@@ -85,7 +85,8 @@ def test_validate_removes_no_evidence():
 
 def test_validate_accepts_valid_hypothesis():
     state = _base_state()
-    raw = [{"param": "max_num_batched_tokens", "value": 4096, "rationale": "rps=14.96 is low, higher batching should help"}]
+    raw = [{"param": "max_num_batched_tokens", "value": 4096,
+            "rationale": "rps=14.96 is low; [source: vllm_scheduler] larger batches improve GPU saturation"}]
     result = _validate_hypotheses(raw, state)
     assert len(result) == 1
     assert result[0]["param"] == "max_num_batched_tokens"
@@ -94,7 +95,8 @@ def test_validate_accepts_valid_hypothesis():
 
 def test_validate_coerces_bool():
     state = _base_state()
-    raw = [{"param": "enable_chunked_prefill", "value": "true", "rationale": "TTFT p99=69ms is high"}]
+    raw = [{"param": "enable_chunked_prefill", "value": "true",
+            "rationale": "TTFT p99=69ms is high [source: chunked_prefill]"}]
     result = _validate_hypotheses(raw, state)
     assert len(result) == 1
     assert result[0]["value"] is True
@@ -105,7 +107,7 @@ def test_validate_coerces_false_string_to_false():
     raw = [{
         "param": "enable_chunked_prefill",
         "value": "false",
-        "rationale": "TTFT p99=69ms is high",
+        "rationale": "TTFT p99=69ms; disabling chunked prefill [source: chunked_prefill]",
     }]
     result = _validate_hypotheses(raw, state)
     assert len(result) == 1
@@ -122,7 +124,7 @@ def test_planner_adds_hypotheses():
         "analysis": "throughput_rps=14.96 is suboptimal; compute-bound workload.",
         "hypotheses": [
             {"param": "max_num_batched_tokens", "value": 4096,
-             "rationale": "rps=14.96 suggests CPU scheduler overhead; bigger batches increase GPU utilization"},
+             "rationale": "rps=14.96 suggests overhead; bigger batches increase GPU util [source: vllm_scheduler]"},
         ],
     })
     llm = _mock_llm(llm_response)
@@ -140,7 +142,7 @@ def test_planner_adds_trajectory_step():
         "analysis": "rps=14.96 is suboptimal.",
         "hypotheses": [
             {"param": "max_num_seqs", "value": 256,
-             "rationale": "rps=14.96 with concurrency=16 suggests low parallelism"},
+             "rationale": "rps=14.96 with concurrency=16 suggests low parallelism [source: vllm_scheduler]"},
         ],
     })
     patch = planner_node(state, _mock_llm(llm_response))
@@ -160,7 +162,7 @@ def test_planner_handles_invalid_json_gracefully():
         "analysis": "rps=14.96 is low",
         "hypotheses": [
             {"param": "enable_chunked_prefill", "value": True,
-             "rationale": "TTFT p99=69ms variance suggests scheduling-bound"},
+             "rationale": "TTFT p99=69ms variance suggests scheduling-bound [source: chunked_prefill]"},
         ],
     })
     good_response.usage_metadata = {"input_tokens": 80, "output_tokens": 40}
@@ -188,7 +190,7 @@ def test_planner_requests_fewer_hypotheses_on_low_budget():
             "analysis": "rps=14.96 is low",
             "hypotheses": [
                 {"param": "max_num_batched_tokens", "value": 4096,
-                 "rationale": "rps=14.96 is below ceiling"},
+                 "rationale": "rps=14.96 is below ceiling [source: vllm_scheduler]"},
             ],
         })
         resp.usage_metadata = {}

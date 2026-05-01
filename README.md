@@ -89,6 +89,10 @@ inferops/
     runner.py           — eval runner: load ground truth → query DB → summary table
   memory/
     db.py               — SQLite CRUD for experiment results (save, query, upsert)
+  rag/
+    chunker.py          — Markdown-aware text chunker (heading-split, overlap)
+    embedder.py         — bge-base-zh-v1.5 sentence-transformers wrapper (lazy-loaded)
+    store.py            — Chroma persistent vector store (build_index, query)
   tools/
     vllm_process.py     — vLLM subprocess lifecycle, OOM detection, startup timeout
     traffic.py          — async SSE load generator; measures TTFT / E2E / throughput
@@ -101,7 +105,9 @@ inferops/
     compare_experiments.py — tool: bootstrap CI comparison of two experiment results
     experiment_memory.py   — tool: query past results from SQLite memory
     write_report.py        — tool: append H2 section to a Markdown report file
-    registry.py            — ALL_TOOLS list: @tool-decorated LangGraph wrappers
+    knowledge_retriever.py — tool: semantic search over vLLM knowledge corpus (Chroma)
+    final_report.py        — tool: generate end-of-session Markdown report with citations
+    registry.py            — ALL_TOOLS list: 9 @tool-decorated LangGraph wrappers
 configs/
   search_space.py       — default + chunked + prefix_cache + big_batch variants
 workloads/

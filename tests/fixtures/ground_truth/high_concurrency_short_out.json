@@ -1,0 +1,42 @@
+{
+  "workload_name": "high_concurrency_short_out",
+  "primary_metric": "throughput_rps",
+  "higher_is_better": true,
+  "best_experiment_id": "grid_high_concurrency_short_out_t4096_c0_p0",
+  "best_value": 84.7,
+  "experiments": [
+    {
+      "experiment_id": "grid_high_concurrency_short_out_t2048_c0_p0",
+      "workload_name": "high_concurrency_short_out",
+      "max_num_batched_tokens": 2048,
+      "enable_chunked_prefill": false,
+      "enable_prefix_caching": false,
+      "throughput_rps": 71.3,
+      "tokens_per_second": 2282.0,
+      "ttft_p99_ms": 145.0,
+      "e2e_p50_ms": 420.0
+    },
+    {
+      "experiment_id": "grid_high_concurrency_short_out_t4096_c0_p0",
+      "workload_name": "high_concurrency_short_out",
+      "max_num_batched_tokens": 4096,
+      "enable_chunked_prefill": false,
+      "enable_prefix_caching": false,
+      "throughput_rps": 84.7,
+      "tokens_per_second": 2710.0,
+      "ttft_p99_ms": 118.0,
+      "e2e_p50_ms": 365.0
+    },
+    {
+      "experiment_id": "grid_high_concurrency_short_out_t4096_c1_p0",
+      "workload_name": "high_concurrency_short_out",
+      "max_num_batched_tokens": 4096,
+      "enable_chunked_prefill": true,
+      "enable_prefix_caching": false,
+      "throughput_rps": 79.2,
+      "tokens_per_second": 2534.0,
+      "ttft_p99_ms": 98.0,
+      "e2e_p50_ms": 390.0
+    }
+  ]
+}

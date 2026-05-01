@@ -1,4 +1,4 @@
-"""LangGraph tool registry — wraps all 8 inferops tools with @tool for agent use."""
+"""LangGraph tool registry — wraps all inferops tools with @tool for agent use."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ from langchain_core.tools import tool
 from inferops.tools.analyze_bottleneck import AnalyzeBottleneckInput, analyze_bottleneck
 from inferops.tools.compare_experiments import CompareExperimentsInput, compare_experiments
 from inferops.tools.experiment_memory import QueryMemoryInput, query_experiment_memory
+from inferops.tools.knowledge_retriever import KnowledgeRetrieverInput, knowledge_retriever
 from inferops.tools.profile_cpu import ProfileCpuInput, profile_with_pyspy
 from inferops.tools.propose_config import ProposeConfigInput, propose_config_patch
 from inferops.tools.read_gpu_metrics import ReadGpuMetricsInput, read_gpu_metrics
@@ -169,6 +170,24 @@ def tool_write_report_section(section_title: str, content: str, report_path: str
     return out.model_dump()
 
 
+@tool
+def tool_knowledge_retriever(query: str, top_k: int = 4) -> dict:
+    """
+    Search the vLLM knowledge corpus for relevant documentation chunks.
+
+    Call this BEFORE generating hypotheses to ground rationales in documented
+    evidence. Returns chunks from PagedAttention paper, vLLM docs, tuning notes, etc.
+    Each returned chunk has a 'source' field — use it as [source: <value>] in
+    your hypothesis rationale.
+
+    Args:
+        query: Natural language search query, e.g. 'chunked prefill reduces TTFT'.
+        top_k: Number of chunks to return (1–10, default 4).
+    """
+    out = knowledge_retriever(KnowledgeRetrieverInput(query=query, top_k=top_k))
+    return out.model_dump()
+
+
 # Exported list for binding to a LangGraph agent
 ALL_TOOLS = [
     tool_run_benchmark,
@@ -179,4 +198,5 @@ ALL_TOOLS = [
     tool_compare_experiments,
     tool_query_experiment_memory,
     tool_write_report_section,
+    tool_knowledge_retriever,
 ]

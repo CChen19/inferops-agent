@@ -13,11 +13,12 @@ EXPECTED_NAMES = {
     "tool_compare_experiments",
     "tool_query_experiment_memory",
     "tool_write_report_section",
+    "tool_knowledge_retriever",
 }
 
 
 def test_all_tools_registered():
-    assert len(ALL_TOOLS) == 8
+    assert len(ALL_TOOLS) == 9
 
 
 def test_tool_names():
