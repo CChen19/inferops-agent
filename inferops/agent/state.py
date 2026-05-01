@@ -70,13 +70,8 @@ class AgentState(TypedDict):
 # Constants
 # ---------------------------------------------------------------------------
 
-WORKLOAD_PRIMARY_METRIC: dict[str, str] = {
-    "chat_short":                 "throughput_rps",
-    "long_context_qa":            "throughput_rps",
-    "high_concurrency_short_out": "throughput_rps",
-    "long_generation":            "tokens_per_second",
-    "mixed_traffic":              "throughput_rps",
-}
+from inferops.eval.metrics import WORKLOAD_PRIMARY_METRIC as _WPM
+WORKLOAD_PRIMARY_METRIC: dict[str, str] = {k: v for k, (v, _) in _WPM.items()}
 
 WORKLOAD_DESCRIPTIONS: dict[str, str] = {
     "chat_short": (

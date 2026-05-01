@@ -135,18 +135,25 @@ reports/
 ## Phase 5 eval harness
 
 ```bash
-# CI-safe mock eval from committed fixture data
+# CI-safe mock eval — deterministic, no vLLM needed
 python scripts/run_eval.py --mock --commit-sha $(git rev-parse --short HEAD) \
   --ground-truth tests/fixtures/ground_truth --workloads chat_short long_generation \
   --budget 2 --seed 7
 
-# Real/manual eval for an agent session already saved in experiment memory
+# Same, with regression gate vs a pinned baseline (exits 1 on regression):
+python scripts/run_eval.py --mock --commit-sha $(git rev-parse --short HEAD) \
+  --ground-truth tests/fixtures/ground_truth --workloads chat_short long_generation \
+  --budget 2 --seed 7 \
+  --baseline-report tests/fixtures/ci_baseline.json --gate-strategy greedy_agent
+
+# Real/manual eval for an agent session already persisted in experiment memory:
 python scripts/run_eval.py --prefix agent_chat_short_abc123_ --workloads chat_short \
   --ground-truth data/ground_truth
 ```
 
-Reports are written to `eval_reports/<sha>.md` and `<sha>.json`. Pass
-`--baseline-report eval_reports/<old_sha>.json` to enable the regression gate.
+Reports are written to `eval_reports/<sha>.md` and `<sha>.json`.
+The CI workflow (`.github/workflows/eval-mock.yml`) runs the mock eval + regression gate
+on every push/PR using `tests/fixtures/ci_baseline.json` as the pinned baseline.
 
 ## Roadmap
 
@@ -155,4 +162,4 @@ Reports are written to `eval_reports/<sha>.md` and `<sha>.json`. Pass
 - **Phase 2** ✅ 8 LangGraph tools, SQLite experiment memory, OTel spans, 37 unit tests
 - **Phase 3** ✅ 5 golden workloads, grid sweep (60 experiments → ground truth), eval framework (outcome / efficiency / LLM-as-judge), 50 unit tests
 - **Phase 4** ✅ Plan-Execute-Reflect LangGraph agent (DeepSeek V3 / Claude Sonnet), config dedup, budget control, bottleneck-switch replan, 126 unit tests; `run_comparison.py` for Agent vs Default vs Random
-- **Phase 5** 🚧 Evaluation harness + regression gate: commit-level eval reports, random/greedy baselines, mock CI gate
+- **Phase 5** ✅ Evaluation harness + regression gate: commit-level eval reports, random/greedy baselines, mock CI gate, 130 unit tests
