@@ -15,6 +15,7 @@ Autonomous LLM inference optimization agent — uses LangGraph to iteratively tu
 | Experiment tracking | MLflow (SQLite backend) |
 | Observability | OpenTelemetry → console / Jaeger (OTLP) |
 | Dependency mgmt | uv |
+| Env loading | python-dotenv |
 
 ## Quick start
 
@@ -95,7 +96,7 @@ inferops/
     store.py            — Chroma persistent vector store (build_index, query)
   tools/
     vllm_process.py     — vLLM subprocess lifecycle, OOM detection, startup timeout
-    traffic.py          — async SSE load generator; measures TTFT / E2E / throughput
+    traffic.py          — async load generator; streaming TTFT mode + stable non-streaming benchmark mode
     gpu_monitor.py      — background pynvml sampler (GPU util + VRAM)
     run_benchmark.py    — tool: run one vLLM experiment, persist to memory DB
     propose_config.py   — tool: validate + materialise a single-param config change
@@ -126,7 +127,7 @@ data/
   ground_truth/         — one JSON per workload after run_grid_sweep.py completes
 tests/
   conftest.py           — shared pytest fixtures (result, tmp_db, tmp_report, …)
-  test_*.py             — 126 unit tests, all tools + agent nodes mocked (no vLLM required)
+  test_*.py             — 152 unit tests, all tools + agent nodes mocked (no vLLM required)
 reports/
   phase1_baseline.md        — full Phase 1 report (Chinese)
   phase1_baseline_en.md     — full Phase 1 report (English)
@@ -134,7 +135,7 @@ reports/
 
 ## WSL2 / RTX 3060 config notes
 
-- `gpu_memory_utilization=0.80` — safe ceiling; Windows DWM consumes ~2.2 GB invisible to PyTorch
+- `gpu_memory_utilization=0.80` — normal 1.5B target; set `VLLM_GPU_MEM=0.65` if startup reports low free VRAM
 - `max_model_len=2048` — must be set explicitly; Qwen2.5's native 32768-token context causes OOM on 6 GB
 - `max_num_seqs=128` — realistic ceiling for concurrency ≤ 16
 
@@ -173,15 +174,31 @@ python scripts/build_corpus.py
 # 3. Verify index was built
 python scripts/build_corpus.py --dry-run
 
-# 4. Launch Chainlit UI (requires DEEPSEEK_API_KEY or ANTHROPIC_API_KEY)
-INFEROPS_LLM=deepseek chainlit run app.py
-# open http://localhost:8000 and type e.g.:
+# 4. Terminal 1: launch vLLM from the vllm-dev conda environment.
+#    On a 6 GB RTX 3060, use VLLM_GPU_MEM=0.65 if 1.5B startup reports
+#    "free memory ... less than desired GPU memory utilization".
+VLLM_GPU_MEM=0.65 bash scripts/start_vllm.sh 1.5B
+
+# 5. Terminal 2: launch Chainlit from the project .venv.
+#    For the default OpenRouter backend, put OPENROUTER_API_KEY in .env.
+source .venv/bin/activate
+INFEROPS_LLM=openrouter chainlit run app.py --port 8001
+# open http://localhost:8001 and type e.g.:
 #   "I have Qwen2.5-1.5B on RTX 3060, chat scenario, maximize throughput, budget=5"
 ```
 
 The Planner now retrieves relevant chunks from the corpus before generating hypotheses.
 Every hypothesis rationale must include a `[source: <document>]` citation — uncited
 hypotheses are rejected before they reach the executor.
+
+Chainlit runs or loads the baseline before entering the LangGraph loop, streams
+planner / executor / reflector progress, and writes the final Markdown report to
+`reports/<session_prefix>final_report.md`.
+
+The Chainlit benchmark path intentionally uses non-streaming vLLM chat requests
+to avoid a known `httpx` / `anyio` streaming cleanup deadlock in the UI process.
+Throughput and end-to-end latency remain usable for optimization; TTFT is
+currently approximated by request completion time on that path.
 
 To add new corpus documents, drop Markdown files into `data/corpus/` and re-run
 `scripts/build_corpus.py --reset`.
@@ -194,4 +211,4 @@ To add new corpus documents, drop Markdown files into `data/corpus/` and re-run
 - **Phase 3** ✅ 5 golden workloads, grid sweep (60 experiments → ground truth), eval framework (outcome / efficiency / LLM-as-judge), 50 unit tests
 - **Phase 4** ✅ Plan-Execute-Reflect LangGraph agent (DeepSeek V3 / Claude Sonnet), config dedup, budget control, bottleneck-switch replan, 126 unit tests; `run_comparison.py` for Agent vs Default vs Random
 - **Phase 5** ✅ Evaluation harness + regression gate: commit-level eval reports, random/greedy baselines, mock CI gate, 130 unit tests
-- **Phase 6** ✅ RAG knowledge retrieval + Chainlit UI: 6-doc corpus (PagedAttention, chunked prefill, prefix caching, speculative decoding, vLLM scheduler, tuning notes), citation-grounded planner, Chroma vector store, intent extraction, Chainlit async chat UI, final report tool, 148 unit tests
+- **Phase 6** ✅ RAG knowledge retrieval + Chainlit UI: 6-doc corpus (PagedAttention, chunked prefill, prefix caching, speculative decoding, vLLM scheduler, tuning notes), citation-grounded planner, Chroma vector store, intent extraction, Chainlit async chat UI, final report tool, stable non-streaming benchmark path, 152 unit tests

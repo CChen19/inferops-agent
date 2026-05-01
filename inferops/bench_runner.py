@@ -15,6 +15,7 @@ Flow per experiment:
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 import uuid
 from typing import Callable
@@ -34,8 +35,8 @@ from inferops.tools.vllm_process import VLLMProcess
 
 console = Console()
 
-VLLM_HOST = "127.0.0.1"
-VLLM_PORT = 8000
+VLLM_HOST = os.getenv("VLLM_HOST", "127.0.0.1")
+VLLM_PORT = int(os.getenv("VLLM_PORT", "8000"))
 
 
 class BenchmarkError(Exception):
@@ -48,6 +49,58 @@ class OOMError(BenchmarkError):
 
 class StartupTimeoutError(BenchmarkError):
     pass
+
+
+def _run_load_with_cleanup_workaround(
+    cfg: ExperimentConfig,
+    prompts: list[str],
+    timeout_s: float = 400,
+    poll_interval_s: float = 2,
+):
+    """
+    Run traffic in a worker thread and publish the result before asyncio cleanup.
+
+    In Chainlit/anyio environments, httpx cleanup inside asyncio.run() can hang
+    after the load coroutine has returned. The result must be appended inside
+    the coroutine, not around asyncio.run(...), so the caller can continue even
+    if the worker thread gets stuck during event-loop shutdown.
+    """
+    import threading
+
+    result: list = []
+    errors: list[BaseException] = []
+
+    async def _run_and_store() -> None:
+        load = await run_load(
+            base_url=f"http://{VLLM_HOST}:{VLLM_PORT}",
+            workload=cfg.workload,
+            prompts=prompts,
+            close_client=False,
+            stream_response=False,
+        )
+        result.append(load)
+
+    def _worker() -> None:
+        try:
+            asyncio.run(_run_and_store())
+        except BaseException as exc:  # noqa: BLE001
+            if not result:
+                errors.append(exc)
+
+    thread = threading.Thread(target=_worker, daemon=True)
+    thread.start()
+
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        thread.join(timeout=poll_interval_s)
+        if result or errors:
+            break
+
+    if errors:
+        raise errors[0]
+    if not result:
+        raise BenchmarkError("Traffic thread timed out without a result")
+    return result[0]
 
 
 def run_experiment(
@@ -68,17 +121,30 @@ def run_experiment(
 
     init_mlflow(mlflow_experiment)
 
+    # If vLLM is already running externally (e.g. via start_vllm.sh), skip
+    # lifecycle management and send traffic directly. This avoids port conflicts
+    # and removes the 15-second proc.stop() wait on every experiment.
+    _external = False
+    try:
+        import httpx as _httpx
+        _r = _httpx.get(f"http://{VLLM_HOST}:{VLLM_PORT}/health", timeout=2.0)
+        _external = _r.status_code == 200
+    except Exception:
+        pass
+
     with mlflow_run(run_name=cfg.experiment_id, tags={**cfg.tags, "workload": cfg.workload.name}) as run:
-        log(f"Starting vLLM ({cfg.model_name}) …")
+        proc: VLLMProcess | None = None
 
-        proc = VLLMProcess(cfg, host=VLLM_HOST, port=VLLM_PORT)
-        proc.start()
-        if proc.log_path:
-            log(f"  vLLM log → {proc.log_path}")
+        if _external:
+            log(f"Using external vLLM at {VLLM_HOST}:{VLLM_PORT} (skipping lifecycle)")
+        else:
+            log(f"Starting vLLM ({cfg.model_name}) …")
+            proc = VLLMProcess(cfg, host=VLLM_HOST, port=VLLM_PORT)
+            proc.start()
+            if proc.log_path:
+                log(f"  vLLM log → {proc.log_path}")
 
-        try:
             ready = proc.wait_ready_verbose(log)
-
             if not ready:
                 if proc.oom_in_log():
                     raise OOMError(f"vLLM OOM during startup — config: {cfg.experiment_id}")
@@ -86,25 +152,18 @@ def run_experiment(
                     raise BenchmarkError(f"vLLM crashed (exit {proc.exit_code()}) — see {proc.log_path}")
                 raise StartupTimeoutError(f"vLLM not ready after startup timeout — see {proc.log_path}")
 
-            log("vLLM ready. Starting GPU monitor + load …")
+        log("vLLM ready. Starting GPU monitor + load …")
 
-            gpu = GPUMonitor(interval_s=0.5)
-            gpu.start()
+        gpu = GPUMonitor(interval_s=0.5)
+        gpu.start()
 
-            try:
-                load = asyncio.run(
-                    run_load(
-                        base_url=f"http://{VLLM_HOST}:{VLLM_PORT}",
-                        workload=cfg.workload,
-                        prompts=prompts,
-                    )
-                )
-            finally:
-                gpu_summary = gpu.stop()
-
+        try:
+            load = _run_load_with_cleanup_workaround(cfg, prompts)
         finally:
-            log("Stopping vLLM …")
-            proc.stop()
+            gpu_summary = gpu.stop()
+            if proc is not None:
+                log("Stopping vLLM …")
+                proc.stop()
 
         # Build result
         ttft_p = extract_percentiles(load.ttft_ms)

@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from inferops.agent.graph import _run_baseline, make_llm, run_agent
+from inferops.agent.graph import _run_baseline, make_llm, prepare_initial_state, run_agent
 
 
 def test_make_llm_rejects_unknown_backend():
@@ -64,3 +64,28 @@ def test_run_agent_initializes_state_and_invokes_graph():
     assert captured["state"]["experiments_remaining"] == 4
     assert captured["state"]["baseline_summary"] == baseline
     assert final_state["stop_reason"] == "unit_test"
+
+
+def test_prepare_initial_state_includes_baseline_and_best():
+    baseline = {
+        "experiment_id": "sess_baseline",
+        "param_changed": None,
+        "value_changed": None,
+        "throughput_rps": 2.0,
+        "tokens_per_second": 128.0,
+        "ttft_p50_ms": 48.0,
+        "ttft_p99_ms": 70.0,
+        "e2e_p50_ms": 900.0,
+        "bottleneck": "compute-bound",
+        "vs_baseline_pct": 0.0,
+    }
+
+    with patch("inferops.agent.graph._run_baseline", return_value=(baseline, "compute-bound")):
+        state = prepare_initial_state("chat_short", "sess_", max_experiments=5)
+
+    assert state["baseline_summary"] == baseline
+    assert state["best_summary"] == baseline
+    assert state["experiment_summaries"] == [baseline]
+    assert state["tried_experiment_ids"] == ["sess_baseline"]
+    assert state["current_bottleneck"] == "compute-bound"
+    assert state["experiments_remaining"] == 4

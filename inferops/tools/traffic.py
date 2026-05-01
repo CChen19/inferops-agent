@@ -36,13 +36,14 @@ async def _send_one(
     base_url: str,
     prompt: str,
     max_tokens: int,
+    stream_response: bool = True,
 ) -> RequestMetrics:
     url = f"{base_url}/v1/chat/completions"
     payload = {
         "model": "qwen",
         "messages": [{"role": "user", "content": prompt}],
         "max_tokens": max_tokens,
-        "stream": True,
+        "stream": stream_response,
         "temperature": 0.0,
     }
     t_start = time.perf_counter()
@@ -50,6 +51,27 @@ async def _send_one(
     output_tokens = 0
 
     try:
+        if not stream_response:
+            resp = await client.post(url, json=payload, timeout=120)
+            t_end = time.perf_counter()
+            if resp.status_code != 200:
+                return RequestMetrics(
+                    False,
+                    0,
+                    (t_end - t_start) * 1000,
+                    0,
+                    error=f"HTTP {resp.status_code}: {resp.text[:200]}",
+                )
+
+            try:
+                usage = resp.json().get("usage", {})
+                output_tokens = int(usage.get("completion_tokens") or 0)
+            except Exception:
+                output_tokens = 0
+
+            e2e = (t_end - t_start) * 1000
+            return RequestMetrics(True, e2e, e2e, max(output_tokens, 1))
+
         async with client.stream("POST", url, json=payload, timeout=120) as resp:
             if resp.status_code != 200:
                 body = await resp.aread()
@@ -83,15 +105,24 @@ async def run_load(
     workload: WorkloadSpec,
     prompts: list[str],
     warmup_requests: int = 5,
+    close_client: bool = True,
+    stream_response: bool = True,
 ) -> LoadResult:
     sem = asyncio.Semaphore(workload.concurrency)
 
     async def bounded(prompt: str) -> RequestMetrics:
         async with sem:
-            return await _send_one(client, base_url, prompt, workload.output_len)
+            return await _send_one(
+                client,
+                base_url,
+                prompt,
+                workload.output_len,
+                stream_response=stream_response,
+            )
 
     limits = httpx.Limits(max_connections=workload.concurrency + 10, max_keepalive_connections=workload.concurrency)
-    async with httpx.AsyncClient(limits=limits) as client:
+    client = httpx.AsyncClient(limits=limits)
+    try:
         # Warmup — don't measure these
         warmup = prompts[:warmup_requests]
         await asyncio.gather(*[bounded(p) for p in warmup])
@@ -101,6 +132,9 @@ async def run_load(
         t0 = time.perf_counter()
         results = await asyncio.gather(*[bounded(p) for p in measure])
         total_time = time.perf_counter() - t0
+    finally:
+        if close_client:
+            await client.aclose()
 
     successes = [r for r in results if r.success]
     ttft_ms = sorted(r.ttft_ms for r in successes)

@@ -15,7 +15,8 @@ def get_model() -> "SentenceTransformer":
     global _model
     if _model is None:
         from sentence_transformers import SentenceTransformer
-        _model = SentenceTransformer(_MODEL_NAME)
+        # Force CPU so the embedder doesn't compete with vLLM for VRAM
+        _model = SentenceTransformer(_MODEL_NAME, device="cpu")
     return _model
 
 

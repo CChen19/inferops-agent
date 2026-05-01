@@ -4,10 +4,11 @@
 #   ./scripts/start_vllm.sh [0.5B|1.5B]
 #
 # Uses INFEROPS_VLLM_PYTHON / VLLM_PYTHON when set; otherwise the vllm-dev conda env.
+# Set VLLM_GPU_MEM to override the model default when Windows/WSL already uses VRAM.
 #
 # RTX 3060 Laptop GPU = 6 GB — safe headroom:
 #   0.5B: gpu_memory_utilization=0.85
-#   1.5B: gpu_memory_utilization=0.90  (tight; disable KV-cache extras)
+#   1.5B: gpu_memory_utilization=0.80  (use VLLM_GPU_MEM=0.65 if startup reports low free VRAM)
 
 set -euo pipefail
 
@@ -22,7 +23,7 @@ case "$MODEL_SIZE" in
     ;;
   1.5B)
     MODEL="Qwen/Qwen2.5-1.5B-Instruct"
-    GPU_MEM=0.90
+    GPU_MEM=0.80
     MAX_SEQS=128
     MAX_TOKENS=2048
     ;;
@@ -34,6 +35,7 @@ esac
 
 HOST="${VLLM_HOST:-127.0.0.1}"
 PORT="${VLLM_PORT:-8000}"
+GPU_MEM="${VLLM_GPU_MEM:-${GPU_MEM}}"
 VLLM_PYTHON_BIN="${INFEROPS_VLLM_PYTHON:-${VLLM_PYTHON:-/home/chris/miniconda3/envs/vllm-dev/bin/python}}"
 
 echo "[inferops] Starting vLLM ${MODEL_SIZE} on ${HOST}:${PORT}"

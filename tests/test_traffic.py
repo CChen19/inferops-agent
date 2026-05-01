@@ -23,7 +23,7 @@ def test_extract_percentiles_sorts_input():
 
 @pytest.mark.asyncio
 async def test_run_load_aggregates_successful_requests(monkeypatch):
-    async def fake_send_one(client, base_url, prompt, max_tokens):
+    async def fake_send_one(client, base_url, prompt, max_tokens, stream_response=True):
         if prompt == "fail":
             return RequestMetrics(False, 0.0, 5.0, 0, error="synthetic")
         if prompt == "warmup":
@@ -54,3 +54,38 @@ async def test_run_load_aggregates_successful_requests(monkeypatch):
     assert out.tokens_per_second > 0
     assert out.ttft_ms == [11.0, 13.0]
     assert out.e2e_ms == [101.0, 103.0]
+
+
+@pytest.mark.asyncio
+async def test_run_load_can_return_without_closing_client(monkeypatch):
+    class FakeClient:
+        def __init__(self, limits):
+            self.limits = limits
+
+        async def aclose(self):
+            raise AssertionError("client close should not be awaited")
+
+    async def fake_send_one(client, base_url, prompt, max_tokens, stream_response=True):
+        return RequestMetrics(True, 10.0, 100.0, 2)
+
+    monkeypatch.setattr(traffic.httpx, "AsyncClient", FakeClient)
+    monkeypatch.setattr(traffic, "_send_one", fake_send_one)
+
+    workload = WorkloadSpec(
+        name="unit",
+        prompt_template="",
+        num_requests=1,
+        concurrency=1,
+        input_len=1,
+        output_len=4,
+    )
+
+    out = await run_load(
+        "http://example.test",
+        workload,
+        prompts=["warmup", "p1"],
+        warmup_requests=1,
+        close_client=False,
+    )
+
+    assert out.successful == 1

@@ -40,13 +40,25 @@ console = Console()
 # LLM factory
 # ---------------------------------------------------------------------------
 
-def make_llm(backend: str = "deepseek", temperature: float = 0.3):
+def make_llm(backend: str = "openrouter", temperature: float = 0.3):
     """
     Create a LangChain ChatModel for the planner.
 
-    backend: "deepseek" (requires DEEPSEEK_API_KEY) or "claude" (requires ANTHROPIC_API_KEY)
+    backend:
+      "openrouter" (requires OPENROUTER_API_KEY) — default, uses deepseek/deepseek-chat
+      "deepseek"   (requires DEEPSEEK_API_KEY)   — direct DeepSeek API
+      "claude"     (requires ANTHROPIC_API_KEY)   — Anthropic direct
     """
-    if backend == "deepseek":
+    if backend == "openrouter":
+        from langchain_openai import ChatOpenAI
+        return ChatOpenAI(
+            model=os.getenv("OPENROUTER_MODEL", "deepseek/deepseek-chat"),
+            api_key=os.environ["OPENROUTER_API_KEY"],
+            base_url="https://openrouter.ai/api/v1",
+            temperature=temperature,
+            max_tokens=1024,
+        )
+    elif backend == "deepseek":
         from langchain_openai import ChatOpenAI
         return ChatOpenAI(
             model="deepseek-chat",
@@ -63,7 +75,7 @@ def make_llm(backend: str = "deepseek", temperature: float = 0.3):
             max_tokens=1024,
         )
     else:
-        raise ValueError(f"Unknown LLM backend '{backend}'. Choose 'deepseek' or 'claude'.")
+        raise ValueError(f"Unknown LLM backend '{backend}'. Choose 'openrouter', 'deepseek', or 'claude'.")
 
 
 # ---------------------------------------------------------------------------
@@ -144,6 +156,30 @@ def _run_baseline(workload_name: str, session_prefix: str) -> tuple[ExperimentSu
     return summary, bottleneck
 
 
+def prepare_initial_state(
+    workload_name: str,
+    session_prefix: str,
+    max_experiments: int = 8,
+) -> AgentState:
+    """
+    Build an AgentState with the baseline experiment already run or loaded.
+
+    Both the CLI and Chainlit UI need this setup before entering the graph:
+    planner/executor logic expects baseline_summary and best_summary to exist
+    so that proposed changes can be compared against the default config.
+    """
+    baseline_summary, baseline_bottleneck = _run_baseline(workload_name, session_prefix)
+
+    state = initial_state(workload_name, session_prefix, max_experiments=max_experiments)
+    state["baseline_summary"] = baseline_summary
+    state["best_summary"] = baseline_summary
+    state["experiment_summaries"] = [baseline_summary]
+    state["tried_experiment_ids"] = [baseline_summary["experiment_id"]]
+    state["current_bottleneck"] = baseline_bottleneck
+    state["experiments_remaining"] = max(0, max_experiments - 1)
+    return state
+
+
 # ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
@@ -166,24 +202,14 @@ def run_agent(
     prefix = session_prefix or f"agent_{workload_name}_{uuid.uuid4().hex[:6]}_"
     console.rule(f"[bold cyan]Agent: {workload_name}[/]  prefix={prefix}")
 
-    # 1. Baseline
-    baseline_summary, baseline_bottleneck = _run_baseline(workload_name, prefix)
+    # 1. Baseline + initial state. Baseline uses one experiment slot.
+    state = prepare_initial_state(workload_name, prefix, max_experiments=max_experiments)
 
-    # 2. Initial state
-    state = initial_state(workload_name, prefix, max_experiments=max_experiments)
-    state["baseline_summary"]    = baseline_summary
-    state["best_summary"]        = baseline_summary
-    state["experiment_summaries"] = [baseline_summary]
-    state["tried_experiment_ids"] = [baseline_summary["experiment_id"]]
-    state["current_bottleneck"]  = baseline_bottleneck
-    # Baseline used one slot
-    state["experiments_remaining"] = max_experiments - 1
-
-    # 3. Run graph
+    # 2. Run graph
     graph = build_graph(llm)
     final_state = graph.invoke(state)
 
-    # 4. Print summary
+    # 3. Print summary
     _print_run_summary(final_state)
     return final_state
 
