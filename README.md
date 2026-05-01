@@ -169,3 +169,4 @@ on every push/PR using `tests/fixtures/ci_baseline.json` as the pinned baseline.
 - **Phase 3** ✅ 5 golden workloads, grid sweep (60 experiments → ground truth), eval framework (outcome / efficiency / LLM-as-judge), 50 unit tests
 - **Phase 4** ✅ Plan-Execute-Reflect LangGraph agent (DeepSeek V3 / Claude Sonnet), config dedup, budget control, bottleneck-switch replan, 126 unit tests; `run_comparison.py` for Agent vs Default vs Random
 - **Phase 5** ✅ Evaluation harness + regression gate: commit-level eval reports, random/greedy baselines, mock CI gate, 130 unit tests
+- **Phase 6** 🚧 RAG knowledge retrieval + Chainlit UI: 6-doc corpus (PagedAttention, chunked prefill, prefix caching, speculative decoding, vLLM scheduler, tuning notes), citation-grounded planner, Chroma vector store, intent extraction, Chainlit async chat UI, final report tool, 148 unit tests
