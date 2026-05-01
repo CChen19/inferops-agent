@@ -89,16 +89,19 @@ async def on_message(message: cl.Message):
 
     t_start = time.time()
     step_count = 0
+    final_state: dict[str, Any] = state
 
-    async for event in graph.astream(state, stream_mode="updates"):
-        for node_name, patch in event.items():
-            step_count += 1
-            await _handle_node_event(node_name, patch, step_count)
+    async for mode, data in graph.astream(state, stream_mode=["updates", "values"]):
+        if mode == "updates":
+            for node_name, patch in data.items():
+                step_count += 1
+                await _handle_node_event(node_name, patch, step_count)
+        elif mode == "values":
+            final_state = data
 
     elapsed = time.time() - t_start
 
     # Step 3: Final report
-    final_state = await graph.ainvoke(state)  # get final state for report
     await _send_final_report(final_state, intent.workload_name, elapsed, session_prefix)
 
 

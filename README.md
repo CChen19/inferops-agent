@@ -161,6 +161,31 @@ Reports are written to `eval_reports/<sha>.md` and `<sha>.json`.
 The CI workflow (`.github/workflows/eval-mock.yml`) runs the mock eval + regression gate
 on every push/PR using `tests/fixtures/ci_baseline.json` as the pinned baseline.
 
+## Phase 6 RAG + Chainlit UI
+
+```bash
+# 1. Install UI extras (Chainlit + chromadb + sentence-transformers)
+uv pip install -e ".[dev,ui]"
+
+# 2. Build the knowledge index (downloads bge-base-zh-v1.5, runs once)
+python scripts/build_corpus.py
+
+# 3. Verify index was built
+python scripts/build_corpus.py --dry-run
+
+# 4. Launch Chainlit UI (requires DEEPSEEK_API_KEY or ANTHROPIC_API_KEY)
+INFEROPS_LLM=deepseek chainlit run app.py
+# open http://localhost:8000 and type e.g.:
+#   "I have Qwen2.5-1.5B on RTX 3060, chat scenario, maximize throughput, budget=5"
+```
+
+The Planner now retrieves relevant chunks from the corpus before generating hypotheses.
+Every hypothesis rationale must include a `[source: <document>]` citation — uncited
+hypotheses are rejected before they reach the executor.
+
+To add new corpus documents, drop Markdown files into `data/corpus/` and re-run
+`scripts/build_corpus.py --reset`.
+
 ## Roadmap
 
 - **Phase 0** ✅ repo skeleton, vLLM + Qwen2.5-0.5B baseline, LangGraph mental model
@@ -169,4 +194,4 @@ on every push/PR using `tests/fixtures/ci_baseline.json` as the pinned baseline.
 - **Phase 3** ✅ 5 golden workloads, grid sweep (60 experiments → ground truth), eval framework (outcome / efficiency / LLM-as-judge), 50 unit tests
 - **Phase 4** ✅ Plan-Execute-Reflect LangGraph agent (DeepSeek V3 / Claude Sonnet), config dedup, budget control, bottleneck-switch replan, 126 unit tests; `run_comparison.py` for Agent vs Default vs Random
 - **Phase 5** ✅ Evaluation harness + regression gate: commit-level eval reports, random/greedy baselines, mock CI gate, 130 unit tests
-- **Phase 6** 🚧 RAG knowledge retrieval + Chainlit UI: 6-doc corpus (PagedAttention, chunked prefill, prefix caching, speculative decoding, vLLM scheduler, tuning notes), citation-grounded planner, Chroma vector store, intent extraction, Chainlit async chat UI, final report tool, 148 unit tests
+- **Phase 6** ✅ RAG knowledge retrieval + Chainlit UI: 6-doc corpus (PagedAttention, chunked prefill, prefix caching, speculative decoding, vLLM scheduler, tuning notes), citation-grounded planner, Chroma vector store, intent extraction, Chainlit async chat UI, final report tool, 148 unit tests

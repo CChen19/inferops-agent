@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from inferops.tools.final_report import FinalReportInput, FinalReportOutput, write_final_report
 
 _BASELINE = {
@@ -99,6 +101,3 @@ def test_write_final_report_counts_sections(tmp_path):
     result = write_final_report(inp)
     # Executive Summary + Experiment Log + Citations + Recommendation = 4
     assert result.sections_written == 4
-
-
-import pytest
