@@ -10,7 +10,7 @@
 
 核心定位一句话：
 
-> InferOps 不是 chatbot。它是一个把 vLLM 调参变成可控闭环实验的 Agent workflow：LLM 提假设，代码做校验，工具确定性执行，规则控制循环，eval 衡量质量。
+> InferOps 不是 chatbot，也不是自由 ReAct Agent。它是 **agentic workflow**：tool 协议写死，LLM 只决定下一步试什么配置。代码校验、确定性执行、规则停循环，eval 衡量质量。
 
 ---
 
