@@ -130,6 +130,64 @@ RAG 只给 planner 提供 citation。新文档进 corpus 不会自动变成可�
 
 ## 2. 我是怎么设计的？为什么要这样设计？
 
+### 2.0 这是 workflow 还是 Agent？（高频追问）
+
+面试官如果抓住 “tool 调用顺序是写死的”，不要硬辩成完全自主 Agent。先承认，再划清 **控制流** 和 **决策内容**。
+
+Anthropic《Building Effective Agents》的定义：
+
+- **Workflow**：LLM 和 tools 走预先写好的代码路径，下一步由代码决定。
+- **Agent**：LLM 根据环境反馈，自己决定下一步做什么、调哪个 tool。
+
+按这个标准，InferOps 的 **执行层是 workflow**。Executor 里固定是：
+
+```text
+propose_config_patch → run_benchmark → analyze_bottleneck → compare_experiments
+```
+
+Reflector 的 continue / replan / stop 也是规则，不是模型选边。这和 “LLM 自己决定调哪个 tool” 的 ReAct Agent 确实不是一类东西。
+
+但它也不是普通 DAG workflow。普通 workflow 在编译期就知道要跑哪几步、试哪个配置。InferOps 在运行期才决定：
+
+- 下一步改哪个参数、改成什么值（Planner + RAG + 实验历史）
+- 还要不要继续、要不要丢掉当前 plan（测量结果 + 瓶颈是否切换）
+- 循环转几圈（预算上限内，由反馈停，不是写死 3 次实验）
+
+更准确的名字：
+
+> **Agentic workflow / constrained agent**：agency 在 “下一步试什么”，不在 “下一步调哪个函数”。
+
+对应 Anthropic 的 **evaluator-optimizer** 变体：生成假设 → 环境给出可验证反馈 → 再生成。区别是 evaluator 我用规则而不是第二个 LLM，因为吞吐、延迟、是否重复、是否超预算都可以确定性判断。
+
+可以把 agency 画成谱，不要画成非黑即白：
+
+```text
+纯脚本 / grid search
+  → 固定 DAG + LLM 填空
+  → InferOps：固定 tool 协议 + LLM 选实验 + 反馈闭环     ← 这里
+  → allowlist 内 LLM 选 tool
+  → 自由 ReAct
+```
+
+为什么 agency 只放在 Planner：
+
+| 部分 | 不确定性 | 失败代价 | 谁来做 |
+|---|---|---|---|
+| 下一步试什么配置 | 高：取决于瓶颈、历史、workload | 一次浪费的实验 | LLM |
+| 工具怎么调、什么顺序 | 低：实验室协议是固定的 | GPU OOM、无效实验、不可复现 | 代码 |
+
+类比：调参工程师也不会每次现场决定 “要不要先跑 nvidia-smi”。实验协议是 workflow；**根据上次结果决定下一个 hypothesis** 才是他们的判断力。InferOps 自动化的是后一件事。
+
+如果对方坚持 “Agent 必须自己选 tool”，就明确说：
+
+> 若标准是 open-ended tool calling，这不是那种 Agent。若标准是闭环里由模型根据环境反馈决定下一步行动内容，这是 constrained agent。我故意不把 tool 选择交给模型，因为这边的 tool 有真实副作用。
+
+不要说的话：
+
+- “这就是完全自主 Agent”
+- “LangGraph 写了所以一定是 Agent”
+- 把 `@tool` registry 说成正在用的 ReAct
+
 ### 2.1 系统分层
 
 ```text
@@ -514,6 +572,9 @@ write_final_report + Chainlit 表格
 ---
 
 ## 5. 高频追问（短答）
+
+**这不就是 workflow 吗？和 Agent 定义冲突怎么办？**  
+执行层确实是 workflow：tool 顺序写死，Reflector 用规则路由。Agency 在 Planner：下一步试哪个配置、要不要因瓶颈切换而重规划，这些在运行前不知道。更准确的叫法是 agentic workflow / constrained agent。Anthropic 也把 evaluator-optimizer 归在 workflow，同时承认它是 agentic system。我把模型放在高不确定性的规划上，把高副作用的执行留给代码。
 
 **为什么不用纯 grid search？**  
 Grid 当离线 ground truth。在线用有限预算做 targeted search。
