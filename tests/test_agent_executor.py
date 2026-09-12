@@ -82,7 +82,7 @@ def test_executor_skips_duplicate_without_spending_budget():
     assert "experiments_remaining" not in patch
 
 
-def test_executor_uses_existing_result_and_updates_best(result_b):
+def test_executor_uses_existing_result_but_does_not_promote_without_confirm(result_b):
     state = _state_with_baseline()
     state["hypotheses"] = [
         {
@@ -109,10 +109,12 @@ def test_executor_uses_existing_result_and_updates_best(result_b):
 
     mock_run.assert_not_called()
     assert patch_out["hypotheses"][0]["status"] == "success"
-    assert patch_out["best_summary"]["experiment_id"] == "sess_max_num_batched_tokens_4096"
+    # ⑥: executor records the search result; Reflect owns best via is_confirmed_promotable
+    assert patch_out["best_summary"]["experiment_id"] == "sess_baseline"
     assert patch_out["experiment_summaries"][-1]["vs_baseline_pct"] == 19.0
     assert patch_out["experiments_remaining"] == 3
-    assert patch_out["best_summary"]["validity_status"] == "valid"
+    assert patch_out["last_result"] is result_b
+    assert patch_out["trajectory"][-1]["result"]["promoted_to_best"] is False
 
 
 def test_executor_does_not_promote_high_score_without_evidence(result_b_unevidenced):
@@ -225,4 +227,5 @@ def test_executor_runs_benchmark_when_no_existing_result(result_b):
 
     assert patch_out["hypotheses"][0]["status"] == "success"
     assert patch_out["experiment_summaries"][-1]["throughput_rps"] == 2.38
-    assert patch_out["best_summary"]["experiment_id"] == "sess_max_num_batched_tokens_4096"
+    assert patch_out["best_summary"]["experiment_id"] == "sess_baseline"
+    assert patch_out["trajectory"][-1]["result"]["promoted_to_best"] is False

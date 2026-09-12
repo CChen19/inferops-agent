@@ -26,6 +26,13 @@ def _base_state(bottleneck: str = "compute-bound") -> AgentState:
         "e2e_p50_ms": 1015.0,
         "bottleneck": bottleneck,
         "vs_baseline_pct": 0.0,
+        "run_id": "baseline-run",
+        "validity_status": "valid",
+        "error_rate": 0.0,
+        "promotable": True,
+        "has_config_evidence": True,
+        "mlflow_run_id": None,
+        "failure_reason": "",
     }
     return s
 
@@ -42,6 +49,13 @@ def _add_summary(state: AgentState, vs_baseline_pct: float, bottleneck: str) -> 
         "e2e_p50_ms": 900.0,
         "bottleneck": bottleneck,
         "vs_baseline_pct": vs_baseline_pct,
+        "run_id": f"run-{len(state['experiment_summaries'])}",
+        "validity_status": "valid",
+        "error_rate": 0.0,
+        "promotable": True,
+        "has_config_evidence": True,
+        "mlflow_run_id": None,
+        "failure_reason": "",
     })
     return state
 
@@ -61,6 +75,7 @@ def test_stop_on_budget_exhausted():
     patch = reflector_node(s)
     assert patch["should_stop"] is True
     assert "budget" in patch["stop_reason"]
+    assert patch["next_action"] == "stop"
 
 
 def test_no_stop_on_significant_improvement():
@@ -85,7 +100,8 @@ def test_stop_on_max_streak():
     s = _add_summary(s, vs_baseline_pct=0.0, bottleneck="compute-bound")
     patch = reflector_node(s)
     assert patch["should_stop"] is True
-    assert "no_improvement" in patch["stop_reason"]
+    assert patch["stop_reason"] == "no_reliable_improvement"
+    assert patch["next_action"] == "stop"
 
 
 def test_streak_resets_on_improvement():
@@ -134,6 +150,24 @@ def test_route_to_executor_when_pending_hypotheses():
 def test_route_to_planner_when_no_pending_hypotheses():
     s = _base_state()
     s["should_stop"] = False
+    s["hypotheses"] = []
+    assert route_after_reflector(s) == "planner"
+
+
+def test_route_remeasure_goes_to_executor():
+    s = _base_state()
+    s["should_stop"] = False
+    s["next_action"] = "remeasure"
+    s["hypotheses"] = [_pending_hyp()]
+    assert route_after_reflector(s) == "executor"
+
+
+def test_route_rollback_follows_pending_or_planner():
+    s = _base_state()
+    s["should_stop"] = False
+    s["next_action"] = "rollback"
+    s["hypotheses"] = [_pending_hyp()]
+    assert route_after_reflector(s) == "executor"
     s["hypotheses"] = []
     assert route_after_reflector(s) == "planner"
 

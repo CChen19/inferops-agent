@@ -1,0 +1,36 @@
+{
+  "step": 2,
+  "node": "reflector",
+  "workload": "chat_short",
+  "action": "reflect",
+  "hypothesis": {
+    "id": "h1",
+    "param": "max_num_batched_tokens",
+    "value": 4096,
+    "text": "rps=2.0 compute-bound; raise batch tokens [source: vllm_scheduler]"
+  },
+  "config_diff": {
+    "param": "max_num_batched_tokens",
+    "from": "baseline",
+    "to": 4096,
+    "summary": "max_num_batched_tokens: baseline → 4096"
+  },
+  "cited_run_ids": ["nrb_00", "nrc_00", "nrb_01", "nrc_01", "nrb_02", "nrc_02"],
+  "constraint_checks": {
+    "validity_status": "valid",
+    "slo_ok": true,
+    "budget_remaining": 3,
+    "is_duplicate": false,
+    "verdict": "no_diff",
+    "phase": "confirmation",
+    "confirmed_promotable": false,
+    "gate": "is_confirmed_promotable"
+  },
+  "next_action": "stop",
+  "stop_reason": "no_reliable_improvement",
+  "reasoning": "next_action=stop reason=confirmation_no_diff",
+  "result": {
+    "promoted_to_best": false,
+    "confirmation": {"verdict": "no_diff", "phase": "confirmation"}
+  }
+}

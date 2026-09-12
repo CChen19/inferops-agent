@@ -6,6 +6,9 @@ Graph topology:
               └─────────┴───────────────────┘
                   or → END
 
+Reflect owns continue/remeasure/rollback/stop. Best promotion is only via
+``is_confirmed_promotable`` (Week-1 ``is_promotable`` + ⑤ confirmation).
+
 Entry point: run_agent() — handles baseline, builds initial state, invokes graph.
 """
 

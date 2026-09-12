@@ -39,6 +39,7 @@ class ExperimentSummary(TypedDict):
     # Single full-gate result — MUST be set via is_promotable(result), never guessed
     promotable: bool
     failure_reason: str  # notes / error from failed contract rows ("" if none)
+    error_rate: float | None  # ④ field; Reflect SLO reads this — never invent 0
 
 
 # ---------------------------------------------------------------------------
@@ -66,6 +67,15 @@ class AgentState(TypedDict):
     no_improvement_streak: int
     should_stop: bool
     stop_reason: str
+    next_action: str             # continue | remeasure | rollback | stop
+    last_skip_reason: str        # executor → reflector (e.g. duplicate_candidate)
+    last_skipped_hypothesis_id: str
+    remeasure_count: int
+    last_result: Any             # latest ExperimentResult (promotion gate input)
+    confirmation_decision: Any   # ConfirmationDecision | None — never hand-minted
+    repeat_ledgers: dict[str, Any] | None
+    confirmation_target: dict[str, Any] | None  # {param, value} the ⑤ campaign is bound to
+    confirmation_bound_run_ids: list[str] | None  # candidate run_ids from that campaign
 
     # Trajectory (for eval/judge in Phase 3 eval framework)
     trajectory: list[dict[str, Any]]
@@ -135,6 +145,15 @@ def initial_state(
         "no_improvement_streak": 0,
         "should_stop":           False,
         "stop_reason":           "",
+        "next_action":           "continue",
+        "last_skip_reason":      "",
+        "last_skipped_hypothesis_id": "",
+        "remeasure_count":       0,
+        "last_result":           None,
+        "confirmation_decision": None,
+        "repeat_ledgers":        None,
+        "confirmation_target":   None,
+        "confirmation_bound_run_ids": None,
         "trajectory":            [],
         "messages":              [],
     }
@@ -169,6 +188,16 @@ def summary_from_result(
     def _round(v: float | None, n: int) -> float | None:
         return round(v, n) if v is not None else None
 
+    def _error_rate_from_result(res) -> float | None:
+        err = getattr(res, "error_rate", None)
+        if err is not None:
+            return _round(err, 4)
+        total = getattr(res, "total_requests", None)
+        ok = getattr(res, "successful_requests", None)
+        if total and ok is not None:
+            return _round(1.0 - (ok / total), 4)
+        return None
+
     return ExperimentSummary(
         experiment_id=result.experiment_id,
         param_changed=param_changed,
@@ -192,6 +221,7 @@ def summary_from_result(
         failure_reason=(getattr(result, "notes", None) or "") if (
             status_value == "failed"
         ) else "",
+        error_rate=_error_rate_from_result(result),
     )
 
 
