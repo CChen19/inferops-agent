@@ -1,0 +1,14 @@
+{
+  "id": "post_persist_pre_commit_interrupt",
+  "schema": "inferops.recovery_goldens.v1",
+  "synthetic": true,
+  "gpu_sampled": false,
+  "driver": "post_persist_pre_commit_interrupt",
+  "expect": {
+    "single_tool_call": true,
+    "no_double_budget": true,
+    "budget_consumed": true,
+    "confirmed_promotable": false,
+    "week1_gate_closed": true
+  }
+}

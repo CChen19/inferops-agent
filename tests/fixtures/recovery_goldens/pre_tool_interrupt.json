@@ -1,0 +1,14 @@
+{
+  "id": "pre_tool_interrupt",
+  "schema": "inferops.recovery_goldens.v1",
+  "synthetic": true,
+  "gpu_sampled": false,
+  "driver": "pre_tool_interrupt",
+  "expect": {
+    "single_tool_call": true,
+    "confirmed_promotable": false,
+    "next_action_or_stop": true,
+    "next_action": "stop",
+    "week1_gate_closed": true
+  }
+}

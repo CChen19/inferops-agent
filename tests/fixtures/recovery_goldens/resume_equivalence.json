@@ -1,0 +1,11 @@
+{
+  "id": "resume_equivalence",
+  "schema": "inferops.recovery_goldens.v1",
+  "synthetic": true,
+  "gpu_sampled": false,
+  "driver": "resume_equivalence",
+  "expect": {
+    "confirmed_promotable": false,
+    "week1_gate_closed": true
+  }
+}

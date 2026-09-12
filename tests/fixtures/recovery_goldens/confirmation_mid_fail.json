@@ -1,0 +1,18 @@
+{
+  "id": "confirmation_mid_fail",
+  "schema": "inferops.recovery_goldens.v1",
+  "synthetic": true,
+  "gpu_sampled": false,
+  "driver": "confirmation_mid_fail",
+  "expect": {
+    "require_recovery": true,
+    "recovery_code": "confirmation_slot_failed",
+    "result_persisted": false,
+    "budget_consumed": true,
+    "partial_not_confirmed": true,
+    "best_identity_unchanged": true,
+    "no_double_budget": true,
+    "next_action": "remeasure",
+    "confirmed_promotable": false
+  }
+}

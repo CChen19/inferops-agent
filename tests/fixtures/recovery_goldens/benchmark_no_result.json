@@ -1,0 +1,18 @@
+{
+  "id": "benchmark_no_result",
+  "schema": "inferops.recovery_goldens.v1",
+  "synthetic": true,
+  "gpu_sampled": false,
+  "driver": "benchmark_no_result",
+  "expect": {
+    "require_recovery": true,
+    "recovery_code": "benchmark_error",
+    "result_persisted": false,
+    "budget_consumed": true,
+    "no_forged_summary": true,
+    "no_double_budget": true,
+    "next_action": "rollback",
+    "confirmed_promotable": false,
+    "week1_gate_closed": true
+  }
+}

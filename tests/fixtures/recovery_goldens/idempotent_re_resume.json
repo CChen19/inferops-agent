@@ -1,0 +1,12 @@
+{
+  "id": "idempotent_re_resume",
+  "schema": "inferops.recovery_goldens.v1",
+  "synthetic": true,
+  "gpu_sampled": false,
+  "driver": "idempotent_re_resume",
+  "expect": {
+    "single_tool_call": true,
+    "confirmed_promotable": false,
+    "week1_gate_closed": true
+  }
+}

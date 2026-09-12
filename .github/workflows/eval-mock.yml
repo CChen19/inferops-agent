@@ -25,6 +25,9 @@ jobs:
       - name: Measurement-trust golden gate (CPU/fixture; GPU-not-run ≠ pass)
         run: .venv/bin/python scripts/run_measurement_goldens.py
 
+      - name: Recovery golden gate (CPU/fixture; GPU-not-run ≠ pass)
+        run: .venv/bin/python scripts/run_recovery_goldens.py
+
       - name: Run mock eval harness + regression gate
         run: |
           .venv/bin/python scripts/run_eval.py \

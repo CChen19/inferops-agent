@@ -1,0 +1,31 @@
+{
+  "schema": "inferops.recovery_goldens.v1",
+  "cpu_only": true,
+  "gpu_queued": false,
+  "required_ids": [
+    "propose_tool_error",
+    "benchmark_no_result",
+    "benchmark_error_failed_result",
+    "confirmation_mid_fail",
+    "prior_success_current_fail",
+    "pre_tool_interrupt",
+    "post_persist_pre_commit_interrupt",
+    "idempotent_re_resume",
+    "resume_equivalence"
+  ],
+  "tune_contract": {
+    "status": "frozen",
+    "tip_sha": "d1e5e8259601ec3eca69e5852cdb3774dfd9881d",
+    "master_sha": "45d2d4ed5253fa29ae98cd25826b894597c16288",
+    "pr": "https://github.com/CChen19/inferops-agent/pull/11",
+    "imports": [
+      "inferops.agent.recovery.RECOVERY_FIELDS",
+      "inferops.agent.recovery.recovery_event",
+      "inferops.agent.recovery.current_attempt_latest",
+      "inferops.agent.graph.build_graph",
+      "inferops.agent.graph.graph_invoke_config",
+      "inferops.agent.graph.session_thread_id",
+      "inferops.agent.confirm_campaign.confirmation_slot_experiment_id"
+    ]
+  }
+}
