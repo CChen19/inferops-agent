@@ -37,7 +37,9 @@ def test_run_load_workaround_returns_before_asyncio_cleanup(monkeypatch, config)
     assert out is sentinel
     assert time.time() - started < 0.25
     assert captured["close_client"] is False
-    assert captured["stream_response"] is False
+    # Client TTFT requires streaming (P0-④); non-stream leaves ttft_ms=None.
+    assert captured["stream_response"] is True
+    assert captured["run_id"] is None
 
 
 def test_run_load_workaround_propagates_load_errors(monkeypatch, config):

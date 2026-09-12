@@ -55,21 +55,23 @@ class RunBenchmarkInput(BaseModel):
 
 
 class RunBenchmarkOutput(BaseModel):
-    """Output from run_benchmark."""
+    """Output from run_benchmark. Missing metrics are None (never invent 0)."""
     experiment_id: str
     workload_name: str
-    throughput_rps: float
-    tokens_per_second: float
-    ttft_p50_ms: float
-    ttft_p99_ms: float
-    e2e_p50_ms: float
-    e2e_p99_ms: float
+    throughput_rps: float | None
+    tokens_per_second: float | None
+    ttft_p50_ms: float | None
+    ttft_p99_ms: float | None
+    e2e_p50_ms: float | None
+    e2e_p99_ms: float | None
+    error_rate: float | None = None
     gpu_util_pct: float | None
     gpu_mem_gb: float | None
     success_rate: str
     mlflow_run_id: str | None
     run_id: str = ""
     status: str = "insufficient_evidence"
+    ledger_path: str | None = None
     error: str = ""
 
 
@@ -160,10 +162,12 @@ def run_benchmark(inp: RunBenchmarkInput) -> RunBenchmarkOutput:
         ttft_p99_ms=result.ttft.p99,
         e2e_p50_ms=result.e2e_latency.p50,
         e2e_p99_ms=result.e2e_latency.p99,
+        error_rate=result.error_rate,
         gpu_util_pct=result.gpu_utilization_pct,
         gpu_mem_gb=result.gpu_memory_used_gb,
         success_rate=f"{result.successful_requests}/{result.total_requests}",
         mlflow_run_id=result.mlflow_run_id,
         run_id=result.run_id,
         status=status_value,
+        ledger_path=result.ledger_path,
     )

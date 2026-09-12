@@ -31,6 +31,8 @@ from typing import Callable
 from rich.console import Console
 from rich.table import Table
 
+from inferops.metrics.aggregate import format_aggregate_report, recalculate_from_ledger
+from inferops.metrics.ledger import persist_ledger
 from inferops.observability import init_mlflow, log_experiment_result, mlflow_run
 from inferops.schemas import (
     ExperimentConfig,
@@ -47,7 +49,7 @@ from inferops.schemas import (
     resolve_git_sha,
 )
 from inferops.tools.gpu_monitor import GPUMonitor
-from inferops.tools.traffic import extract_percentiles, run_load
+from inferops.tools.traffic import run_load
 from inferops.tools.vllm_process import (
     VLLMProcess,
     assert_listener_bound_to_child,
@@ -127,6 +129,10 @@ def _run_load_with_cleanup_workaround(
     prompts: list[str],
     timeout_s: float = 400,
     poll_interval_s: float = 2,
+    *,
+    run_id: str | None = None,
+    stream_response: bool = True,
+    cache_enabled: bool | None = None,
 ):
     """
     Run traffic in a worker thread and publish the result before asyncio cleanup.
@@ -135,6 +141,9 @@ def _run_load_with_cleanup_workaround(
     after the load coroutine has returned. The result must be appended inside
     the coroutine, not around asyncio.run(...), so the caller can continue even
     if the worker thread gets stuck during event-loop shutdown.
+
+    Client TTFT requires stream_response=True (default). Non-stream leaves
+    ttft_ms=None rather than inventing E2E-as-TTFT.
     """
     import threading
 
@@ -147,7 +156,9 @@ def _run_load_with_cleanup_workaround(
             workload=cfg.workload,
             prompts=prompts,
             close_client=False,
-            stream_response=False,
+            stream_response=stream_response,
+            run_id=run_id,
+            cache_enabled=cache_enabled,
         )
         result.append(load)
 
@@ -455,17 +466,21 @@ def run_experiment(
         evidence=None,
         actual=None,
     ) -> ExperimentResult:
+        # Missing metrics stay None / empty_latency — never fake 0 gains.
         return ExperimentResult(
             experiment_id=cfg.experiment_id,
             config=cfg,
             total_requests=0,
             successful_requests=0,
             total_time_s=0.0,
-            throughput_rps=0.0,
-            tokens_per_second=0.0,
+            throughput_rps=None,
+            tokens_per_second=None,
+            error_rate=None,
             ttft=empty_latency(),
             tpot=empty_latency(),
             e2e_latency=empty_latency(),
+            gpu_memory_used_gb=None,
+            gpu_utilization_pct=None,
             run_id=run_id,
             schema_version="1",
             code_sha=code_sha,
@@ -535,11 +550,22 @@ def run_experiment(
         log("vLLM ready. Starting GPU monitor + load …")
 
         gpu = GPUMonitor(interval_s=0.5)
-        gpu.start()
+        gpu_started = False
         gpu_summary = None
         load = None
         try:
-            load = _run_load_with_cleanup_workaround(cfg, prompts)
+            try:
+                gpu.start()
+                gpu_started = True
+            except Exception as gpu_exc:
+                log(f"GPU monitor unavailable ({gpu_exc}); util/mem will be n/a")
+            load = _run_load_with_cleanup_workaround(
+                cfg,
+                prompts,
+                run_id=run_id,
+                stream_response=True,
+                cache_enabled=cfg.enable_prefix_caching,
+            )
         except Exception as exc:
             if on_progress:
                 on_progress("status:failed:load")
@@ -549,39 +575,67 @@ def run_experiment(
             log_experiment_result(failed)
             raise BenchmarkError(str(exc), result=failed) from exc
         finally:
-            gpu_summary = gpu.stop()
+            if gpu_started:
+                gpu_summary = gpu.stop()
             if proc is not None:
                 log("Stopping vLLM …")
                 proc.stop()
 
-        assert load is not None and gpu_summary is not None
+        assert load is not None
+        assert load.ledger is not None
 
-        ttft_p = extract_percentiles(load.ttft_ms)
-        e2e_p = extract_percentiles(load.e2e_ms)
-        tpot_p = {k: max(0.0, e2e_p[k] - ttft_p[k]) for k in ttft_p}
+        # Persist ledger under logs/ for independent recalculation.
+        ledger_path = Path("logs") / f"ledger_{run_id}.json"
+        persist_ledger(load.ledger, ledger_path)
+
+        # GPU only if sampled (samples > 0). Never invent 0 util as a measurement.
+        gpu_util = None
+        gpu_mem = None
+        if gpu_summary is not None and gpu_summary.samples > 0:
+            gpu_util = gpu_summary.avg_util_pct
+            gpu_mem = gpu_summary.max_mem_used_gb
+
+        agg = recalculate_from_ledger(
+            load.ledger,
+            gpu_utilization_pct=gpu_util,
+            gpu_memory_used_gb=gpu_mem,
+        )
 
         status = derive_status(
             evidence=evidence,
             actual_config=actual,
             requested_config=requested,
-            successful_requests=load.successful,
+            successful_requests=agg.successful_requests,
         )
+
+        def _lp(stat) -> LatencyPercentiles:
+            return LatencyPercentiles(
+                p50=stat.p50,
+                p90=stat.p90,
+                p95=stat.p95,
+                p99=stat.p99,
+                sample_n=stat.sample_n,
+                sample_scope=stat.sample_scope,
+            )
 
         result = ExperimentResult(
             experiment_id=cfg.experiment_id,
             config=cfg,
-            total_requests=load.total_requests,
-            successful_requests=load.successful,
-            total_time_s=load.total_time_s,
-            throughput_rps=load.throughput_rps,
-            tokens_per_second=load.tokens_per_second,
-            ttft=LatencyPercentiles(**ttft_p),
-            tpot=LatencyPercentiles(**tpot_p),
-            e2e_latency=LatencyPercentiles(**e2e_p),
-            gpu_memory_used_gb=gpu_summary.max_mem_used_gb,
-            gpu_utilization_pct=gpu_summary.avg_util_pct,
+            total_requests=agg.total_requests,
+            successful_requests=agg.successful_requests,
+            total_time_s=agg.total_time_s if agg.total_time_s is not None else 0.0,
+            throughput_rps=agg.throughput_rps,
+            tokens_per_second=agg.tokens_per_second,
+            error_rate=agg.error_rate,
+            ttft=_lp(agg.ttft),
+            tpot=_lp(agg.tpot),
+            e2e_latency=_lp(agg.e2e),
+            gpu_memory_used_gb=gpu_mem,
+            gpu_utilization_pct=gpu_util,
             raw_ttft_ms=load.ttft_ms,
             raw_e2e_ms=load.e2e_ms,
+            request_ledger=load.ledger.model_dump(mode="json"),
+            ledger_path=str(ledger_path),
             run_id=run_id,
             schema_version="1",
             code_sha=code_sha,
@@ -593,12 +647,16 @@ def run_experiment(
             status=status,
             workload_hash=compute_workload_hash(cfg.workload),
             hardware=hardware,
+            notes=format_aggregate_report(agg).strip(),
         )
 
         log_experiment_result(result)
+        rps_s = f"{result.throughput_rps:.1f}" if result.throughput_rps is not None else "n/a"
+        ttft_s = f"{result.ttft.p50:.0f}" if result.ttft.p50 is not None else "n/a"
         log(
-            f"Done — {result.throughput_rps:.1f} rps, TTFT p50={result.ttft.p50:.0f}ms, "
-            f"status={result.status.value}, run_id={result.run_id}"
+            f"Done — {rps_s} rps, TTFT p50={ttft_s}ms, "
+            f"status={result.status.value}, run_id={result.run_id}, "
+            f"ledger={ledger_path}"
         )
         if on_progress:
             on_progress(f"status:{result.status.value}:complete")
@@ -615,21 +673,26 @@ def print_results_table(results: list[ExperimentResult]) -> None:
     t.add_column("TTFT p99", justify="right")
     t.add_column("E2E p50", justify="right")
     t.add_column("E2E p99", justify="right")
+    t.add_column("err%", justify="right")
     t.add_column("GPU util%", justify="right")
     t.add_column("GPU mem GB", justify="right")
+
+    def _f(v: float | None, fmt: str) -> str:
+        return fmt.format(v) if v is not None else "—"
 
     for r in results:
         t.add_row(
             r.experiment_id,
             r.config.workload.name,
-            f"{r.throughput_rps:.2f}",
-            f"{r.tokens_per_second:.0f}",
-            f"{r.ttft.p50:.0f}ms",
-            f"{r.ttft.p99:.0f}ms",
-            f"{r.e2e_latency.p50:.0f}ms",
-            f"{r.e2e_latency.p99:.0f}ms",
-            f"{r.gpu_utilization_pct:.0f}%" if r.gpu_utilization_pct else "—",
-            f"{r.gpu_memory_used_gb:.2f}" if r.gpu_memory_used_gb else "—",
+            _f(r.throughput_rps, "{:.2f}"),
+            _f(r.tokens_per_second, "{:.0f}"),
+            _f(r.ttft.p50, "{:.0f}ms"),
+            _f(r.ttft.p99, "{:.0f}ms"),
+            _f(r.e2e_latency.p50, "{:.0f}ms"),
+            _f(r.e2e_latency.p99, "{:.0f}ms"),
+            _f(r.error_rate, "{:.1%}") if r.error_rate is not None else "—",
+            _f(r.gpu_utilization_pct, "{:.0f}%"),
+            _f(r.gpu_memory_used_gb, "{:.2f}"),
         )
 
     console.print(t)

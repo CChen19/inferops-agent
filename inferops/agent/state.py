@@ -159,18 +159,30 @@ def summary_from_result(
     )
 
     primary_val = getattr(result, primary_metric, result.throughput_rps)
-    vs_baseline = (primary_val - baseline_primary) / baseline_primary * 100 if baseline_primary else 0.0
+    if primary_val is None:
+        primary_val = 0.0
+    vs_baseline = (
+        (primary_val - baseline_primary) / baseline_primary * 100
+        if baseline_primary
+        else 0.0
+    )
     status = result.status
     status_value = status.value if isinstance(status, ExperimentValidityStatus) else str(status)
+
+    def _round(v: float | None, n: int) -> float:
+        return round(v, n) if v is not None else 0.0
+
     return ExperimentSummary(
         experiment_id=result.experiment_id,
         param_changed=param_changed,
         value_changed=value_changed,
-        throughput_rps=round(result.throughput_rps, 3),
-        tokens_per_second=round(result.tokens_per_second, 1),
-        ttft_p50_ms=round(result.ttft.p50, 1),
-        ttft_p99_ms=round(result.ttft.p99, 1),
-        e2e_p50_ms=round(result.e2e_latency.p50, 1),
+        # Summary table keeps floats for UI; missing → 0 with validity_status
+        # carrying the trust signal (unevidenced / failed ≠ best).
+        throughput_rps=_round(result.throughput_rps, 3),
+        tokens_per_second=_round(result.tokens_per_second, 1),
+        ttft_p50_ms=_round(result.ttft.p50, 1),
+        ttft_p99_ms=_round(result.ttft.p99, 1),
+        e2e_p50_ms=_round(result.e2e_latency.p50, 1),
         bottleneck=bottleneck,
         vs_baseline_pct=round(vs_baseline, 2),
         run_id=getattr(result, "run_id", "") or "",

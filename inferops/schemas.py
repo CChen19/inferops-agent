@@ -190,37 +190,56 @@ class HardwareInfo(BaseModel):
 # ---------------------------------------------------------------------------
 
 class LatencyPercentiles(BaseModel):
-    p50: float
-    p90: float
-    p95: float
-    p99: float
+    """Latency percentiles. Missing samples → None (never invent 0.0).
+
+    `sample_n` / `sample_scope` document which ledger rows entered the
+    percentile (Week-2 P0-④). Legacy rows may omit them (default 0 / "").
+    """
+
+    p50: float | None = None
+    p90: float | None = None
+    p95: float | None = None
+    p99: float | None = None
+    sample_n: int = 0
+    sample_scope: str = ""
 
 
 class ExperimentResult(BaseModel):
-    """Collected metrics from a completed experiment run + Week-1 contract."""
+    """Collected metrics from a completed experiment run + Week-1 contract.
+
+    Week-2 P0-④: aggregates are recalculable from `request_ledger` via
+    `inferops.metrics.recalculate_from_ledger`. Missing metrics are None —
+    never defaulted to 0 to invent gains.
+    """
 
     experiment_id: str
     config: ExperimentConfig
 
-    # Throughput
+    # Throughput (None = not computable; do not treat as 0 gain)
     total_requests: int
     successful_requests: int
     total_time_s: float
-    throughput_rps: float          # successful / total_time_s
-    tokens_per_second: float       # output tokens / total_time_s
+    throughput_rps: float | None = None  # successful / window_s
+    tokens_per_second: float | None = None  # success output tokens / window_s
+    error_rate: float | None = None  # failed / total_requests (measured)
 
-    # Latency
-    ttft: LatencyPercentiles       # Time-to-first-token (ms)
-    tpot: LatencyPercentiles       # Time-per-output-token (ms)
-    e2e_latency: LatencyPercentiles  # End-to-end (ms)
+    # Latency — sample_scope on each LatencyPercentiles states eligibility
+    ttft: LatencyPercentiles  # client TTFT (ms); requires streaming
+    tpot: LatencyPercentiles  # per-request TPOT; N/A when output_tokens < 2
+    e2e_latency: LatencyPercentiles
 
-    # Resource
+    # Resource — only when sampled (GPU) / pricing exists (cost)
     gpu_memory_used_gb: float | None = None
     gpu_utilization_pct: float | None = None
+    cost_usd: float | None = None
 
-    # Raw per-request latency (populated by bench_runner; needed for bootstrap CI)
+    # Raw per-request latency (compat for bootstrap CI; prefer request_ledger)
     raw_ttft_ms: list[float] = Field(default_factory=list)
     raw_e2e_ms: list[float] = Field(default_factory=list)
+    # Per-request ledger dump (RequestLedger.model_dump) or legacy list of records.
+    # Source of truth for recalculation. Prefer the full object (window + conditions).
+    request_ledger: dict[str, Any] | list[dict[str, Any]] = Field(default_factory=dict)
+    ledger_path: str | None = None
 
     # --- Week-1 experiment contract ---
     # Unique identity (distinct from human-readable experiment_id).
@@ -485,7 +504,15 @@ def external_unverified_evidence(*, host: str, port: int) -> ConfigEvidence:
 
 
 def empty_latency() -> LatencyPercentiles:
-    return LatencyPercentiles(p50=0.0, p90=0.0, p95=0.0, p99=0.0)
+    """Missing latency samples — all None, never fake zeros (P0-④)."""
+    return LatencyPercentiles(
+        p50=None,
+        p90=None,
+        p95=None,
+        p99=None,
+        sample_n=0,
+        sample_scope="",
+    )
 
 
 # ---------------------------------------------------------------------------
