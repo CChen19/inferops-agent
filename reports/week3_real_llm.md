@@ -3,15 +3,23 @@
 This report is **separate** from offline / fake-LLM eval.
 Fake-scripted or `--real-graph` output must not be labeled live.
 
+`pass_rate` is **accepted / n_requested** from a fail-closed
+per-run judge (`judge_live_run`): live boundary, ordered
+planner→executor→reflector, first-class stop
+(`budget_exhausted` / `no_reliable_improvement`), and non-zero
+quality. Empty rows, missing scores, or `eval_empty_plan` do
+not count. A call that merely did not throw is not a pass.
+
 - **layer**: `real_llm`
 - **status**: `blocked`
 - **passed**: `False`
 - **backend**: `openrouter`
 - **n_requested**: `3`
 - **n_completed**: `0`
-- **pass_rate**: `None`
+- **n_accepted**: `0`
+- **pass_rate**: `None` (accepted / n_requested; never 'call didn't throw')
 - **llm_boundary**: `None`
-- **generated_at**: `2026-09-12T19:06:40.468086+00:00`
+- **generated_at**: `2026-09-12T19:14:38.647000+00:00`
 
 ## Blocker
 
@@ -23,9 +31,9 @@ offline golden gate.
 
 ## Per-run outcomes
 
-| run | status | llm_boundary | stop_reason | error |
-|---:|---|---|---|---|
-| — | blocked | — | — | no live run |
+| run | status | accepted | llm_boundary | stop_reason | error |
+|---:|---|---|---|---|---|
+| — | blocked | no | — | — | no live run |
 
 ## Summary
 

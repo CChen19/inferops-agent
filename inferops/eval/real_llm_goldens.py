@@ -28,6 +28,16 @@ from inferops.eval.real_graph import (
 LAYER = "real_llm"
 N_RUNS = 3
 DEFAULT_BACKEND = "openrouter"
+
+# First-class terminal stops from ⑥ Reflect / ③ budget. Empty, unknown, or
+# harness-only ``eval_empty_plan`` is a wrong-stop — not an accepted live run.
+ACCEPTED_LIVE_STOP_REASONS = frozenset(
+    {
+        "budget_exhausted",
+        "no_reliable_improvement",
+    }
+)
+ILLEGAL_BENCHMARK_KEYS = frozenset({"tensor_parallel_size"})
 CRED_ENV = {
     "openrouter": "OPENROUTER_API_KEY",
     "deepseek": "DEEPSEEK_API_KEY",
@@ -38,6 +48,21 @@ DEFAULT_JSON = Path("eval_reports/real_llm/week3_real_llm_campaign.json")
 
 
 @dataclass
+class LiveRunJudgement:
+    """Fail-closed per-run acceptance. ``accepted`` is never 'call didn't throw'."""
+
+    accepted: bool
+    failures: list[str] = field(default_factory=list)
+    stop_reason: str | None = None
+    n_experiments: int = 0
+    trajectory_score: float | None = None
+    composite: float | None = None
+
+    def as_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
 class RealLlmRun:
     run_index: int
     status: str  # passed | failed | blocked
@@ -45,6 +70,8 @@ class RealLlmRun:
     stop_reason: str | None = None
     mode: str | None = None
     error: str | None = None
+    accepted: bool = False
+    acceptance_failures: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -58,6 +85,7 @@ class RealLlmCampaign:
     blocker: str | None
     n_requested: int
     n_completed: int
+    n_accepted: int
     pass_rate: float | None
     llm_boundary: str | None
     backend: str
@@ -77,13 +105,22 @@ class RealLlmCampaign:
             "This report is **separate** from offline / fake-LLM eval.",
             "Fake-scripted or `--real-graph` output must not be labeled live.",
             "",
+            "`pass_rate` is **accepted / n_requested** from a fail-closed",
+            "per-run judge (`judge_live_run`): live boundary, ordered",
+            "planner→executor→reflector, first-class stop",
+            "(`budget_exhausted` / `no_reliable_improvement`), and non-zero",
+            "quality. Empty rows, missing scores, or `eval_empty_plan` do",
+            "not count. A call that merely did not throw is not a pass.",
+            "",
             f"- **layer**: `{self.layer}`",
             f"- **status**: `{self.status}`",
             f"- **passed**: `{self.passed}`",
             f"- **backend**: `{self.backend}`",
             f"- **n_requested**: `{self.n_requested}`",
             f"- **n_completed**: `{self.n_completed}`",
-            f"- **pass_rate**: `{self.pass_rate}`",
+            f"- **n_accepted**: `{self.n_accepted}`",
+            f"- **pass_rate**: `{self.pass_rate}` "
+            "(accepted / n_requested; never 'call didn't throw')",
             f"- **llm_boundary**: `{self.llm_boundary}`",
             f"- **generated_at**: `{self.generated_at}`",
             "",
@@ -105,16 +142,17 @@ class RealLlmCampaign:
             [
                 "## Per-run outcomes",
                 "",
-                "| run | status | llm_boundary | stop_reason | error |",
-                "|---:|---|---|---|---|",
+                "| run | status | accepted | llm_boundary | stop_reason | error |",
+                "|---:|---|---|---|---|---|",
             ]
         )
         if not self.runs:
-            lines.append("| — | blocked | — | — | no live run |")
+            lines.append("| — | blocked | no | — | — | no live run |")
         for run in self.runs:
             lines.append(
-                f"| {run.run_index} | `{run.status}` | `{run.llm_boundary}` | "
-                f"`{run.stop_reason or '—'}` | {run.error or '—'} |"
+                f"| {run.run_index} | `{run.status}` | `{run.accepted}` | "
+                f"`{run.llm_boundary}` | `{run.stop_reason or '—'}` | "
+                f"{run.error or '—'} |"
             )
         lines.extend(["", f"## Summary", "", self.summary, ""])
         return "\n".join(lines)
@@ -132,6 +170,170 @@ def missing_credential(backend: str = DEFAULT_BACKEND) -> str | None:
         f"real-LLM campaign requires {env_key} for backend={backend!r}. "
         "No live key in this environment. Refusing to substitute fake/offline LLM."
     )
+
+
+def _ordered_plan_execute_reflect(nodes: list[Any]) -> bool:
+    try:
+        i_p = list(nodes).index("planner")
+        i_e = list(nodes).index("executor")
+        i_r = list(nodes).index("reflector")
+    except ValueError:
+        return False
+    return i_p < i_e < i_r
+
+
+def judge_live_run(report: dict[str, Any] | None) -> LiveRunJudgement:
+    """Fail-closed acceptance for one live real-LLM eval report.
+
+    A run is accepted only when the trusted live boundary holds **and** the
+    ③/⑥ trajectory is non-empty, ordered Plan→Execute→Reflect, has a
+    first-class stop, and is not zero-quality. Empty rows, missing scores,
+    ``eval_empty_plan``, or 'the call did not throw' do not count.
+    """
+    failures: list[str] = []
+    if not report:
+        return LiveRunJudgement(accepted=False, failures=["missing live eval report"])
+    if report.get("llm_boundary") != "live":
+        failures.append(
+            f"llm_boundary={report.get('llm_boundary')!r} is not live"
+        )
+    if report.get("mode") != MODE_REAL_GRAPH_LLM:
+        failures.append(f"mode={report.get('mode')!r} is not {MODE_REAL_GRAPH_LLM}")
+    rows = (report.get("strategies") or {}).get("real_planner") or []
+    if not rows:
+        failures.append("empty real_planner rows — not a pass")
+        return LiveRunJudgement(accepted=False, failures=failures)
+
+    row = rows[0] if isinstance(rows[0], dict) else {}
+    stop = str(row.get("stop_reason") or "")
+    n_exp = int(row.get("n_experiments") or 0)
+    try:
+        traj_score = float(row["trajectory_score"]) if row.get("trajectory_score") is not None else None
+    except (TypeError, ValueError):
+        traj_score = None
+        failures.append("trajectory_score is not numeric")
+    try:
+        composite = float(row["composite"]) if row.get("composite") is not None else None
+    except (TypeError, ValueError):
+        composite = None
+        failures.append("composite is not numeric")
+
+    if not stop:
+        failures.append("missing stop_reason — not a pass")
+    elif stop not in ACCEPTED_LIVE_STOP_REASONS:
+        failures.append(
+            f"wrong-stop {stop!r} (accepted: {sorted(ACCEPTED_LIVE_STOP_REASONS)})"
+        )
+    nodes = list(row.get("trajectory_nodes") or [])
+    if not _ordered_plan_execute_reflect(nodes):
+        failures.append("trajectory missing ordered planner→executor→reflector")
+    if n_exp < 1:
+        failures.append("zero experiments — zero-quality")
+    if traj_score is None or traj_score <= 0:
+        failures.append("zero/missing trajectory_score — zero-quality")
+    if composite is None:
+        failures.append("missing composite")
+    if not (row.get("hypotheses") or []):
+        failures.append("empty hypotheses — zero-quality")
+    for call in row.get("benchmark_calls") or []:
+        patch = (call or {}).get("config_patch") or {}
+        illegal = set(patch) & ILLEGAL_BENCHMARK_KEYS
+        if illegal:
+            failures.append(f"illegal param reached benchmark: {sorted(illegal)}")
+
+    return LiveRunJudgement(
+        accepted=not failures,
+        failures=failures,
+        stop_reason=stop or None,
+        n_experiments=n_exp,
+        trajectory_score=traj_score,
+        composite=composite,
+    )
+
+
+def validate_real_llm_campaign(campaign: dict[str, Any] | None) -> list[str]:
+    """Fail-closed shape + pass-claim checks for external real-LLM JSON."""
+    if campaign is None:
+        return []
+    failures: list[str] = []
+    if campaign.get("layer") != LAYER:
+        failures.append("real-LLM campaign layer must be 'real_llm'")
+    status = campaign.get("status")
+    if status not in {"blocked", "ran"}:
+        failures.append(f"real-LLM campaign status {status!r} is not blocked|ran")
+        return failures
+
+    n_req = campaign.get("n_requested")
+    n_comp = campaign.get("n_completed")
+    runs = campaign.get("runs")
+    rate = campaign.get("pass_rate")
+    passed = campaign.get("passed")
+    boundary = campaign.get("llm_boundary")
+
+    if status == "blocked":
+        if passed is not False:
+            failures.append("blocked real-LLM campaign must have passed=False")
+        if rate is not None:
+            failures.append("blocked real-LLM campaign must have pass_rate=None")
+        if n_comp not in (0, None) and int(n_comp) != 0:
+            failures.append("blocked real-LLM campaign must have n_completed=0")
+        if isinstance(runs, list) and runs:
+            failures.append("blocked real-LLM campaign must have empty runs")
+        return failures
+
+    if not isinstance(runs, list):
+        failures.append("ran campaign missing runs list")
+        runs = []
+    try:
+        n_req_i = int(n_req)
+    except (TypeError, ValueError):
+        n_req_i = 0
+        failures.append("ran campaign missing n_requested")
+    if n_comp is None or int(n_comp) != len(runs):
+        failures.append("n_completed inconsistent with runs")
+    accepted = sum(
+        1
+        for row in runs
+        if isinstance(row, dict) and row.get("status") == "passed"
+    )
+    expected_rate = (accepted / n_req_i) if n_req_i else None
+    if expected_rate is None:
+        if rate is not None:
+            failures.append("pass_rate must be None when n_requested is 0")
+    elif rate is None:
+        failures.append("ran campaign missing pass_rate")
+    else:
+        try:
+            if abs(float(rate) - expected_rate) > 1e-9:
+                failures.append(
+                    f"pass_rate {rate!r} != accepted/n_requested "
+                    f"({accepted}/{n_req_i})"
+                )
+        except (TypeError, ValueError):
+            failures.append(f"pass_rate {rate!r} is not numeric")
+    expected_passed = bool(n_req_i >= N_RUNS and accepted == n_req_i)
+    if bool(passed) != expected_passed:
+        failures.append(
+            f"passed={passed!r} inconsistent with accepted={accepted} n={n_req_i}"
+        )
+    if bool(passed):
+        if boundary != "live":
+            failures.append(
+                f"real-LLM pass requires llm_boundary='live', got {boundary!r}"
+            )
+        if n_req_i < N_RUNS:
+            failures.append("N<3 cannot pass")
+        if any(
+            not isinstance(row, dict) or row.get("llm_boundary") != "live"
+            for row in runs
+        ):
+            failures.append("every run in a passing campaign must have llm_boundary=live")
+        if any(
+            not isinstance(row, dict) or row.get("status") != "passed"
+            for row in runs
+        ):
+            failures.append("every run in a passing campaign must be accepted")
+    return failures
 
 
 def refuse_fake_labeled_live(llm: Any, mode: str) -> str | None:
@@ -161,6 +363,7 @@ def blocked_campaign(
         blocker=reason,
         n_requested=n,
         n_completed=0,
+        n_accepted=0,
         pass_rate=None,
         llm_boundary=None,
         backend=backend,
@@ -205,7 +408,7 @@ def run_real_llm_campaign(
 
     require_llm_credentials(backend)
     runs: list[RealLlmRun] = []
-    passed = 0
+    accepted = 0
     boundary: str | None = None
     for i in range(1, n + 1):
         try:
@@ -219,29 +422,32 @@ def run_real_llm_campaign(
                 llm_backend=backend,
             )
             boundary = str(report.get("llm_boundary"))
-            if boundary != "live":
+            verdict = judge_live_run(report)
+            if verdict.accepted:
+                accepted += 1
+                runs.append(
+                    RealLlmRun(
+                        run_index=i,
+                        status="passed",
+                        llm_boundary=boundary,
+                        stop_reason=verdict.stop_reason,
+                        mode=str(report.get("mode")),
+                        accepted=True,
+                    )
+                )
+            else:
                 runs.append(
                     RealLlmRun(
                         run_index=i,
                         status="failed",
                         llm_boundary=boundary,
+                        stop_reason=verdict.stop_reason,
                         mode=str(report.get("mode")),
-                        error=f"llm_boundary={boundary!r} is not live",
+                        error="; ".join(verdict.failures),
+                        accepted=False,
+                        acceptance_failures=list(verdict.failures),
                     )
                 )
-                continue
-            rows = (report.get("strategies") or {}).get("real_planner") or []
-            stop = rows[0].get("stop_reason") if rows else None
-            runs.append(
-                RealLlmRun(
-                    run_index=i,
-                    status="passed",
-                    llm_boundary=boundary,
-                    stop_reason=stop,
-                    mode=str(report.get("mode")),
-                )
-            )
-            passed += 1
         except Exception as exc:  # noqa: BLE001 — per-run evidence
             runs.append(
                 RealLlmRun(
@@ -249,24 +455,28 @@ def run_real_llm_campaign(
                     status="failed",
                     llm_boundary=boundary,
                     error=f"{type(exc).__name__}: {exc}",
+                    accepted=False,
+                    acceptance_failures=[f"{type(exc).__name__}: {exc}"],
                 )
             )
-    rate = passed / n if n else None
+    rate = accepted / n if n else None
     return RealLlmCampaign(
         layer=LAYER,
         status="ran",
-        passed=passed == n,
+        passed=accepted == n and n >= N_RUNS,
         blocker=None,
         n_requested=n,
         n_completed=len(runs),
+        n_accepted=accepted,
         pass_rate=rate,
         llm_boundary=boundary,
         backend=backend,
         generated_at=datetime.now(timezone.utc).isoformat(),
         runs=runs,
         summary=(
-            f"Live LLM campaign completed {passed}/{n} "
-            f"(pass_rate={rate}). llm_boundary={boundary}."
+            f"Live LLM campaign accepted {accepted}/{n} "
+            f"(pass_rate={rate} = accepted/n_requested). "
+            f"llm_boundary={boundary}. pass_rate is not 'call didn't throw'."
         ),
     )
 

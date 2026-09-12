@@ -13,11 +13,30 @@ from inferops.eval.real_llm_goldens import (
     N_RUNS,
     assert_offline_not_labeled_live,
     blocked_campaign,
+    judge_live_run,
     missing_credential,
     refuse_fake_labeled_live,
     run_real_llm_campaign,
     scripted_llm_is_not_live,
 )
+
+
+def _live_report(**row_updates: object) -> dict:
+    row = {
+        "stop_reason": "budget_exhausted",
+        "n_experiments": 2,
+        "trajectory_nodes": ["planner", "executor", "reflector"],
+        "trajectory_score": 0.8,
+        "composite": 0.5,
+        "hypotheses": [{"param": "max_num_batched_tokens", "value": 4096, "status": "done"}],
+        "benchmark_calls": [{"config_patch": {"max_num_batched_tokens": 4096}}],
+    }
+    row.update(row_updates)
+    return {
+        "mode": MODE_REAL_GRAPH_LLM,
+        "llm_boundary": "live",
+        "strategies": {"real_planner": [row]},
+    }
 
 
 def test_n_runs_requirement_is_at_least_three():
@@ -83,3 +102,75 @@ def test_llm_boundary_keys_off_object_not_mode():
     fake = ScriptedBottleneckLLM()
     assert _llm_boundary_label(fake, MODE_REAL_GRAPH_LLM) == "fake_scripted"
     assert _llm_boundary_label(object(), MODE_REAL_GRAPH_LLM) == "injected"
+
+
+def test_judge_live_run_accepts_first_class_stop_and_trajectory():
+    verdict = judge_live_run(_live_report())
+    assert verdict.accepted is True
+    assert verdict.failures == []
+    assert verdict.stop_reason == "budget_exhausted"
+
+
+def test_judge_live_run_rejects_empty_zero_quality_and_wrong_stop():
+    empty = {
+        "mode": MODE_REAL_GRAPH_LLM,
+        "llm_boundary": "live",
+        "strategies": {"real_planner": []},
+    }
+    assert judge_live_run(empty).accepted is False
+    assert any("empty" in f for f in judge_live_run(empty).failures)
+
+    zero = judge_live_run(
+        _live_report(
+            stop_reason="",
+            n_experiments=0,
+            trajectory_nodes=[],
+            trajectory_score=0.0,
+            hypotheses=[],
+        )
+    )
+    assert zero.accepted is False
+    assert any("zero" in f or "missing stop" in f for f in zero.failures)
+
+    wrong = judge_live_run(_live_report(stop_reason="eval_empty_plan"))
+    assert wrong.accepted is False
+    assert any("wrong-stop" in f for f in wrong.failures)
+
+
+def test_live_boundary_failed_acceptance_does_not_pass_or_inflate_rate(monkeypatch):
+    """P1-1: live boundary + failed acceptance cannot score 3/3."""
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test-not-live")
+    dead = {
+        "mode": MODE_REAL_GRAPH_LLM,
+        "llm_boundary": "live",
+        "strategies": {
+            "real_planner": [
+                {
+                    "stop_reason": "",
+                    "n_experiments": 0,
+                    "trajectory_nodes": [],
+                    "trajectory_score": 0.0,
+                    "composite": 0.0,
+                    "hypotheses": [],
+                    "benchmark_calls": [],
+                }
+            ]
+        },
+    }
+
+    def _dead_eval(**_kwargs):
+        return dead
+
+    monkeypatch.setattr(
+        "inferops.eval.real_llm_goldens.run_real_graph_eval", _dead_eval
+    )
+    campaign = run_real_llm_campaign(n=3)
+    assert campaign.llm_boundary == "live"
+    assert campaign.status == "ran"
+    assert campaign.n_completed == 3
+    assert campaign.n_accepted == 0
+    assert all(run.status == "failed" for run in campaign.runs)
+    assert all(run.accepted is False for run in campaign.runs)
+    assert campaign.passed is False
+    assert campaign.pass_rate == 0.0
+    assert campaign.pass_rate != 1.0

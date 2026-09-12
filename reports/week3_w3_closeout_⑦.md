@@ -60,11 +60,13 @@ New deterministic set. Consumes ① + experiment memory only:
 | Layer | How it is labeled | Pass rule |
 |---|---|---|
 | Offline / fixture | `offline_fixture` — measurement + recovery + error-memory | Fail-closed. Empty / skipped **FAIL** |
-| Real LLM | `scripts/run_real_llm_goldens.py` only. `llm_boundary=live` | N≥3 when a key exists. Fake/offline **must not** be labeled live |
+| Real LLM | `scripts/run_real_llm_goldens.py` only. `llm_boundary=live` | N≥3 when a key exists. `pass_rate` = accepted/n_requested via `judge_live_run` (not “call didn’t throw”). Fake/offline / missing / unknown boundary **must not** be labeled live. External campaign JSON that claims pass without live + N≥3 + consistent counts **FAIL** |
 | GPU | `GPU: 未执行` / `Blocked` unless a 3060 worker archives real logs | GPU-not-run ≠ pass. No invented numbers |
 
 See `reports/week3_real_llm.md` for the live-LLM campaign (blocked in this
-environment — no `OPENROUTER_API_KEY`).
+environment — no `OPENROUTER_API_KEY`). A live-boundary report with empty
+rows, zero quality, or `eval_empty_plan` is **not** accepted and cannot
+inflate `pass_rate` to 3/3.
 
 ## Tune ⑧ incomplete / receipt-lost
 
@@ -106,7 +108,7 @@ python scripts/run_real_llm_goldens.py
 ```
 
 ```text
-412 passed in 15.48s
+419 passed in 16.86s
 measurement-trust golden gate passed (CPU/fixture; GPU-not-run ≠ pass)
 recovery golden gate passed (CPU/fixture; GPU-not-run ≠ pass)
 error-memory golden gate passed (CPU/fixture; GPU-not-run ≠ pass)

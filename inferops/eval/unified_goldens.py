@@ -28,6 +28,7 @@ from inferops.eval.measurement_goldens import (
     REQUIRED_GOLDEN_IDS as MEASUREMENT_IDS,
 )
 from inferops.eval.measurement_goldens import measurement_trust_gate
+from inferops.eval.real_llm_goldens import validate_real_llm_campaign
 from inferops.eval.recovery_goldens import REQUIRED_GOLDEN_IDS as RECOVERY_IDS
 from inferops.eval.recovery_goldens import recovery_golden_gate
 
@@ -152,7 +153,12 @@ def gpu_layer_status() -> LayerStatus:
 
 
 def real_llm_layer_status(campaign: dict[str, Any] | None = None) -> LayerStatus:
-    """Separate from offline/fake-LLM. Blocked campaign is not a pass."""
+    """Separate from offline/fake-LLM. A claimed pass is fail-closed.
+
+    ``llm_boundary`` must be exactly ``live`` to pass. Missing / unknown /
+    fake / injected boundaries cannot pass. Blocked shape must stay
+    ``passed=False``, ``pass_rate=None``, ``n_completed=0``.
+    """
     if campaign is None:
         return LayerStatus(
             name="real_llm",
@@ -163,22 +169,17 @@ def real_llm_layer_status(campaign: dict[str, Any] | None = None) -> LayerStatus
                 "fake/offline must not be labeled live"
             ),
         )
+    issues = validate_real_llm_campaign(campaign)
     status = str(campaign.get("status") or "unknown")
-    if campaign.get("layer") != "real_llm":
+    claiming_pass = campaign.get("passed") is True
+    if issues:
+        kind = "invalid_blocked" if status == "blocked" else "mislabeled"
         return LayerStatus(
             name="real_llm",
-            status="mislabeled",
+            status=kind,
             passed=False,
-            detail="campaign layer is not real_llm",
+            detail="; ".join(issues),
         )
-    if campaign.get("llm_boundary") in {"fake_scripted", "offline", "injected"}:
-        if status == "ran":
-            return LayerStatus(
-                name="real_llm",
-                status="mislabeled",
-                passed=False,
-                detail="fake/offline/injected labeled as a real-LLM run",
-            )
     if status == "blocked":
         return LayerStatus(
             name="real_llm",
@@ -189,7 +190,7 @@ def real_llm_layer_status(campaign: dict[str, Any] | None = None) -> LayerStatus
     return LayerStatus(
         name="real_llm",
         status=status,
-        passed=bool(campaign.get("passed")),
+        passed=claiming_pass,
         detail=str(campaign.get("summary") or status),
     )
 
@@ -309,8 +310,10 @@ def unified_golden_gate(
     real_llm = real_llm_layer_status(real_llm_campaign)
     if gpu.status in {"pass", "passed", "ok"} or gpu.passed:
         failures.append("GPU-not-run ≠ pass")
-    if real_llm.status == "mislabeled":
+    if real_llm.status in {"mislabeled", "invalid_blocked"}:
         failures.append(real_llm.detail)
+    if real_llm_campaign and real_llm_campaign.get("passed") and not real_llm.passed:
+        failures.append("claimed real-LLM pass rejected (fail-closed)")
 
     try:
         manifest = load_manifest(manifest_path)
