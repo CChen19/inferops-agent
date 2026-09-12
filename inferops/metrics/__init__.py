@@ -37,7 +37,9 @@ from inferops.metrics.confirm import (
     is_confirmed_promotable,
     primary_metric_value,
     relative_delta,
+    require_positive_bounds,
     require_same_conditions,
+    require_unique_repeat_identities,
     run_interleaved_repeats,
     verdict_from_ledgers,
 )
@@ -122,7 +124,9 @@ __all__ = [
     "relative_delta",
     "report_from_ledger",
     "report_from_result",
+    "require_positive_bounds",
     "require_same_conditions",
+    "require_unique_repeat_identities",
     "run_interleaved_repeats",
     "verdict_from_ledgers",
 ]

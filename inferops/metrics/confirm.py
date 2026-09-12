@@ -11,12 +11,13 @@ unchanged and still required.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import contextvars
+from collections.abc import Callable, Sequence
 from enum import Enum
 from statistics import median
 from typing import Any
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, PrivateAttr, model_validator
 
 from inferops.metrics.aggregate import AggregateMetrics, recalculate_from_ledger
 from inferops.metrics.ledger import RequestLedger, RunConditions
@@ -45,6 +46,12 @@ LOWER_IS_BETTER: frozenset[str] = frozenset(
     }
 )
 CONFIRMABLE_METRICS: frozenset[str] = HIGHER_IS_BETTER | LOWER_IS_BETTER
+
+# Only verdict_from_ledgers / evaluate_campaign may mint confirmed_improvement.
+_COMPUTE_GATE: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "inferops_confirm_compute_gate", default=False
+)
+_COMPUTED_ORIGIN = "verdict_from_ledgers"
 
 # Measurement fields that must match across interleaved repeats.
 _CONDITION_COMPARE_FIELDS: tuple[str, ...] = (
@@ -127,33 +134,88 @@ class RepeatCampaign(BaseModel):
     baseline_ledgers: list[RequestLedger] = Field(default_factory=list)
     candidate_ledgers: list[RequestLedger] = Field(default_factory=list)
 
+    @model_validator(mode="after")
+    def _unique_independent_repeats(self) -> RepeatCampaign:
+        if self.baseline_ledgers or self.candidate_ledgers:
+            require_unique_repeat_identities(
+                self.baseline_ledgers, self.candidate_ledgers
+            )
+        return self
+
 
 class ConfirmationDecision(BaseModel):
-    """Tune/⑤-facing confirmation result. Rules live here, not in prose."""
+    """Tune/⑤-facing confirmation result. Rules live here, not in prose.
+
+    `confirmed_improvement` cannot be hand-built. It is only legal from
+    `verdict_from_ledgers` / `evaluate_campaign`, and only when
+    `numeric_signal=improvement` with enough unique usable pairs.
+    """
 
     phase: RepeatPhase
     verdict: ConfirmationVerdict
     numeric_signal: NumericSignal
     search_winner: bool = False
     metric: str
-    min_pairs: int = DEFAULT_MIN_PAIRS
-    min_rel_delta: float = DEFAULT_MIN_REL_DELTA
-    pair_count: int = 0
-    usable_pairs: int = 0
+    min_pairs: int = Field(default=DEFAULT_MIN_PAIRS, gt=0)
+    min_rel_delta: float = Field(default=DEFAULT_MIN_REL_DELTA, gt=0)
+    pair_count: int = Field(default=0, ge=0)
+    usable_pairs: int = Field(default=0, ge=0)
     median_rel_delta: float | None = None
     median_improvement_pct: float | None = None  # None if not computable — never 0
     pairs: list[RepeatPair] = Field(default_factory=list)
     reason: str = ""
+    _origin: str = PrivateAttr(default="")
 
     @model_validator(mode="after")
     def _encode_phase_and_missing_rules(self) -> ConfirmationDecision:
-        if (
-            self.verdict == ConfirmationVerdict.CONFIRMED_IMPROVEMENT
-            and self.phase != RepeatPhase.CONFIRMATION
-        ):
-            raise ValueError(
-                "confirmed_improvement is illegal outside phase=confirmation"
+        require_positive_bounds(
+            min_pairs=self.min_pairs, min_rel_delta=self.min_rel_delta
+        )
+        if self.metric not in CONFIRMABLE_METRICS:
+            raise ValueError(f"unsupported confirmation metric: {self.metric!r}")
+        if self.usable_pairs > self.pair_count:
+            raise ValueError("usable_pairs cannot exceed pair_count")
+        if self.pairs:
+            if self.pair_count != len(self.pairs):
+                raise ValueError("pair_count does not match pairs")
+            computed_usable = sum(
+                1 for p in self.pairs if p.classification != PairClass.MISSING
             )
+            if self.usable_pairs != computed_usable:
+                raise ValueError("usable_pairs does not match pair classifications")
+            require_unique_pair_run_ids(self.pairs)
+        if self.verdict == ConfirmationVerdict.CONFIRMED_IMPROVEMENT:
+            if self.phase != RepeatPhase.CONFIRMATION:
+                raise ValueError(
+                    "confirmed_improvement is illegal outside phase=confirmation"
+                )
+            if not _COMPUTE_GATE.get():
+                raise ValueError(
+                    "forged ConfirmationDecision: confirmed_improvement is only "
+                    "legal from verdict_from_ledgers / evaluate_campaign"
+                )
+            if self.numeric_signal != NumericSignal.IMPROVEMENT:
+                raise ValueError(
+                    "confirmed_improvement requires numeric_signal=improvement"
+                )
+            if self.usable_pairs < self.min_pairs:
+                raise ValueError(
+                    "confirmed_improvement requires usable_pairs >= min_pairs"
+                )
+            if not self.pairs:
+                raise ValueError("confirmed_improvement requires pair evidence")
+            if any(p.classification != PairClass.BETTER for p in self.pairs):
+                raise ValueError(
+                    "confirmed_improvement requires every pair to be better "
+                    "(missing primary is too_noisy)"
+                )
+            if (
+                self.median_rel_delta is None
+                or self.median_rel_delta < self.min_rel_delta
+            ):
+                raise ValueError(
+                    "confirmed_improvement requires median_rel_delta >= min_rel_delta"
+                )
         if self.phase == RepeatPhase.SEARCH:
             self.search_winner = self.numeric_signal == NumericSignal.IMPROVEMENT
             if self.verdict == ConfirmationVerdict.CONFIRMED_IMPROVEMENT:
@@ -163,6 +225,57 @@ class ConfirmationDecision(BaseModel):
         if self.median_rel_delta is None:
             self.median_improvement_pct = None
         return self
+
+
+def require_positive_bounds(*, min_pairs: int, min_rel_delta: float) -> None:
+    if min_pairs <= 0:
+        raise ValueError("min_pairs must be > 0")
+    if min_rel_delta <= 0:
+        raise ValueError("min_rel_delta must be > 0")
+
+
+def require_unique_repeat_identities(
+    baseline_ledgers: Sequence[RequestLedger],
+    candidate_ledgers: Sequence[RequestLedger],
+) -> None:
+    """Independent repeats need unique ledgers. Same run_id / object ≠ two pairs."""
+    ledgers = list(baseline_ledgers) + list(candidate_ledgers)
+    if not ledgers:
+        raise ValueError("cannot compare an empty ledger list")
+    ids = [lg.run_id for lg in ledgers]
+    if any(not rid for rid in ids):
+        raise ValueError("empty run_id cannot count as an independent repeat")
+    if len({id(lg) for lg in ledgers}) != len(ledgers):
+        raise ValueError(
+            "same RequestLedger object reused; refuse fake independent repeats"
+        )
+    if len(ids) != len(set(ids)):
+        raise ValueError(
+            "duplicate run_id in interleaved repeats; refuse fake independent repeats"
+        )
+
+
+def require_unique_pair_run_ids(pairs: Sequence[RepeatPair]) -> None:
+    ids: list[str] = []
+    for pair in pairs:
+        ids.extend([pair.baseline_run_id, pair.candidate_run_id])
+    if any(not rid for rid in ids):
+        raise ValueError("empty run_id cannot count as an independent repeat")
+    if len(ids) != len(set(ids)):
+        raise ValueError(
+            "duplicate run_id in confirmation pairs; refuse fake independent repeats"
+        )
+
+
+def _computed_decision(**kwargs: Any) -> ConfirmationDecision:
+    """Mint a decision from the controlled compute path only."""
+    token = _COMPUTE_GATE.set(True)
+    try:
+        decision = ConfirmationDecision(**kwargs)
+        decision._origin = _COMPUTED_ORIGIN
+        return decision
+    finally:
+        _COMPUTE_GATE.reset(token)
 
 
 def interleave_schedule(
@@ -279,12 +392,13 @@ def _numeric_signal(
 ) -> tuple[NumericSignal, str]:
     usable = [c for c in classes if c != PairClass.MISSING]
     usable_deltas = [d for d in deltas if d is not None]
+    # Any missing primary is too_noisy — do not confirm on a subset.
+    if any(c == PairClass.MISSING for c in classes):
+        return (
+            NumericSignal.TOO_NOISY,
+            "missing_primary_metric — None cannot drive a gain",
+        )
     if len(usable) < min_pairs:
-        if any(c == PairClass.MISSING for c in classes):
-            return (
-                NumericSignal.TOO_NOISY,
-                "missing_primary_metric — None cannot drive a gain",
-            )
         return NumericSignal.TOO_NOISY, "insufficient_pairs"
     if any(c == PairClass.BETTER for c in usable) and any(
         c == PairClass.WORSE for c in usable
@@ -325,6 +439,7 @@ def verdict_from_ledgers(
     min_rel_delta: float = DEFAULT_MIN_REL_DELTA,
 ) -> ConfirmationDecision:
     """Deterministic verdict from ④ aggregates. Does not invent missing values."""
+    require_positive_bounds(min_pairs=min_pairs, min_rel_delta=min_rel_delta)
     if metric not in CONFIRMABLE_METRICS:
         raise ValueError(f"unsupported confirmation metric: {metric!r}")
     if len(baseline_ledgers) != len(candidate_ledgers):
@@ -332,7 +447,7 @@ def verdict_from_ledgers(
             "baseline and candidate must have the same number of independent repeats"
         )
     if not baseline_ledgers:
-        return ConfirmationDecision(
+        return _computed_decision(
             phase=phase,
             verdict=ConfirmationVerdict.TOO_NOISY,
             numeric_signal=NumericSignal.TOO_NOISY,
@@ -342,6 +457,7 @@ def verdict_from_ledgers(
             reason="insufficient_pairs",
         )
 
+    require_unique_repeat_identities(baseline_ledgers, candidate_ledgers)
     require_same_conditions(list(baseline_ledgers) + list(candidate_ledgers))
 
     pairs: list[RepeatPair] = []
@@ -375,7 +491,7 @@ def verdict_from_ledgers(
     usable_deltas = [d for d in deltas if d is not None]
     med = median(usable_deltas) if usable_deltas else None
 
-    return ConfirmationDecision(
+    return _computed_decision(
         phase=phase,
         verdict=_verdict_for_phase(signal, phase),
         numeric_signal=signal,
@@ -398,6 +514,10 @@ def evaluate_campaign(
     min_pairs: int = DEFAULT_MIN_PAIRS,
     min_rel_delta: float = DEFAULT_MIN_REL_DELTA,
 ) -> ConfirmationDecision:
+    require_positive_bounds(min_pairs=min_pairs, min_rel_delta=min_rel_delta)
+    require_unique_repeat_identities(
+        campaign.baseline_ledgers, campaign.candidate_ledgers
+    )
     require_same_conditions(campaign.baseline_ledgers + campaign.candidate_ledgers)
     if not conditions_match(
         campaign.conditions, campaign.baseline_ledgers[0].conditions
@@ -441,6 +561,7 @@ def run_interleaved_repeats(
             baseline.append(ledger)
         else:
             candidate.append(ledger)
+    require_unique_repeat_identities(baseline, candidate)
     conditions = require_same_conditions(baseline + candidate)
     return RepeatCampaign(
         phase=phase,
@@ -469,6 +590,8 @@ def is_confirmed_promotable(
     if decision.verdict != ConfirmationVerdict.CONFIRMED_IMPROVEMENT:
         return False
     if result.successful_requests <= 0:
+        return False
+    if getattr(decision, "_origin", None) != _COMPUTED_ORIGIN:
         return False
     return True
 

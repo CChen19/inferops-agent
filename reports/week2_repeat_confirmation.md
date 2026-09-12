@@ -39,6 +39,9 @@ B0, C0, B1, C1, B2, C2, …
 
 `interleave_schedule(n_pairs, phase=…)` / `run_interleaved_repeats(run_arm, …)`
 produce that order. A conditions mismatch raises — it is not a silent verdict.
+The same `RequestLedger` / `run_id` cannot count as multiple pairs
+(`require_unique_repeat_identities`). `min_pairs` and `min_rel_delta` must
+be `> 0`.
 
 Search and confirmation are different phases:
 
@@ -65,13 +68,18 @@ Defaults: `min_pairs=3`, `min_rel_delta=0.05`.
 
 | Verdict | When |
 |---|---|
-| `too_noisy` | usable pairs `< min_pairs`, any missing primary, or mixed better+worse pairs |
+| `too_noisy` | **any** missing primary (even if other pairs would suffice), usable pairs `< min_pairs`, or mixed better+worse pairs |
 | `regression` | every usable pair worse and median ≤ −threshold |
 | `no_diff` | ties / below threshold; **also** the confirmation verdict for a search-phase numeric win (`reason=search_phase_unconfirmed`) |
 | `confirmed_improvement` | confirmation phase **only**; every usable pair better and median ≥ threshold |
 
-Encoded in `ConfirmationDecision` (schema rejects `confirmed_improvement` on
-`phase=search`) and `verdict_from_ledgers`.
+Encoded in `ConfirmationDecision` and `verdict_from_ledgers`:
+
+- Schema rejects `confirmed_improvement` on `phase=search`.
+- Hand-built `ConfirmationDecision(verdict=confirmed_improvement, …)` is
+  **forged** and rejected. Only `verdict_from_ledgers` / `evaluate_campaign`
+  may mint that verdict, and only with `numeric_signal=improvement` plus
+  enough unique usable pairs.
 
 ## Promotion (Tune must use this)
 
@@ -109,6 +117,10 @@ CPU / ledger fixtures in `tests/test_repeat_confirmation.py`:
 - `incomplete` / `timeout` / `cancel` do not inflate success / RPS
 - Unevidenced row + beautiful confirmation numbers → still not promotable
 - GPU-not-run ≠ pass
+- Hand-built / forged `confirmed_improvement` rejected (including `usable_pairs=0`)
+- Duplicate `run_id` / reused ledger cannot count as independent repeats
+- `min_pairs <= 0` and `min_rel_delta <= 0` rejected
+- Any missing primary → `too_noisy` even when other pairs would suffice
 
 ```bash
 pytest -q

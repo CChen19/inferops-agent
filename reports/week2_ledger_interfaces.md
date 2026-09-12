@@ -44,9 +44,11 @@ parallel metrics schemas.
 | `ledger_from_result` | Rebuild ledger from a result |
 | `is_promotable` / `derive_status` | Week-1 gates — **do not loosen** |
 | `interleave_schedule` / `run_interleaved_repeats` | ⑤: independent B/C repeats, same `RunConditions` |
-| `verdict_from_ledgers` / `evaluate_campaign` | ⑤: `no_diff` / `regression` / `too_noisy` / `confirmed_improvement` |
+| `verdict_from_ledgers` / `evaluate_campaign` | ⑤: **only** compute entries that may mint `confirmed_improvement` |
 | `is_confirmed_promotable` | ⑤: `is_promotable` **and** confirmation-phase improvement |
-| `ConfirmationDecision` / `RepeatPhase` / `RepeatCampaign` | ⑤: search winner ≠ confirmed |
+| `ConfirmationDecision` / `RepeatPhase` / `RepeatCampaign` | ⑤: search winner ≠ confirmed; hand-built confirm rejected |
+| `require_unique_repeat_identities` | ⑤: unique `run_id`s; same ledger ≠ two pairs |
+| `require_positive_bounds` | ⑤: `min_pairs > 0`, `min_rel_delta > 0` |
 
 Search-phase wins must not auto-promote. See
 [`week2_repeat_confirmation.md`](./week2_repeat_confirmation.md).
@@ -63,4 +65,6 @@ Search-phase wins must not auto-promote. See
 - Fill missing TTFT/TPOT/GPU/cost with `0`.
 - Promote `best` without `is_promotable`.
 - Treat a search-phase winner as `confirmed_improvement`.
+- Hand-build `confirmed_improvement` (must come from `verdict_from_ledgers`).
+- Count the same `run_id` / ledger object as multiple independent repeats.
 - Invent a second `run_id` or a second metrics/ledger schema.

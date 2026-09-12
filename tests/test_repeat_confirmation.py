@@ -16,6 +16,8 @@ from inferops.metrics.confirm import (
     NumericSignal,
     PairClass,
     RepeatArm,
+    RepeatCampaign,
+    RepeatPair,
     RepeatPhase,
     conditions_match,
     evaluate_campaign,
@@ -140,6 +142,13 @@ def make_rps_ledger(
 
 def _n_ledgers(prefix: str, rps: float, n: int, **kwargs) -> list[RequestLedger]:
     return [make_rps_ledger(f"{prefix}_{i:02d}", rps=rps, **kwargs) for i in range(n)]
+
+
+def _empty_ledgers(prefix: str, n: int) -> list[RequestLedger]:
+    return [
+        RequestLedger(run_id=f"{prefix}_{i:02d}", conditions=CONDITIONS)
+        for i in range(n)
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -295,6 +304,121 @@ def test_schema_rejects_confirmed_improvement_on_search_phase():
         )
 
 
+def test_forged_confirmed_improvement_usable_pairs_zero_rejected():
+    with pytest.raises(ValidationError, match="forged ConfirmationDecision"):
+        ConfirmationDecision(
+            phase=RepeatPhase.CONFIRMATION,
+            verdict=ConfirmationVerdict.CONFIRMED_IMPROVEMENT,
+            numeric_signal=NumericSignal.IMPROVEMENT,
+            metric="throughput_rps",
+            usable_pairs=0,
+            pair_count=0,
+        )
+
+
+def test_forged_confirmed_improvement_without_improvement_signal_rejected():
+    with pytest.raises(ValidationError, match="forged ConfirmationDecision"):
+        ConfirmationDecision(
+            phase=RepeatPhase.CONFIRMATION,
+            verdict=ConfirmationVerdict.CONFIRMED_IMPROVEMENT,
+            numeric_signal=NumericSignal.TOO_NOISY,
+            metric="throughput_rps",
+            usable_pairs=3,
+            pair_count=3,
+        )
+
+
+def test_forged_confirmed_improvement_with_fake_pairs_rejected(result_b):
+    """Even a fully populated hand-built decision cannot confirm."""
+    pairs = [
+        RepeatPair(
+            pair_index=i,
+            baseline_run_id=f"forge_b{i}",
+            candidate_run_id=f"forge_c{i}",
+            baseline_value=2.0,
+            candidate_value=3.0,
+            rel_delta=0.5,
+            classification=PairClass.BETTER,
+        )
+        for i in range(3)
+    ]
+    with pytest.raises(ValidationError, match="forged ConfirmationDecision"):
+        ConfirmationDecision(
+            phase=RepeatPhase.CONFIRMATION,
+            verdict=ConfirmationVerdict.CONFIRMED_IMPROVEMENT,
+            numeric_signal=NumericSignal.IMPROVEMENT,
+            metric="throughput_rps",
+            min_pairs=3,
+            usable_pairs=3,
+            pair_count=3,
+            median_rel_delta=0.5,
+            pairs=pairs,
+        )
+    assert is_promotable(result_b) is True
+
+
+def test_duplicate_run_id_pairs_rejected():
+    same_b = make_rps_ledger("dup_b", rps=2.0)
+    same_c = make_rps_ledger("dup_c", rps=2.4)
+    with pytest.raises(ValueError, match="same RequestLedger object reused"):
+        verdict_from_ledgers(
+            [same_b, same_b, same_b],
+            [same_c, same_c, same_c],
+            phase=RepeatPhase.CONFIRMATION,
+        )
+    clones_b = [make_rps_ledger("dup_b", rps=2.0) for _ in range(3)]
+    clones_c = [make_rps_ledger("dup_c", rps=2.4) for _ in range(3)]
+    with pytest.raises(ValueError, match="duplicate run_id"):
+        verdict_from_ledgers(clones_b, clones_c, phase=RepeatPhase.CONFIRMATION)
+
+
+def test_evaluate_campaign_and_interleave_reject_duplicate_run_ids():
+    with pytest.raises(ValidationError, match="same RequestLedger|duplicate run_id"):
+        RepeatCampaign(
+            phase=RepeatPhase.CONFIRMATION,
+            conditions=CONDITIONS,
+            baseline_ledgers=[make_rps_ledger("camp_b", rps=2.0)] * 3,
+            candidate_ledgers=[make_rps_ledger("camp_c", rps=2.4)] * 3,
+        )
+
+    def run_arm(arm: RepeatArm, slot):
+        return make_rps_ledger("always-the-same", rps=2.0)
+
+    with pytest.raises(ValueError, match="duplicate run_id"):
+        run_interleaved_repeats(
+            run_arm, n_pairs=3, phase=RepeatPhase.CONFIRMATION
+        )
+
+
+def test_invalid_min_pairs_and_min_rel_delta_rejected():
+    base = _n_ledgers("bound_b", 2.0, 3)
+    cand = _n_ledgers("bound_c", 2.4, 3)
+    with pytest.raises(ValueError, match="min_pairs must be > 0"):
+        verdict_from_ledgers(base, cand, min_pairs=0)
+    with pytest.raises(ValueError, match="min_pairs must be > 0"):
+        verdict_from_ledgers(base, cand, min_pairs=-1)
+    with pytest.raises(ValueError, match="min_rel_delta must be > 0"):
+        verdict_from_ledgers(base, cand, min_rel_delta=0.0)
+    with pytest.raises(ValueError, match="min_rel_delta must be > 0"):
+        verdict_from_ledgers(base, cand, min_rel_delta=-0.05)
+    with pytest.raises(ValidationError):
+        ConfirmationDecision(
+            phase=RepeatPhase.CONFIRMATION,
+            verdict=ConfirmationVerdict.TOO_NOISY,
+            numeric_signal=NumericSignal.TOO_NOISY,
+            metric="throughput_rps",
+            min_pairs=0,
+        )
+    with pytest.raises(ValidationError):
+        ConfirmationDecision(
+            phase=RepeatPhase.CONFIRMATION,
+            verdict=ConfirmationVerdict.TOO_NOISY,
+            numeric_signal=NumericSignal.TOO_NOISY,
+            metric="throughput_rps",
+            min_rel_delta=0.0,
+        )
+
+
 # ---------------------------------------------------------------------------
 # Missing metrics / provenance cannot fake gains
 # ---------------------------------------------------------------------------
@@ -360,15 +484,14 @@ def test_incomplete_timeout_cancel_are_not_success():
 
 
 def test_missing_primary_stays_none_never_zero():
-    empty = RequestLedger(run_id="empty_base", conditions=CONDITIONS)
-    empty_c = RequestLedger(run_id="empty_cand", conditions=CONDITIONS)
+    empty = RequestLedger(run_id="empty_base_00", conditions=CONDITIONS)
     agg = recalculate_from_ledger(empty)
     assert agg.throughput_rps is None
     assert agg.tokens_per_second is None
     assert agg.ttft.p50 is None
     decision = verdict_from_ledgers(
-        [empty, empty, empty],
-        [empty_c, empty_c, empty_c],
+        _empty_ledgers("empty_base", 3),
+        _empty_ledgers("empty_cand", 3),
         metric="throughput_rps",
         phase=RepeatPhase.CONFIRMATION,
     )
@@ -376,6 +499,25 @@ def test_missing_primary_stays_none_never_zero():
     assert decision.median_rel_delta is None
     assert decision.median_improvement_pct is None
     assert decision.verdict == ConfirmationVerdict.TOO_NOISY
+    assert "missing_primary_metric" in decision.reason
+
+
+def test_any_missing_primary_is_too_noisy_even_if_other_pairs_suffice(result_b):
+    """P2: one missing primary cannot be dropped so the rest can confirm."""
+    base = _n_ledgers("mixb", 2.0, 3) + _empty_ledgers("mixb_miss", 1)
+    cand = _n_ledgers("mixc", 3.0, 3) + _empty_ledgers("mixc_miss", 1)
+    decision = verdict_from_ledgers(
+        base,
+        cand,
+        metric="throughput_rps",
+        phase=RepeatPhase.CONFIRMATION,
+        min_pairs=3,
+    )
+    assert decision.usable_pairs == 3
+    assert decision.pair_count == 4
+    assert decision.verdict == ConfirmationVerdict.TOO_NOISY
+    assert "missing_primary_metric" in decision.reason
+    assert is_confirmed_promotable(result_b, decision) is False
 
 
 def test_gpu_not_run_is_not_a_pass_or_a_gain():
@@ -445,8 +587,8 @@ def test_zero_success_candidate_not_confirmed_promotable(result_b):
 
 def test_format_confirmation_report_marks_missing_as_na():
     decision = verdict_from_ledgers(
-        [RequestLedger(run_id="fb", conditions=CONDITIONS)] * 3,
-        [RequestLedger(run_id="fc", conditions=CONDITIONS)] * 3,
+        _empty_ledgers("fb", 3),
+        _empty_ledgers("fc", 3),
         phase=RepeatPhase.CONFIRMATION,
     )
     md = format_confirmation_report(decision)
