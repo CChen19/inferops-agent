@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 from pathlib import Path
 
 
 def test_run_eval_mock_writes_report(tmp_path):
     cmd = [
-        ".venv/bin/python",
+        sys.executable,
         "scripts/run_eval.py",
         "--mock",
         "--commit-sha",
@@ -26,11 +27,13 @@ def test_run_eval_mock_writes_report(tmp_path):
     assert proc.returncode == 0, proc.stderr + proc.stdout
     assert (tmp_path / "unitsha.md").exists()
     assert (tmp_path / "unitsha.json").exists()
+    text = (tmp_path / "unitsha.md").read_text()
+    assert "Mock eval only" in text
 
 
 def test_run_eval_without_mock_or_prefix_exits_with_error(tmp_path):
     cmd = [
-        ".venv/bin/python",
+        sys.executable,
         "scripts/run_eval.py",
         "--commit-sha",
         "unitsha",
@@ -46,7 +49,7 @@ def test_run_eval_without_mock_or_prefix_exits_with_error(tmp_path):
 
 def test_run_eval_real_mode_requires_matching_session(tmp_path):
     cmd = [
-        ".venv/bin/python",
+        sys.executable,
         "scripts/run_eval.py",
         "--commit-sha",
         "unitsha",

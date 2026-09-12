@@ -94,13 +94,21 @@ def write_eval_outputs(report: dict[str, Any], output_dir: str | Path) -> tuple[
 
 
 def render_markdown_report(report: dict[str, Any]) -> str:
+    mode = report.get("mode", "unknown")
+    disclaimer = ""
+    if mode == "mock":
+        disclaimer = (
+            "\n> **Mock eval only.** These figures are simulated from ground-truth "
+            "rows for CI/regression — they are **not** real measured performance "
+            "claims.\n"
+        )
     lines = [
         f"# InferOps Eval Report: `{report['commit_sha']}`",
         "",
-        f"- Mode: `{report.get('mode', 'unknown')}`",
+        f"- Mode: `{mode}`",
         f"- Generated: `{report.get('generated_at', '')}`",
         f"- Budget: `{report.get('budget', '')}` experiments per strategy",
-        "",
+        disclaimer,
         "## Summary",
         "",
         "| Strategy | Mean gap % | Mean runs | Mean composite |",

@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+import subprocess
+import uuid
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 # ---------------------------------------------------------------------------
@@ -27,6 +31,51 @@ class InferenceEngine(str, Enum):
 class SchedulerPolicy(str, Enum):
     FCFS = "fcfs"
     PRIORITY = "priority"
+
+
+class ExperimentValidityStatus(str, Enum):
+    """Week-1 experiment contract validity statuses.
+
+    Old / legacy rows MUST default to insufficient_evidence — never auto-promote
+    to valid just because metrics look good.
+    """
+
+    VALID = "valid"
+    INVALID = "invalid"
+    FAILED = "failed"
+    INSUFFICIENT_EVIDENCE = "insufficient_evidence"
+
+
+# ---------------------------------------------------------------------------
+# Contract constants
+# ---------------------------------------------------------------------------
+
+EXPERIMENT_SCHEMA_VERSION = "1"
+
+# Tuneable knobs compared between requested and actual config.
+CONFIG_KNOB_KEYS: tuple[str, ...] = (
+    "model_name",
+    "max_num_seqs",
+    "max_num_batched_tokens",
+    "max_model_len",
+    "gpu_memory_utilization",
+    "enforce_eager",
+    "enable_chunked_prefill",
+    "enable_prefix_caching",
+    "scheduler_policy",
+    "tensor_parallel_size",
+)
+
+# Evidence kinds that are NEVER sufficient on their own (item ② / contract).
+INSUFFICIENT_EVIDENCE_KINDS: frozenset[str] = frozenset(
+    {
+        "config_file_only",
+        "http_ok_only",
+        "health_check_only",
+        "performance_delta_only",
+        "external_unverified",
+    }
+)
 
 
 # ---------------------------------------------------------------------------
@@ -77,6 +126,51 @@ class ExperimentConfig(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Contract: evidence / hardware / identity
+# ---------------------------------------------------------------------------
+
+class ConfigEvidence(BaseModel):
+    """Proof that requested config was (or was not) applied to a live instance.
+
+    Rules encoded here (not just prose):
+    - verified=False → never promotable
+    - kinds in INSUFFICIENT_EVIDENCE_KINDS → never promotable alone
+    - config file alone / HTTP 200 alone / perf delta alone → never sufficient
+    """
+
+    kind: str = Field(
+        description=(
+            "Evidence kind, e.g. managed_process_start, instance_identity, "
+            "external_unverified, health_check_only, config_file_only, "
+            "http_ok_only, performance_delta_only"
+        )
+    )
+    verified: bool = False
+    instance_id: str | None = None
+    process_pid: int | None = None
+    observed_params: dict[str, Any] = Field(default_factory=dict)
+    notes: str = ""
+
+    def is_critical_evidence(self) -> bool:
+        """True only when evidence is strong enough to support status=valid."""
+        if not self.verified:
+            return False
+        if self.kind in INSUFFICIENT_EVIDENCE_KINDS:
+            return False
+        return True
+
+
+class HardwareInfo(BaseModel):
+    """Model / hardware / vLLM fingerprint for experiment reproducibility."""
+
+    model_name: str = ""
+    engine: str = "vllm"
+    vllm_version: str | None = None
+    gpu_name: str | None = None
+    cuda_version: str | None = None
+
+
+# ---------------------------------------------------------------------------
 # Results
 # ---------------------------------------------------------------------------
 
@@ -88,7 +182,7 @@ class LatencyPercentiles(BaseModel):
 
 
 class ExperimentResult(BaseModel):
-    """Collected metrics from a completed experiment run."""
+    """Collected metrics from a completed experiment run + Week-1 contract."""
 
     experiment_id: str
     config: ExperimentConfig
@@ -113,13 +207,160 @@ class ExperimentResult(BaseModel):
     raw_ttft_ms: list[float] = Field(default_factory=list)
     raw_e2e_ms: list[float] = Field(default_factory=list)
 
-    # Agent bookkeeping
+    # --- Week-1 experiment contract ---
+    # Unique identity (distinct from human-readable experiment_id)
+    run_id: str = Field(default_factory=lambda: uuid.uuid4().hex)
+    schema_version: str = EXPERIMENT_SCHEMA_VERSION
+    code_sha: str | None = None
+    # Mapping: experiment_id ↔ session prefix ↔ MLflow
+    session_id: str | None = None
     mlflow_run_id: str | None = None
+    # Requested vs actual config (+ evidence). `config` remains the requested
+    # ExperimentConfig for backward compatibility; knobs are also snapshotted.
+    requested_config: dict[str, Any] = Field(default_factory=dict)
+    actual_config: dict[str, Any] | None = None
+    config_evidence: ConfigEvidence | None = None
+    # Default is insufficient_evidence so legacy / incomplete rows never
+    # auto-promote to valid.
+    status: ExperimentValidityStatus = ExperimentValidityStatus.INSUFFICIENT_EVIDENCE
+    workload_hash: str | None = None
+    hardware: HardwareInfo | None = None
+
     notes: str = ""
+
+    @model_validator(mode="after")
+    def _fill_requested_and_workload_hash(self) -> ExperimentResult:
+        if not self.requested_config:
+            self.requested_config = config_knobs(self.config)
+        if not self.workload_hash:
+            self.workload_hash = compute_workload_hash(self.config.workload)
+        if self.hardware is None:
+            self.hardware = HardwareInfo(
+                model_name=self.config.model_name,
+                engine=self.config.engine.value,
+            )
+        return self
 
 
 # ---------------------------------------------------------------------------
-# LangGraph agent state
+# Contract helpers (encode rules in code, not prose alone)
+# ---------------------------------------------------------------------------
+
+def config_knobs(cfg: ExperimentConfig) -> dict[str, Any]:
+    """Stable snapshot of tuneable knobs from an ExperimentConfig."""
+    out: dict[str, Any] = {}
+    for key in CONFIG_KNOB_KEYS:
+        val = getattr(cfg, key)
+        out[key] = val.value if isinstance(val, Enum) else val
+    return out
+
+
+def compute_workload_hash(workload: WorkloadSpec) -> str:
+    """Content hash of workload shape (excludes prompt text body size noise)."""
+    payload = {
+        "name": workload.name,
+        "num_requests": workload.num_requests,
+        "concurrency": workload.concurrency,
+        "input_len": workload.input_len,
+        "output_len": workload.output_len,
+        "distribution": workload.distribution,
+        "rps": workload.rps,
+    }
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:16]
+
+
+def resolve_git_sha(short: bool = True) -> str | None:
+    """Best-effort code SHA for the running checkout."""
+    try:
+        args = ["git", "rev-parse", "--short" if short else "HEAD", "HEAD"]
+        return subprocess.check_output(args, text=True, stderr=subprocess.DEVNULL).strip()
+    except Exception:
+        return None
+
+
+def has_critical_config_evidence(evidence: ConfigEvidence | None) -> bool:
+    return evidence is not None and evidence.is_critical_evidence()
+
+
+def is_promotable(result: ExperimentResult) -> bool:
+    """True iff a candidate may become best / deploy recommendation.
+
+    Requires:
+      - status == valid
+      - critical config evidence present
+      - actual_config recorded (not None)
+    High scores alone never suffice. Missing evidence never promotes.
+    """
+    if result.status != ExperimentValidityStatus.VALID:
+        return False
+    if result.actual_config is None:
+        return False
+    return has_critical_config_evidence(result.config_evidence)
+
+
+def derive_status(
+    *,
+    failed: bool = False,
+    evidence: ConfigEvidence | None = None,
+    actual_config: dict[str, Any] | None = None,
+    requested_config: dict[str, Any] | None = None,
+) -> ExperimentValidityStatus:
+    """Derive contract status from evidence + actual/requested config.
+
+    Never returns valid unless evidence is critical AND actual_config is set.
+    Mismatched knobs → invalid. Missing/weak evidence → insufficient_evidence.
+    """
+    if failed:
+        return ExperimentValidityStatus.FAILED
+    if not has_critical_config_evidence(evidence):
+        return ExperimentValidityStatus.INSUFFICIENT_EVIDENCE
+    if actual_config is None:
+        return ExperimentValidityStatus.INSUFFICIENT_EVIDENCE
+    if requested_config is not None:
+        # Compare shared keys only
+        for key, req_val in requested_config.items():
+            if key in actual_config and actual_config[key] != req_val:
+                return ExperimentValidityStatus.INVALID
+    return ExperimentValidityStatus.VALID
+
+
+def managed_start_evidence(
+    *,
+    process_pid: int | None,
+    host: str,
+    port: int,
+    requested: dict[str, Any],
+) -> ConfigEvidence:
+    """Evidence for a bench_runner-managed vLLM process started with CLI knobs."""
+    instance_id = f"{host}:{port}:pid={process_pid}" if process_pid else f"{host}:{port}"
+    return ConfigEvidence(
+        kind="managed_process_start",
+        verified=True,
+        instance_id=instance_id,
+        process_pid=process_pid,
+        observed_params=dict(requested),
+        notes=(
+            "vLLM process started by bench_runner with CLI args matching "
+            "requested config; ready after health wait."
+        ),
+    )
+
+
+def external_unverified_evidence(*, host: str, port: int) -> ConfigEvidence:
+    """External healthy server — healthy ≠ config applied."""
+    return ConfigEvidence(
+        kind="external_unverified",
+        verified=False,
+        instance_id=f"{host}:{port}",
+        notes=(
+            "External vLLM reported HTTP health OK; config application was not "
+            "verified. Health/HTTP 200 alone is never sufficient evidence."
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# LangGraph agent state (legacy Pydantic mirror; runtime uses TypedDict)
 # ---------------------------------------------------------------------------
 
 class AgentState(BaseModel):

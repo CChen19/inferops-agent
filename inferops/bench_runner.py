@@ -27,7 +27,15 @@ from inferops.observability import init_mlflow, log_experiment_result, mlflow_ru
 from inferops.schemas import (
     ExperimentConfig,
     ExperimentResult,
+    ExperimentValidityStatus,
+    HardwareInfo,
     LatencyPercentiles,
+    config_knobs,
+    compute_workload_hash,
+    derive_status,
+    external_unverified_evidence,
+    managed_start_evidence,
+    resolve_git_sha,
 )
 from inferops.tools.gpu_monitor import GPUMonitor
 from inferops.tools.traffic import extract_percentiles, run_load
@@ -108,10 +116,16 @@ def run_experiment(
     prompts: list[str],
     mlflow_experiment: str = "inferops",
     on_progress: Callable[[str], None] | None = None,
+    session_id: str | None = None,
 ) -> ExperimentResult:
     """
     Run one full experiment: start vLLM → benchmark → collect → stop.
     Raises OOMError or StartupTimeoutError on failure.
+
+    Contract status/evidence:
+      - Managed start (we launch vLLM): may be valid with managed_process_start evidence.
+      - External healthy server: always insufficient_evidence (healthy ≠ config applied).
+    Status hooks via on_progress for callers / reports.
     """
 
     def log(msg: str) -> None:
@@ -120,6 +134,10 @@ def run_experiment(
             on_progress(msg)
 
     init_mlflow(mlflow_experiment)
+    requested = config_knobs(cfg)
+    code_sha = resolve_git_sha()
+    run_id = uuid.uuid4().hex
+    sess = session_id or cfg.tags.get("session_id") or cfg.tags.get("session_prefix")
 
     # If vLLM is already running externally (e.g. via start_vllm.sh), skip
     # lifecycle management and send traffic directly. This avoids port conflicts
@@ -132,13 +150,39 @@ def run_experiment(
     except Exception:
         pass
 
-    with mlflow_run(run_name=cfg.experiment_id, tags={**cfg.tags, "workload": cfg.workload.name}) as run:
+    tags = {
+        **{k: str(v) for k, v in cfg.tags.items()},
+        "workload": cfg.workload.name,
+        "run_id": run_id,
+        "experiment_id": cfg.experiment_id,
+        "schema_version": "1",
+    }
+    if sess:
+        tags["session_id"] = str(sess)
+    if code_sha:
+        tags["code_sha"] = code_sha
+
+    with mlflow_run(run_name=cfg.experiment_id, tags=tags) as run:
         proc: VLLMProcess | None = None
+        evidence = None
+        actual: dict | None = None
+        status = ExperimentValidityStatus.INSUFFICIENT_EVIDENCE
 
         if _external:
             log(f"Using external vLLM at {VLLM_HOST}:{VLLM_PORT} (skipping lifecycle)")
+            if on_progress:
+                on_progress("status:insufficient_evidence:external_health_only")
+            evidence = external_unverified_evidence(host=VLLM_HOST, port=VLLM_PORT)
+            actual = None
+            status = derive_status(
+                evidence=evidence,
+                actual_config=actual,
+                requested_config=requested,
+            )
         else:
             log(f"Starting vLLM ({cfg.model_name}) …")
+            if on_progress:
+                on_progress("status:starting_managed_vllm")
             proc = VLLMProcess(cfg, host=VLLM_HOST, port=VLLM_PORT)
             proc.start()
             if proc.log_path:
@@ -146,11 +190,30 @@ def run_experiment(
 
             ready = proc.wait_ready_verbose(log)
             if not ready:
+                if on_progress:
+                    on_progress("status:failed:startup")
                 if proc.oom_in_log():
                     raise OOMError(f"vLLM OOM during startup — config: {cfg.experiment_id}")
                 if proc.is_crashed():
                     raise BenchmarkError(f"vLLM crashed (exit {proc.exit_code()}) — see {proc.log_path}")
                 raise StartupTimeoutError(f"vLLM not ready after startup timeout — see {proc.log_path}")
+
+            pid = proc._proc.pid if proc._proc is not None else None
+            evidence = managed_start_evidence(
+                process_pid=pid,
+                host=VLLM_HOST,
+                port=VLLM_PORT,
+                requested=requested,
+            )
+            # Managed process was started with CLI knobs == requested.
+            actual = dict(requested)
+            status = derive_status(
+                evidence=evidence,
+                actual_config=actual,
+                requested_config=requested,
+            )
+            if on_progress:
+                on_progress(f"status:{status.value}:managed_process_start")
 
         log("vLLM ready. Starting GPU monitor + load …")
 
@@ -171,6 +234,14 @@ def run_experiment(
         # TPOT = (E2E - TTFT) / (output_tokens - 1) ≈ E2E percentiles for now
         tpot_p = {k: max(0.0, e2e_p[k] - ttft_p[k]) for k in ttft_p}
 
+        hardware = HardwareInfo(
+            model_name=cfg.model_name,
+            engine=cfg.engine.value,
+            vllm_version=os.getenv("VLLM_VERSION"),
+            gpu_name=os.getenv("INFEROPS_GPU_NAME"),
+            cuda_version=os.getenv("CUDA_VERSION"),
+        )
+
         result = ExperimentResult(
             experiment_id=cfg.experiment_id,
             config=cfg,
@@ -186,11 +257,26 @@ def run_experiment(
             gpu_utilization_pct=gpu_summary.avg_util_pct,
             raw_ttft_ms=load.ttft_ms,
             raw_e2e_ms=load.e2e_ms,
+            run_id=run_id,
+            schema_version="1",
+            code_sha=code_sha,
+            session_id=str(sess) if sess else None,
             mlflow_run_id=run.info.run_id,
+            requested_config=requested,
+            actual_config=actual,
+            config_evidence=evidence,
+            status=status,
+            workload_hash=compute_workload_hash(cfg.workload),
+            hardware=hardware,
         )
 
         log_experiment_result(result)
-        log(f"Done — {result.throughput_rps:.1f} rps, TTFT p50={result.ttft.p50:.0f}ms")
+        log(
+            f"Done — {result.throughput_rps:.1f} rps, TTFT p50={result.ttft.p50:.0f}ms, "
+            f"status={result.status.value}, run_id={result.run_id}"
+        )
+        if on_progress:
+            on_progress(f"status:{result.status.value}:complete")
         return result
 
 

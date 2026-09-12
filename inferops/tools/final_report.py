@@ -10,6 +10,16 @@ from pydantic import BaseModel, Field
 from inferops.observability import span
 
 
+def _is_deployable_best(best: dict[str, Any] | None) -> bool:
+    """Deploy recommendations require valid status + critical config evidence."""
+    if not best:
+        return False
+    return (
+        best.get("validity_status") == "valid"
+        and bool(best.get("has_config_evidence"))
+    )
+
+
 class FinalReportInput(BaseModel):
     workload_name: str = Field(description="Workload that was optimized")
     session_prefix: str = Field(description="Experiment ID prefix for this session")
@@ -46,6 +56,9 @@ def write_final_report(inp: FinalReportInput) -> FinalReportOutput:
 
     Includes: executive summary, experiment table, best config, citations,
     and a recommendation section. Writes to disk and returns the path.
+
+    Deploy recommendations are withheld unless best_summary is contract-valid
+    with critical config evidence.
     """
     with span("tool.write_final_report", {"workload": inp.workload_name}):
         lines: list[str] = []
@@ -62,20 +75,39 @@ def write_final_report(inp: FinalReportInput) -> FinalReportOutput:
 
         # Executive summary
         improvement = 0.0
+        deployable = _is_deployable_best(inp.best_summary)
         if inp.baseline_summary and inp.best_summary:
             improvement = inp.best_summary.get("vs_baseline_pct", 0.0)
             icon = "🟢" if improvement > 5 else "🟡" if improvement > 0 else "🔴"
+            status = inp.best_summary.get("validity_status", "insufficient_evidence")
             lines += [
                 "## Executive Summary",
                 "",
                 f"{icon} Best configuration achieved **{improvement:+.1f}%** "
-                f"vs baseline on primary metric.",
+                f"vs baseline on primary metric "
+                f"(validity=`{status}`).",
                 "",
                 f"- **Baseline:** `{inp.baseline_summary['experiment_id']}`  "
-                f"rps={inp.baseline_summary['throughput_rps']:.3f}",
+                f"rps={inp.baseline_summary['throughput_rps']:.3f}  "
+                f"status=`{inp.baseline_summary.get('validity_status', 'unknown')}`",
                 f"- **Best found:** `{inp.best_summary['experiment_id']}`  "
-                f"rps={inp.best_summary['throughput_rps']:.3f}",
+                f"rps={inp.best_summary['throughput_rps']:.3f}  "
+                f"run_id=`{inp.best_summary.get('run_id', '')}`  "
+                f"mlflow=`{inp.best_summary.get('mlflow_run_id') or ''}`",
                 f"- **Bottleneck at best:** `{inp.best_summary.get('bottleneck', 'unknown')}`",
+                "",
+            ]
+            sections += 1
+        elif inp.baseline_summary and not inp.best_summary:
+            lines += [
+                "## Executive Summary",
+                "",
+                "No promotable (valid + evidenced) candidate was selected as best. "
+                "High scores without actual-config evidence are not deployable.",
+                "",
+                f"- **Baseline:** `{inp.baseline_summary['experiment_id']}`  "
+                f"rps={inp.baseline_summary['throughput_rps']:.3f}  "
+                f"status=`{inp.baseline_summary.get('validity_status', 'unknown')}`",
                 "",
             ]
             sections += 1
@@ -85,12 +117,14 @@ def write_final_report(inp: FinalReportInput) -> FinalReportOutput:
             lines += [
                 "## Experiment Log",
                 "",
-                "| # | experiment_id | param | value | rps | ttft_p99 (ms) | bottleneck | vs baseline |",
-                "|---|---|---|---|---|---|---|---|",
+                "| # | experiment_id | run_id | status | param | value | rps | ttft_p99 (ms) | bottleneck | vs baseline |",
+                "|---|---|---|---|---|---|---|---|---|---|",
             ]
             for i, s in enumerate(inp.experiment_summaries, 1):
                 lines.append(
                     f"| {i} | `{s['experiment_id']}` "
+                    f"| `{s.get('run_id', '')}` "
+                    f"| `{s.get('validity_status', 'insufficient_evidence')}` "
                     f"| {s.get('param_changed') or '—'} "
                     f"| {s.get('value_changed', '')} "
                     f"| {s['throughput_rps']:.3f} "
@@ -113,28 +147,41 @@ def write_final_report(inp: FinalReportInput) -> FinalReportOutput:
             sections += 1
 
         # Recommendation
-        if inp.best_summary:
+        lines += ["## Recommendation", ""]
+        if deployable and inp.best_summary:
             best = inp.best_summary
-            rec_lines = [
-                "## Recommendation",
-                "",
+            lines.append(
                 f"Deploy experiment **`{best['experiment_id']}`** "
-                f"(bottleneck: `{best.get('bottleneck', 'unknown')}`).",
-                "",
-                "Suggested next steps:",
-            ]
+                f"(run_id=`{best.get('run_id', '')}`, "
+                f"bottleneck: `{best.get('bottleneck', 'unknown')}`)."
+            )
+            lines.append("")
+            lines.append("Suggested next steps:")
             bottleneck = best.get("bottleneck", "unknown")
             if bottleneck == "compute-bound":
-                rec_lines.append("- Consider increasing `max_num_batched_tokens` further or enabling FP8 quantisation.")
+                lines.append("- Consider increasing `max_num_batched_tokens` further or enabling FP8 quantisation.")
             elif bottleneck == "memory-bound":
-                rec_lines.append("- Reduce `max_num_seqs` or `max_model_len` to free KV cache headroom.")
+                lines.append("- Reduce `max_num_seqs` or `max_model_len` to free KV cache headroom.")
             elif bottleneck in ("scheduling-bound", "kv-bound"):
-                rec_lines.append("- Enable `enable_prefix_caching` or `enable_chunked_prefill` if not already tried.")
+                lines.append("- Enable `enable_prefix_caching` or `enable_chunked_prefill` if not already tried.")
             else:
-                rec_lines.append("- Run a wider search or try a different workload scenario.")
-            rec_lines.append("")
-            lines += rec_lines
-            sections += 1
+                lines.append("- Run a wider search or try a different workload scenario.")
+        elif inp.best_summary:
+            best = inp.best_summary
+            lines.append(
+                f"**No deploy recommendation.** Candidate `{best['experiment_id']}` "
+                f"has status=`{best.get('validity_status', 'insufficient_evidence')}` "
+                "and/or lacks critical actual-config evidence. "
+                "Config file alone, HTTP 200 alone, or performance change alone "
+                "are never sufficient."
+            )
+        else:
+            lines.append(
+                "**No deploy recommendation.** No valid, evidenced best candidate "
+                "was selected in this session."
+            )
+        lines.append("")
+        sections += 1
 
         # Write file
         out_path = Path(inp.output_path)

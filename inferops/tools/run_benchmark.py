@@ -48,6 +48,10 @@ class RunBenchmarkInput(BaseModel):
         default=True,
         description="Whether to save the result to the experiment memory DB.",
     )
+    session_id: str | None = Field(
+        default=None,
+        description="Session prefix / id mapped to run_id and MLflow tags.",
+    )
 
 
 class RunBenchmarkOutput(BaseModel):
@@ -64,6 +68,8 @@ class RunBenchmarkOutput(BaseModel):
     gpu_mem_gb: float | None
     success_rate: str
     mlflow_run_id: str | None
+    run_id: str = ""
+    status: str = "insufficient_evidence"
     error: str = ""
 
 
@@ -77,6 +83,9 @@ def run_benchmark(inp: RunBenchmarkInput) -> RunBenchmarkOutput:
 
     Raises ValueError if any config_patch value is outside the safe range for
     the RTX 3060 (6 GB) hardware.
+
+    Contract: persisted results carry run_id / status / evidence. Missing
+    critical evidence yields status=insufficient_evidence (never auto-valid).
     """
     # Validate patch ranges
     for key, val in inp.config_patch.items():
@@ -99,9 +108,14 @@ def run_benchmark(inp: RunBenchmarkInput) -> RunBenchmarkOutput:
         )
 
     # Build config by patching the default
+    tags = {"session_id": inp.session_id} if inp.session_id else {}
     base_cfg = make_configs(workload)[0]  # default variant as base
     patched = base_cfg.model_copy(
-        update={**inp.config_patch, "experiment_id": inp.experiment_id}
+        update={
+            **inp.config_patch,
+            "experiment_id": inp.experiment_id,
+            "tags": {**base_cfg.tags, **tags},
+        }
     )
     if patched.max_num_batched_tokens < patched.max_model_len:
         raise ValueError(
@@ -113,13 +127,24 @@ def run_benchmark(inp: RunBenchmarkInput) -> RunBenchmarkOutput:
 
     with span(
         "tool.run_benchmark",
-        {"experiment_id": inp.experiment_id, "workload": inp.workload_name},
+        {
+            "experiment_id": inp.experiment_id,
+            "workload": inp.workload_name,
+            "session_id": inp.session_id or "",
+        },
     ):
-        result: ExperimentResult = run_experiment(patched, prompts)
+        result: ExperimentResult = run_experiment(
+            patched,
+            prompts,
+            session_id=inp.session_id,
+        )
 
     if inp.persist:
         save_result(result)
 
+    status_value = (
+        result.status.value if hasattr(result.status, "value") else str(result.status)
+    )
     return RunBenchmarkOutput(
         experiment_id=result.experiment_id,
         workload_name=inp.workload_name,
@@ -133,4 +158,6 @@ def run_benchmark(inp: RunBenchmarkInput) -> RunBenchmarkOutput:
         gpu_mem_gb=result.gpu_memory_used_gb,
         success_rate=f"{result.successful_requests}/{result.total_requests}",
         mlflow_run_id=result.mlflow_run_id,
+        run_id=result.run_id,
+        status=status_value,
     )

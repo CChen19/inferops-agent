@@ -96,14 +96,32 @@ def mlflow_run(
 
 
 def log_experiment_result(result: Any) -> None:
-    """Log an ExperimentResult to the active MLflow run."""
+    """Log an ExperimentResult to the active MLflow run (aligned by run_id)."""
     from inferops.schemas import ExperimentResult  # avoid circular at module level
 
     assert isinstance(result, ExperimentResult)
     cfg = result.config
 
+    status_value = (
+        result.status.value if hasattr(result.status, "value") else str(result.status)
+    )
+    # Identity tags: experiment_id / session / run_id / mlflow alignment
+    mlflow.set_tags(
+        {
+            "run_id": result.run_id,
+            "experiment_id": result.experiment_id,
+            "session_id": result.session_id or "",
+            "schema_version": result.schema_version,
+            "status": status_value,
+            "workload_hash": result.workload_hash or "",
+            "code_sha": result.code_sha or "",
+        }
+    )
     mlflow.log_params(
         {
+            "run_id": result.run_id,
+            "schema_version": result.schema_version,
+            "status": status_value,
             "model": cfg.model_name,
             "model_size": cfg.model_size.value,
             "max_num_seqs": cfg.max_num_seqs,
@@ -116,6 +134,11 @@ def log_experiment_result(result: Any) -> None:
             "scheduler_policy": cfg.scheduler_policy.value,
             "workload": cfg.workload.name,
             "concurrency": cfg.workload.concurrency,
+            "workload_hash": result.workload_hash or "",
+            "has_actual_config": result.actual_config is not None,
+            "config_evidence_kind": (
+                result.config_evidence.kind if result.config_evidence else ""
+            ),
         }
     )
     mlflow.log_metrics(

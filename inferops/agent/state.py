@@ -31,6 +31,11 @@ class ExperimentSummary(TypedDict):
     e2e_p50_ms: float
     bottleneck: str
     vs_baseline_pct: float      # % change vs baseline on primary metric (>0 = better)
+    # Week-1 contract fields (required for best-candidate gating)
+    run_id: str
+    validity_status: str        # valid | invalid | failed | insufficient_evidence
+    mlflow_run_id: str | None
+    has_config_evidence: bool
 
 
 # ---------------------------------------------------------------------------
@@ -142,9 +147,14 @@ def summary_from_result(
     value_changed: Any,
     baseline_primary: float,
     primary_metric: str,
+    bottleneck: str = "unknown",
 ) -> ExperimentSummary:
+    from inferops.schemas import ExperimentValidityStatus, has_critical_config_evidence
+
     primary_val = getattr(result, primary_metric, result.throughput_rps)
     vs_baseline = (primary_val - baseline_primary) / baseline_primary * 100 if baseline_primary else 0.0
+    status = result.status
+    status_value = status.value if isinstance(status, ExperimentValidityStatus) else str(status)
     return ExperimentSummary(
         experiment_id=result.experiment_id,
         param_changed=param_changed,
@@ -154,8 +164,24 @@ def summary_from_result(
         ttft_p50_ms=round(result.ttft.p50, 1),
         ttft_p99_ms=round(result.ttft.p99, 1),
         e2e_p50_ms=round(result.e2e_latency.p50, 1),
-        bottleneck="unknown",   # filled by executor after analyze_bottleneck
+        bottleneck=bottleneck,
         vs_baseline_pct=round(vs_baseline, 2),
+        run_id=getattr(result, "run_id", "") or "",
+        validity_status=status_value,
+        mlflow_run_id=getattr(result, "mlflow_run_id", None),
+        has_config_evidence=has_critical_config_evidence(
+            getattr(result, "config_evidence", None)
+        ),
+    )
+
+
+def is_promotable_summary(summary: ExperimentSummary | dict[str, Any] | None) -> bool:
+    """Gate best-candidate selection at the summary level."""
+    if not summary:
+        return False
+    return (
+        summary.get("validity_status") == "valid"
+        and bool(summary.get("has_config_evidence"))
     )
 
 

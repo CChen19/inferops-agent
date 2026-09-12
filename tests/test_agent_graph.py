@@ -32,6 +32,7 @@ def test_run_baseline_loads_existing_result(result):
     assert summary["experiment_id"] == "sess_baseline"
     assert summary["throughput_rps"] == result.throughput_rps
     assert bottleneck == "compute-bound"
+    assert summary["validity_status"] == "insufficient_evidence"
 
 
 def test_run_agent_initializes_state_and_invokes_graph():
@@ -46,6 +47,10 @@ def test_run_agent_initializes_state_and_invokes_graph():
         "e2e_p50_ms": 900.0,
         "bottleneck": "compute-bound",
         "vs_baseline_pct": 0.0,
+        "run_id": "aa",
+        "validity_status": "valid",
+        "mlflow_run_id": "m0",
+        "has_config_evidence": True,
     }
     captured = {}
 
@@ -84,6 +89,10 @@ def test_prepare_initial_state_includes_baseline_and_best():
         "e2e_p50_ms": 900.0,
         "bottleneck": "compute-bound",
         "vs_baseline_pct": 0.0,
+        "run_id": "aa",
+        "validity_status": "valid",
+        "mlflow_run_id": "m0",
+        "has_config_evidence": True,
     }
 
     with patch("inferops.agent.graph._run_baseline", return_value=(baseline, "compute-bound")):
@@ -96,6 +105,30 @@ def test_prepare_initial_state_includes_baseline_and_best():
     assert state["current_bottleneck"] == "compute-bound"
     assert state["experiments_remaining"] == 4
 
+
+def test_prepare_initial_state_skips_best_when_baseline_unevidenced():
+    baseline = {
+        "experiment_id": "sess_baseline",
+        "param_changed": None,
+        "value_changed": None,
+        "throughput_rps": 2.0,
+        "tokens_per_second": 128.0,
+        "ttft_p50_ms": 48.0,
+        "ttft_p99_ms": 70.0,
+        "e2e_p50_ms": 900.0,
+        "bottleneck": "compute-bound",
+        "vs_baseline_pct": 0.0,
+        "run_id": "aa",
+        "validity_status": "insufficient_evidence",
+        "mlflow_run_id": None,
+        "has_config_evidence": False,
+    }
+
+    with patch("inferops.agent.graph._run_baseline", return_value=(baseline, "compute-bound")):
+        state = prepare_initial_state("chat_short", "sess_", max_experiments=5)
+
+    assert state["baseline_summary"] == baseline
+    assert state["best_summary"] is None
 
 def test_build_graph_can_render_mermaid():
     graph = build_graph(object())

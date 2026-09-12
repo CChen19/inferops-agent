@@ -22,10 +22,12 @@ from inferops.agent.state import (
     ExperimentSummary,
     Hypothesis,
     is_duplicate,
+    is_promotable_summary,
     pending_hypotheses,
     summary_from_result,
 )
 from inferops.memory.db import get_result_by_id
+from inferops.schemas import is_promotable
 from inferops.tools.analyze_bottleneck import AnalyzeBottleneckInput, analyze_bottleneck
 from inferops.tools.compare_experiments import CompareExperimentsInput, compare_experiments
 from inferops.tools.run_benchmark import RunBenchmarkInput, run_benchmark
@@ -88,6 +90,7 @@ def executor_node(state: AgentState) -> dict:
                 config_patch={hyp["param"]: hyp["value"]},
                 workload_name=state["workload_name"],
                 persist=True,
+                session_id=state["session_prefix"],
             ))
         except Exception as exc:
             console.print(f"  [red]executor: benchmark failed ({exc})[/red]")
@@ -123,28 +126,61 @@ def executor_node(state: AgentState) -> dict:
         except Exception:
             pass
 
-    # --- Build ExperimentSummary ---
+    # --- Build ExperimentSummary (contract fields from result when present) ---
     baseline_primary = (
         state["baseline_summary"][primary_metric]
         if state["baseline_summary"] else 0.0
     )
-    summary = ExperimentSummary(
-        experiment_id=eid,
-        param_changed=hyp["param"],
-        value_changed=hyp["value"],
-        throughput_rps=bench_dict.get("throughput_rps", 0.0),
-        tokens_per_second=bench_dict.get("tokens_per_second", 0.0),
-        ttft_p50_ms=bench_dict.get("ttft_p50_ms", 0.0),
-        ttft_p99_ms=bench_dict.get("ttft_p99_ms", 0.0),
-        e2e_p50_ms=bench_dict.get("e2e_p50_ms", 0.0),
-        bottleneck=bottleneck,
-        vs_baseline_pct=round(vs_baseline_pct, 2),
-    )
+    if result is not None:
+        summary = summary_from_result(
+            result,
+            param_changed=hyp["param"],
+            value_changed=hyp["value"],
+            baseline_primary=baseline_primary,
+            primary_metric=primary_metric,
+            bottleneck=bottleneck,
+        )
+        # Prefer bootstrap comparison when available
+        summary["vs_baseline_pct"] = round(vs_baseline_pct, 2)
+    else:
+        summary = ExperimentSummary(
+            experiment_id=eid,
+            param_changed=hyp["param"],
+            value_changed=hyp["value"],
+            throughput_rps=bench_dict.get("throughput_rps", 0.0),
+            tokens_per_second=bench_dict.get("tokens_per_second", 0.0),
+            ttft_p50_ms=bench_dict.get("ttft_p50_ms", 0.0),
+            ttft_p99_ms=bench_dict.get("ttft_p99_ms", 0.0),
+            e2e_p50_ms=bench_dict.get("e2e_p50_ms", 0.0),
+            bottleneck=bottleneck,
+            vs_baseline_pct=round(vs_baseline_pct, 2),
+            run_id=bench_dict.get("run_id") or "",
+            validity_status=bench_dict.get("status") or "insufficient_evidence",
+            mlflow_run_id=bench_dict.get("mlflow_run_id"),
+            has_config_evidence=False,
+        )
 
-    # --- Update best ---
+    # --- Update best (gated on contract validity + critical evidence) ---
+    # Failing path this closes: high primary metric without actual-config evidence
+    # used to win best_summary. Scores alone never promote.
     current_primary = bench_dict.get(primary_metric, 0.0)
-    best_primary = state["best_summary"][primary_metric] if state["best_summary"] else 0.0
-    new_best = summary if current_primary > best_primary else state["best_summary"]
+    candidate_ok = (
+        is_promotable(result) if result is not None else is_promotable_summary(summary)
+    )
+    best = state["best_summary"]
+    if candidate_ok:
+        if best is None or not is_promotable_summary(best):
+            new_best = summary
+        else:
+            best_primary = best[primary_metric]
+            new_best = summary if current_primary > best_primary else best
+    else:
+        new_best = best
+        console.print(
+            f"  [yellow]executor: not promoting {eid} to best "
+            f"(status={summary.get('validity_status')}, "
+            f"evidence={summary.get('has_config_evidence')})[/yellow]"
+        )
 
     # --- Mark hypothesis done ---
     status = "success" if vs_baseline_pct >= 0 else "failed"
@@ -157,18 +193,23 @@ def executor_node(state: AgentState) -> dict:
         "workload": state["workload_name"],
         "action": f"run_benchmark({hyp['param']}={hyp['value']})",
         "experiment_id": eid,
+        "run_id": summary.get("run_id"),
+        "validity_status": summary.get("validity_status"),
         "reasoning": hyp["rationale"],
         "result": {
             primary_metric: current_primary,
             "ttft_p99_ms": summary["ttft_p99_ms"],
             "bottleneck": bottleneck,
             "vs_baseline_pct": vs_baseline_pct,
+            "promoted_to_best": new_best is not None
+            and new_best.get("experiment_id") == eid,
         },
     }
 
     console.print(
         f"  executor: done — {primary_metric}={current_primary:.3f}  "
-        f"bottleneck={bottleneck}  vs_baseline={vs_baseline_pct:+.1f}%"
+        f"bottleneck={bottleneck}  vs_baseline={vs_baseline_pct:+.1f}%  "
+        f"status={summary.get('validity_status')}"
     )
 
     return {
@@ -200,10 +241,15 @@ def _set_status(
 
 
 def _result_to_bench_dict(result) -> dict[str, Any]:
+    status = getattr(result, "status", None)
+    status_value = status.value if hasattr(status, "value") else (status or "insufficient_evidence")
     return {
         "throughput_rps":   result.throughput_rps,
         "tokens_per_second": result.tokens_per_second,
         "ttft_p50_ms":      result.ttft.p50,
         "ttft_p99_ms":      result.ttft.p99,
         "e2e_p50_ms":       result.e2e_latency.p50,
+        "run_id":           getattr(result, "run_id", ""),
+        "status":           status_value,
+        "mlflow_run_id":    getattr(result, "mlflow_run_id", None),
     }

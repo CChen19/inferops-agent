@@ -28,8 +28,11 @@ from inferops.agent.state import (
     AgentState,
     ExperimentSummary,
     initial_state,
+    is_promotable_summary,
+    summary_from_result,
 )
 from inferops.memory.db import get_result_by_id, init_db, save_result
+from inferops.schemas import is_promotable
 from inferops.tools.analyze_bottleneck import AnalyzeBottleneckInput, analyze_bottleneck
 from inferops.tools.run_benchmark import RunBenchmarkInput, run_benchmark
 
@@ -110,6 +113,9 @@ def build_graph(llm) -> Any:
 def _run_baseline(workload_name: str, session_prefix: str) -> tuple[ExperimentSummary, str]:
     """
     Run (or load) the default config as baseline. Returns (summary, bottleneck).
+
+    Legacy DB rows without contract evidence stay insufficient_evidence and are
+    NOT auto-promoted to valid / best.
     """
     from configs.search_space import make_configs
     from workloads.definitions import ALL_WORKLOADS
@@ -125,14 +131,18 @@ def _run_baseline(workload_name: str, session_prefix: str) -> tuple[ExperimentSu
         from workloads.definitions import get_prompts
         prompts = get_prompts(workload)
         from inferops.bench_runner import run_experiment
-        result = run_experiment(base_cfg, prompts)
+        result = run_experiment(base_cfg, prompts, session_id=session_prefix)
         save_result(result)
     else:
         console.print(f"[dim]Baseline loaded from DB: {eid}[/dim]")
         result = existing
+        if not is_promotable(result):
+            console.print(
+                f"[yellow]Baseline {eid} is not promotable "
+                f"(status={result.status.value}) — will not seed best_summary[/yellow]"
+            )
 
     primary_metric = WORKLOAD_PRIMARY_METRIC[workload_name]
-    primary_val = getattr(result, primary_metric, result.throughput_rps)
 
     bottleneck = "unknown"
     try:
@@ -141,18 +151,17 @@ def _run_baseline(workload_name: str, session_prefix: str) -> tuple[ExperimentSu
     except Exception:
         pass
 
-    summary = ExperimentSummary(
-        experiment_id=eid,
+    summary = summary_from_result(
+        result,
         param_changed=None,
         value_changed=None,
-        throughput_rps=round(result.throughput_rps, 3),
-        tokens_per_second=round(result.tokens_per_second, 1),
-        ttft_p50_ms=round(result.ttft.p50, 1),
-        ttft_p99_ms=round(result.ttft.p99, 1),
-        e2e_p50_ms=round(result.e2e_latency.p50, 1),
+        baseline_primary=getattr(result, primary_metric, result.throughput_rps),
+        primary_metric=primary_metric,
         bottleneck=bottleneck,
-        vs_baseline_pct=0.0,
     )
+    # Baseline id is session-scoped even when loading a reused row
+    summary["experiment_id"] = eid
+    summary["vs_baseline_pct"] = 0.0
     return summary, bottleneck
 
 
@@ -165,14 +174,20 @@ def prepare_initial_state(
     Build an AgentState with the baseline experiment already run or loaded.
 
     Both the CLI and Chainlit UI need this setup before entering the graph:
-    planner/executor logic expects baseline_summary and best_summary to exist
-    so that proposed changes can be compared against the default config.
+    planner/executor logic expects baseline_summary to exist so that proposed
+    changes can be compared against the default config.
+
+    best_summary is only seeded from baseline when the baseline is promotable
+    (valid + critical config evidence). Old / insufficient-evidence rows never
+    auto-become best.
     """
     baseline_summary, baseline_bottleneck = _run_baseline(workload_name, session_prefix)
 
     state = initial_state(workload_name, session_prefix, max_experiments=max_experiments)
     state["baseline_summary"] = baseline_summary
-    state["best_summary"] = baseline_summary
+    state["best_summary"] = (
+        baseline_summary if is_promotable_summary(baseline_summary) else None
+    )
     state["experiment_summaries"] = [baseline_summary]
     state["tried_experiment_ids"] = [baseline_summary["experiment_id"]]
     state["current_bottleneck"] = baseline_bottleneck

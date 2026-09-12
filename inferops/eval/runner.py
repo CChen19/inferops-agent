@@ -63,15 +63,23 @@ def _best_agent_result(
     metric: str,
     direction: str,
 ) -> dict[str, Any] | None:
-    """Return the agent's best result for a workload, or None if no runs found."""
-    rows = query_results(workload_name=workload_name, sort_by=metric, top_k=500)
+    """Return the agent's best *promotable* result, or None if none qualify.
+
+    Only status=valid rows are considered. High-scoring insufficient_evidence /
+    invalid / failed candidates must not win eval best.
+    """
+    rows = query_results(
+        workload_name=workload_name,
+        sort_by=metric,
+        top_k=500,
+        promotable_only=True,
+    )
     agent_rows = [r for r in rows if r["experiment_id"].startswith(prefix)]
     if not agent_rows:
         return None
     if direction == "max":
         return max(agent_rows, key=lambda r: r.get(metric, 0.0))
     return min(agent_rows, key=lambda r: r.get(metric, float("inf")))
-
 
 def evaluate(
     prefix: str,
