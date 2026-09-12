@@ -232,7 +232,12 @@ async def _send_one(
     )
     # Non-stream with tokens: first_token_seen forced true for classify only;
     # TTFT remains None because it was not client-measured.
-    if not stream_response and outcome == RequestOutcome.SUCCESS and output_tokens > 0:
+    if (
+        not stream_response
+        and outcome == RequestOutcome.SUCCESS
+        and output_tokens is not None
+        and output_tokens > 0
+    ):
         # Still success/truncate, but TTFT missing.
         pass
 
@@ -240,6 +245,7 @@ async def _send_one(
         e2e_ms=e2e_ms,
         ttft_ms=ttft_ms,
         output_tokens=output_tokens,
+        token_count_source=token_source,
     )
 
     return RequestRecord(

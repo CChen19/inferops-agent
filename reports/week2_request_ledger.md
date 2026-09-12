@@ -30,9 +30,9 @@ through `report_from_ledger` / `report_from_result` only.
 | Metric | Formula | Denominator / sample scope | Never |
 |---|---|---|---|
 | **Client TTFT** | `t_first_token − t_start` (streaming only) | `measured_requests_with_client_ttft` (SUCCESS+TRUNCATE with observed first token) | Invent TTFT from E2E on non-stream / no-token |
-| **Per-request TPOT** | `(e2e − ttft) / (output_tokens − 1)` | `success_or_truncate_with_output_tokens_ge_2` | Write `0` when `output_tokens < 2` |
+| **Per-request TPOT** | `(e2e − ttft) / (output_tokens − 1)` | `success_or_truncate_with_usage_tokens_ge_2` | Write `0` when `output_tokens < 2`; use tokens when `token_count_source=missing` |
 | **Throughput RPS** | `successful / window_s` | `successful` = SUCCESS+TRUNCATE; window = load wall clock (`window_start_s`→`window_end_s`) | Count fail/timeout/cancel/incomplete as success |
-| **Token throughput** | `sum(output_tokens of SUCCESS+TRUNCATE) / window_s` | Actual completion tokens only (no `max(..., 1)`) | Phantom tokens |
+| **Token throughput** | `sum(usage output_tokens of SUCCESS+TRUNCATE) / window_s` | Only `token_count_source=usage`; missing provenance → `None` | Phantom / SSE-chunk / unprovenanced tokens |
 | **Error rate** | `failed / total_measured` | `total_measured` = non-warmup rows; failed = FAIL+TIMEOUT+CANCEL+INCOMPLETE | Drop failures from the denominator |
 | **E2E percentiles** | nearest-rank on eligible e2e_ms | `success_or_truncate_with_e2e` | Package incomplete as success |
 | **GPU util / mem** | monitor average / max | Only if `samples > 0` | Invent 0% / 0 GB |
@@ -66,7 +66,7 @@ unevidenced row **cannot** promote best.
 - Cases: success, fail, timeout, cancel, truncate, zero output, single output token
 - Independent recalculation from persisted ledger matches report
 - Incomplete ≠ success
-- `pytest -q` → **247 passed** (2026-09-12, correction round)
+- `pytest -q` (see PR body; correction round 2)
 
 Synthetic example (not a real vLLM measurement):
 

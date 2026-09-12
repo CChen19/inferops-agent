@@ -50,7 +50,7 @@ class FinalReportInput(BaseModel):
 class FinalReportOutput(BaseModel):
     output_path: str
     sections_written: int
-    improvement_pct: float
+    improvement_pct: float | None = None
 
 
 def write_final_report(inp: FinalReportInput) -> FinalReportOutput:
@@ -77,11 +77,11 @@ def write_final_report(inp: FinalReportInput) -> FinalReportOutput:
         ]
 
         # Executive summary
-        improvement = 0.0
+        improvement: float | None = None
         deployable = _is_deployable_best(inp.best_summary)
         if inp.baseline_summary and inp.best_summary:
             raw_imp = inp.best_summary.get("vs_baseline_pct")
-            improvement = float(raw_imp) if raw_imp is not None else 0.0
+            improvement = float(raw_imp) if raw_imp is not None else None
             icon = "🟢" if raw_imp is not None and improvement > 5 else "🟡" if raw_imp is not None and improvement > 0 else "🔴"
             status = inp.best_summary.get("validity_status", "insufficient_evidence")
             lines += [

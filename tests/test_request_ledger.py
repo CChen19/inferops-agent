@@ -22,10 +22,12 @@ from inferops.metrics.definitions import (
     compute_tpot_ms,
 )
 from inferops.metrics.ledger import (
+    LEDGER_SCHEMA_VERSION,
     RequestLedger,
     RequestOutcome,
     RequestRecord,
     RunConditions,
+    TokenCountSource,
     TerminationReason,
     load_ledger,
     persist_ledger,
@@ -52,6 +54,7 @@ def _rec(
     input_tokens: int | None = 10,
     is_warmup: bool = False,
     error: str = "",
+    token_count_source: TokenCountSource = TokenCountSource.USAGE,
 ) -> RequestRecord:
     ttft = (t_first - t0) * 1000.0 if t_first is not None else None
     e2e = (t_end - t0) * 1000.0
@@ -66,6 +69,7 @@ def _rec(
         e2e_ms=e2e,
         output_tokens=output_tokens,
         input_tokens=input_tokens,
+        token_count_source=token_count_source,
         outcome=outcome,
         termination_reason=termination,
         error=error,
@@ -195,8 +199,33 @@ def test_tpot_na_for_zero_and_single_output_token():
 
 
 def test_tpot_computed_for_two_plus_tokens():
-    assert compute_tpot_ms(e2e_ms=1100.0, ttft_ms=100.0, output_tokens=11) == 100.0
-    assert compute_tpot_ms(e2e_ms=300.0, ttft_ms=100.0, output_tokens=2) == 200.0
+    assert (
+        compute_tpot_ms(
+            e2e_ms=1100.0,
+            ttft_ms=100.0,
+            output_tokens=11,
+            token_count_source=TokenCountSource.USAGE,
+        )
+        == 100.0
+    )
+    assert (
+        compute_tpot_ms(
+            e2e_ms=300.0,
+            ttft_ms=100.0,
+            output_tokens=2,
+            token_count_source=TokenCountSource.USAGE,
+        )
+        == 200.0
+    )
+    assert (
+        compute_tpot_ms(
+            e2e_ms=1100.0,
+            ttft_ms=100.0,
+            output_tokens=11,
+            token_count_source=TokenCountSource.MISSING,
+        )
+        is None
+    )
 
 
 def test_request_record_never_stores_tpot_zero_for_single_token():
@@ -371,7 +400,8 @@ def test_ledger_json_roundtrip_keys(tmp_path: Path):
     path = persist_ledger(ledger, tmp_path / "l.json")
     raw = json.loads(path.read_text())
     assert raw["run_id"] == RUN_ID
-    assert raw["schema_version"] == "1"
+    assert raw["schema_version"] == LEDGER_SCHEMA_VERSION
+    assert LEDGER_SCHEMA_VERSION == "2"
     assert all("request_id" in r for r in raw["records"])
     assert any(r["is_warmup"] for r in raw["records"])
 
@@ -604,3 +634,51 @@ def test_missing_latency_stays_none_in_summary(result):
     assert summary["ttft_p99_ms"] is None
     assert summary["e2e_p50_ms"] is None
     assert summary["vs_baseline_pct"] is None
+
+
+def test_schema_v1_rejected_as_non_canonical():
+    """v1 / forged SSE-chunk ledgers cannot load as canonical schema 2."""
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="not canonical"):
+        RequestLedger.model_validate(
+            {"run_id": RUN_ID, "schema_version": "1", "records": []}
+        )
+
+
+def test_missing_source_tokens_ignored_after_reload(tmp_path: Path):
+    """P0-A: token_count_source=missing → TPOT/tok-s ignore output_tokens."""
+    rec = RequestRecord(
+        run_id=RUN_ID,
+        request_id="forged-sse-chunks",
+        t_start_s=0.0,
+        t_first_token_s=0.1,
+        t_end_s=1.1,
+        ttft_ms=100.0,
+        e2e_ms=1100.0,
+        output_tokens=11,
+        token_count_source=TokenCountSource.MISSING,
+        outcome=RequestOutcome.SUCCESS,
+        termination_reason=TerminationReason.STOP,
+    )
+    assert rec.tpot_ms is None
+
+    ledger = RequestLedger(
+        run_id=RUN_ID, window_start_s=0.0, window_end_s=1.0, records=[rec]
+    )
+    path = persist_ledger(ledger, tmp_path / "missing_source.json")
+    reloaded = load_ledger(path)
+    row = reloaded.by_request_id("forged-sse-chunks")
+    assert row is not None
+    assert row.output_tokens == 11
+    assert row.token_count_source == TokenCountSource.MISSING
+    assert row.tpot_ms is None
+
+    agg = recalculate_from_ledger(reloaded)
+    assert agg.tpot.sample_n == 0
+    assert agg.tpot.p50 is None
+    assert agg.tokens_per_second is None
+    assert agg.total_output_tokens is None
+    # Throughput still counts the successful request; only token metrics ignore it.
+    assert agg.successful_requests == 1
+    assert agg.throughput_rps == pytest.approx(1.0)

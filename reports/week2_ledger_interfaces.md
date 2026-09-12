@@ -11,7 +11,8 @@ Item ⑤ (not this PR) should consume these names. Do not invent parallel schema
 ## Schema versions
 
 - `EXPERIMENT_SCHEMA_VERSION = "1"` (`inferops.schemas`) — Week-1 contract, unchanged.
-- `LEDGER_SCHEMA_VERSION = "1"` (`inferops.metrics.ledger`).
+- `LEDGER_SCHEMA_VERSION = "2"` (`inferops.metrics.ledger`).
+  v2: `token_count_source=missing` makes `output_tokens` unusable for TPOT / tok-s.
 
 ## Types
 
@@ -33,7 +34,7 @@ Item ⑤ (not this PR) should consume these names. Do not invent parallel schema
 
 | Name | Contract |
 |---|---|
-| `compute_tpot_ms(e2e_ms, ttft_ms, output_tokens)` | `None` if `output_tokens < 2` — never `0` |
+| `compute_tpot_ms(e2e_ms, ttft_ms, output_tokens, token_count_source)` | `None` if source ≠ `usage` or `output_tokens < 2` — never `0` |
 | `classify_http_outcome(...)` | Maps HTTP / timeout / cancel / finish_reason → outcome |
 | `recalculate_from_ledger(ledger, gpu_*=None, cost_usd=None)` | **Only** aggregate entrypoint |
 | `report_from_ledger` / `report_from_result` | Report entrypoint (same numbers) |

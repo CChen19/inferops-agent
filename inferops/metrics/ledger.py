@@ -7,9 +7,12 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Iterable
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
-LEDGER_SCHEMA_VERSION = "1"
+# v2: token_count_source is required for TPOT / tok-s. `missing` (default for
+# old rows / forged SSE-chunk counts) means tokens are unusable for those
+# aggregates even if `output_tokens` is populated.
+LEDGER_SCHEMA_VERSION = "2"
 
 
 class RequestOutcome(str, Enum):
@@ -102,18 +105,15 @@ class RequestRecord(BaseModel):
         if self.e2e_ms is None and self.t_end_s is not None:
             self.e2e_ms = (self.t_end_s - self.t_start_s) * 1000.0
 
-        # Recompute TPOT from canonical formula; never leave a fake 0 for N=1.
-        n_out = self.output_tokens
+        # Recompute TPOT only from reliable usage counts. Provenance
+        # `missing` → tokens unusable even if output_tokens is populated.
         computed = compute_tpot_ms(
             e2e_ms=self.e2e_ms,
             ttft_ms=self.ttft_ms,
-            output_tokens=n_out,
+            output_tokens=self.output_tokens,
+            token_count_source=self.token_count_source,
         )
-        if n_out is None or n_out < 2:
-            # Hard rule: missing / single / zero output → TPOT missing, never 0.
-            self.tpot_ms = None
-        elif computed is not None:
-            self.tpot_ms = computed
+        self.tpot_ms = computed
 
         # Incomplete / fail paths must not look like success with TTFT=0.
         if self.outcome == RequestOutcome.INCOMPLETE:
@@ -136,6 +136,17 @@ class RequestLedger(BaseModel):
     # Wall-clock window used for throughput (set by load runner).
     window_start_s: float | None = None
     window_end_s: float | None = None
+
+    @field_validator("schema_version")
+    @classmethod
+    def _canonical_schema_only(cls, value: str) -> str:
+        if value != LEDGER_SCHEMA_VERSION:
+            raise ValueError(
+                f"ledger schema_version {value!r} is not canonical "
+                f"(required {LEDGER_SCHEMA_VERSION!r}); refuse forged or "
+                f"pre-provenance files"
+            )
+        return value
 
     @model_validator(mode="after")
     def _enforce_unique_keys(self) -> RequestLedger:
@@ -181,6 +192,7 @@ class RequestLedger(BaseModel):
 
 def persist_ledger(ledger: RequestLedger, path: Path | str) -> Path:
     """Write ledger JSON (stable for independent recalculation)."""
+    ledger.schema_version = LEDGER_SCHEMA_VERSION
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(ledger.model_dump_json(indent=2) + "\n", encoding="utf-8")

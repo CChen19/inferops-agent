@@ -10,7 +10,12 @@ from __future__ import annotations
 import math
 from typing import Iterable, Sequence
 
-from inferops.metrics.ledger import RequestOutcome, RequestRecord, TerminationReason
+from inferops.metrics.ledger import (
+    RequestOutcome,
+    RequestRecord,
+    TerminationReason,
+    TokenCountSource,
+)
 
 # ---------------------------------------------------------------------------
 # Constants (stable for item ⑤ consumers)
@@ -39,7 +44,7 @@ LATENCY_SUCCESS_OUTCOMES: frozenset[RequestOutcome] = frozenset(
 )
 
 TTFT_SAMPLE_SCOPE = "measured_requests_with_client_ttft"
-TPOT_SAMPLE_SCOPE = "success_or_truncate_with_output_tokens_ge_2"
+TPOT_SAMPLE_SCOPE = "success_or_truncate_with_usage_tokens_ge_2"
 E2E_SAMPLE_SCOPE = "success_or_truncate_with_e2e"
 
 
@@ -52,14 +57,23 @@ def compute_tpot_ms(
     e2e_ms: float | None,
     ttft_ms: float | None,
     output_tokens: int | None,
+    token_count_source: TokenCountSource | str | None = None,
 ) -> float | None:
     """Per-request TPOT = (e2e − ttft) / (output_tokens − 1).
 
     Returns None (N/A / missing) when:
+      - token_count_source is not usage (missing / unset → tokens unusable)
       - output_tokens is missing or < 2 (single or zero → NEVER write 0)
       - e2e or ttft missing
       - e2e < ttft (clock anomaly)
     """
+    src = (
+        token_count_source.value
+        if isinstance(token_count_source, TokenCountSource)
+        else token_count_source
+    )
+    if src != TokenCountSource.USAGE.value:
+        return None
     if output_tokens is None or output_tokens < TPOT_MIN_OUTPUT_TOKENS:
         return None
     if e2e_ms is None or ttft_ms is None:
@@ -88,7 +102,9 @@ def is_ttft_eligible(record: RequestRecord) -> bool:
 
 
 def is_tpot_eligible(record: RequestRecord) -> bool:
-    """TPOT sample: latency-eligible AND tpot computed (never invent 0)."""
+    """TPOT sample: latency-eligible, usage-sourced tokens, tpot computed."""
+    if record.token_count_source != TokenCountSource.USAGE:
+        return False
     return is_latency_eligible(record) and record.tpot_ms is not None
 
 

@@ -14,6 +14,8 @@ from inferops.metrics.aggregate import (
     format_aggregate_report,
     recalculate_from_ledger,
 )
+from pydantic import ValidationError
+
 from inferops.metrics.ledger import RequestLedger, load_ledger
 
 
@@ -22,21 +24,25 @@ def ledger_from_result(result: Any) -> RequestLedger | None:
     payload = getattr(result, "request_ledger", None)
     run_id = getattr(result, "run_id", "") or ""
     path = getattr(result, "ledger_path", None)
-    # Empty-but-valid embedded ledger (records=[]) is still a ledger.
-    if isinstance(payload, dict) and "records" in payload:
-        return RequestLedger.model_validate(payload)
-    if isinstance(payload, list) and run_id:
-        # Legacy: records-only list (window unknown → derive from timestamps).
-        return RequestLedger.model_validate(
-            {
-                "run_id": run_id,
-                "records": payload,
-                "window_start_s": None,
-                "window_end_s": None,
-            }
-        )
-    if path and Path(path).is_file():
-        return load_ledger(path)
+    try:
+        # Empty-but-valid embedded ledger (records=[]) is still a ledger.
+        if isinstance(payload, dict) and "records" in payload:
+            return RequestLedger.model_validate(payload)
+        if isinstance(payload, list) and run_id:
+            # Legacy: records-only list (window unknown → derive from timestamps).
+            return RequestLedger.model_validate(
+                {
+                    "run_id": run_id,
+                    "records": payload,
+                    "window_start_s": None,
+                    "window_end_s": None,
+                }
+            )
+        if path and Path(path).is_file():
+            return load_ledger(path)
+    except (ValidationError, ValueError):
+        # Pre-provenance / forged schema cannot be treated as canonical.
+        return None
     return None
 
 

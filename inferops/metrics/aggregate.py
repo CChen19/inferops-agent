@@ -22,7 +22,7 @@ from inferops.metrics.definitions import (
     measured_records,
     percentiles,
 )
-from inferops.metrics.ledger import RequestLedger, RequestOutcome
+from inferops.metrics.ledger import RequestLedger, RequestOutcome, TokenCountSource
 
 
 class LatencyStat(BaseModel):
@@ -136,7 +136,12 @@ def recalculate_from_ledger(
 
     start, end, total_time = _window_seconds(ledger)
 
-    success_token_counts = [r.output_tokens for r in successful]
+    def _usage_output(r) -> int | None:
+        if r.token_count_source != TokenCountSource.USAGE:
+            return None
+        return r.output_tokens
+
+    success_token_counts = [_usage_output(r) for r in successful]
     tokens_complete = bool(successful) and all(t is not None for t in success_token_counts)
     total_out = sum(int(t) for t in success_token_counts) if tokens_complete else None
     input_vals = [r.input_tokens for r in measured if r.input_tokens is not None]

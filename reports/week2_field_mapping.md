@@ -22,7 +22,7 @@ Primary ledger key: **`(run_id, request_id)`**.
 | `RequestMetrics.success` | `outcome` | `True` → `success` only if tokens + clean finish; else classify |
 | `RequestMetrics.ttft_ms` (always float; E2E used if no first token) | `ttft_ms` + `t_first_token_s` | **Client TTFT only** when first token observed. Else `None` (never E2E-as-TTFT) |
 | `RequestMetrics.e2e_ms` | `e2e_ms` + `t_start_s` / `t_end_s` | Wall duration; kept on fail/timeout |
-| *(none — TPOT was `e2e_p[k] - ttft_p[k]` on percentiles)* | `tpot_ms` | Per-request `(e2e−ttft)/(n−1)`; `None` if `n<2` |
+| *(none — TPOT was `e2e_p[k] - ttft_p[k]` on percentiles)* | `tpot_ms` | Per-request `(e2e−ttft)/(n−1)`; `None` if `n<2` or `token_count_source≠usage` |
 | `RequestMetrics.output_tokens` (`max(..., 1)` phantom) | `output_tokens` + `token_count_source` | Server `usage` only; missing stays `None` (never one-chunk-one-token) |
 | *(none)* | `input_tokens` | From `usage.prompt_tokens` when present |
 | `RequestMetrics.error` | `error` + `http_status` + `finish_reason` | Transport / API signals |
@@ -38,7 +38,7 @@ Primary ledger key: **`(run_id, request_id)`**.
 | `successful_requests` / `LoadResult.successful` | SUCCESS+TRUNCATE | Failures no longer able to inflate by being dropped only from numerator |
 | `total_time_s` | `window_end_s − window_start_s` | Documented as **load wall-clock window**, not sum of e2e |
 | `throughput_rps` | `successful / window_s` | `None` if window missing/0 |
-| `tokens_per_second` | success output tokens / window | No phantom +1 tokens |
+| `tokens_per_second` | usage-sourced success output tokens / window | No phantom +1; `missing` provenance → `None` |
 | *(none)* | `error_rate` | `failed / total_measured`; failures **in** denominator |
 | `ttft` / `tpot` / `e2e_latency` (`LatencyPercentiles` floats, empty→0) | same + `sample_n` + `sample_scope` | Empty → `None`, not `0.0` |
 | `raw_ttft_ms` / `raw_e2e_ms` | still filled from eligible rows | Compat for bootstrap CI; ledger is source of truth |
