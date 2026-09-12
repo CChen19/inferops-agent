@@ -83,3 +83,4 @@ def test_summary_from_result_uses_primary_metric(result_b):
     assert summary["validity_status"] == "valid"
     assert summary["has_config_evidence"] is True
     assert summary["run_id"] == result_b.run_id
+    assert summary["promotable"] is True
