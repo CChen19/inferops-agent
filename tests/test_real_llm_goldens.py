@@ -54,6 +54,7 @@ def test_missing_credential_is_explicit_blocker(monkeypatch):
     assert campaign.passed is False
     assert campaign.pass_rate is None
     assert campaign.n_completed == 0
+    assert campaign.n_accepted == 0
     assert campaign.runs == []
     assert "BLOCKED" in campaign.summary
     assert "not a pass" in campaign.summary.lower() or "NOT a real-LLM pass" in campaign.report_markdown()

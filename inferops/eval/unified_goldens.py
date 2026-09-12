@@ -156,8 +156,11 @@ def real_llm_layer_status(campaign: dict[str, Any] | None = None) -> LayerStatus
     """Separate from offline/fake-LLM. A claimed pass is fail-closed.
 
     ``llm_boundary`` must be exactly ``live`` to pass. Missing / unknown /
-    fake / injected boundaries cannot pass. Blocked shape must stay
-    ``passed=False``, ``pass_rate=None``, ``n_completed=0``.
+    fake / injected boundaries cannot pass. Blocked shape must present
+    ``passed=False``, ``pass_rate=None``, ``n_completed=0``, ``n_accepted=0``,
+    and empty ``runs`` — absent zeros are not a pass. Claimed pass / pass_rate
+    must be consistent with campaign ``n_accepted`` and each run's ``accepted``
+    and ``status``.
     """
     if campaign is None:
         return LayerStatus(

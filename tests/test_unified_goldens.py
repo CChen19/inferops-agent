@@ -8,7 +8,7 @@ from pathlib import Path
 from inferops.eval.error_memory_goldens import REQUIRED_GOLDEN_IDS as ERROR_MEMORY_IDS
 from inferops.eval.measurement_goldens import REQUIRED_GOLDEN_IDS as MEASUREMENT_IDS
 from inferops.eval.recovery_goldens import REQUIRED_GOLDEN_IDS as RECOVERY_IDS
-from inferops.eval.real_llm_goldens import validate_real_llm_campaign
+from inferops.eval.real_llm_goldens import blocked_campaign, validate_real_llm_campaign
 from inferops.eval.unified_goldens import (
     DEFAULT_MANIFEST,
     MAX_CASES,
@@ -101,57 +101,6 @@ def test_gpu_layer_never_marks_pass():
         assert "未执行" in gpu.detail
 
 
-def test_fake_llm_campaign_cannot_pass_as_live():
-    layer = real_llm_layer_status(
-        {
-            "layer": "real_llm",
-            "status": "ran",
-            "passed": True,
-            "llm_boundary": "fake_scripted",
-            "summary": "should not count",
-        }
-    )
-    assert layer.status == "mislabeled"
-    assert layer.passed is False
-    gate = unified_golden_gate(
-        real_llm_campaign={
-            "layer": "real_llm",
-            "status": "ran",
-            "passed": True,
-            "llm_boundary": "fake_scripted",
-        }
-    )
-    assert gate.passed is False
-    assert any("fake" in f or "mislabeled" in f or "live" in f for f in gate.failures)
-
-
-def test_blocked_real_llm_is_not_a_pass():
-    layer = real_llm_layer_status(
-        {
-            "layer": "real_llm",
-            "status": "blocked",
-            "passed": False,
-            "blocker": "OPENROUTER_API_KEY missing",
-        }
-    )
-    assert layer.status == "blocked"
-    assert layer.passed is False
-
-
-def test_invented_tune8_field_on_a_case_fails(tmp_path: Path):
-    manifest = load_manifest()
-    manifest["cases"][0]["tune8_fields"] = ["receipt_lost"]
-    path = tmp_path / "manifest.json"
-    path.write_text(json.dumps(manifest), encoding="utf-8")
-    gate = unified_golden_gate(path)
-    assert gate.passed is False
-    assert any("receipt" in f or "invent" in f for f in gate.failures)
-
-
-def test_default_manifest_path_exists():
-    assert DEFAULT_MANIFEST.is_file()
-
-
 def _claimed_live_pass(*, n: int = 3, boundary: str | None = "live") -> dict:
     runs = [
         {"status": "passed", "llm_boundary": boundary or "live", "accepted": True}
@@ -171,6 +120,49 @@ def _claimed_live_pass(*, n: int = 3, boundary: str | None = "live") -> dict:
     if boundary is not None:
         payload["llm_boundary"] = boundary
     return payload
+
+
+def _honest_blocked() -> dict:
+    return {
+        "layer": "real_llm",
+        "status": "blocked",
+        "passed": False,
+        "pass_rate": None,
+        "n_completed": 0,
+        "n_accepted": 0,
+        "runs": [],
+        "blocker": "OPENROUTER_API_KEY missing",
+    }
+
+
+def test_fake_llm_campaign_cannot_pass_as_live():
+    campaign = _claimed_live_pass(boundary="fake_scripted")
+    layer = real_llm_layer_status(campaign)
+    assert layer.status == "mislabeled"
+    assert layer.passed is False
+    gate = unified_golden_gate(real_llm_campaign=campaign)
+    assert gate.passed is False
+    assert any("fake" in f or "mislabeled" in f or "live" in f for f in gate.failures)
+
+
+def test_blocked_real_llm_is_not_a_pass():
+    layer = real_llm_layer_status(_honest_blocked())
+    assert layer.status == "blocked"
+    assert layer.passed is False
+
+
+def test_invented_tune8_field_on_a_case_fails(tmp_path: Path):
+    manifest = load_manifest()
+    manifest["cases"][0]["tune8_fields"] = ["receipt_lost"]
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    gate = unified_golden_gate(path)
+    assert gate.passed is False
+    assert any("receipt" in f or "invent" in f for f in gate.failures)
+
+
+def test_default_manifest_path_exists():
+    assert DEFAULT_MANIFEST.is_file()
 
 
 def test_missing_llm_boundary_cannot_pass_as_live():
@@ -199,16 +191,7 @@ def test_unknown_llm_boundary_cannot_pass_as_live():
 
 
 def test_blocked_campaign_shape_invariants():
-    honest = {
-        "layer": "real_llm",
-        "status": "blocked",
-        "passed": False,
-        "pass_rate": None,
-        "n_completed": 0,
-        "n_accepted": 0,
-        "runs": [],
-        "blocker": "OPENROUTER_API_KEY missing",
-    }
+    honest = _honest_blocked()
     assert validate_real_llm_campaign(honest) == []
     layer = real_llm_layer_status(honest)
     assert layer.status == "blocked"
@@ -237,3 +220,86 @@ def test_n_less_than_3_cannot_pass_as_live():
     assert layer.passed is False
     gate = unified_golden_gate(real_llm_campaign=campaign)
     assert gate.passed is False
+
+
+def test_contradictory_accepted_false_cannot_claim_pass_or_rate():
+    """status=passed + accepted=False + passed=True / pass_rate=1.0 must fail."""
+    campaign = _claimed_live_pass()
+    for row in campaign["runs"]:
+        row["accepted"] = False
+    campaign["n_accepted"] = 3
+    issues = validate_real_llm_campaign(campaign)
+    assert issues
+    assert any("accepted" in f for f in issues)
+    layer = real_llm_layer_status(campaign)
+    assert layer.passed is False
+    gate = unified_golden_gate(real_llm_campaign=campaign)
+    assert gate.passed is False
+    assert gate.real_llm.passed is False
+
+
+def test_n_accepted_mismatch_cannot_claim_pass_or_rate():
+    campaign = _claimed_live_pass()
+    campaign["n_accepted"] = 0
+    issues = validate_real_llm_campaign(campaign)
+    assert any("n_accepted" in f for f in issues)
+    assert real_llm_layer_status(campaign).passed is False
+    assert unified_golden_gate(real_llm_campaign=campaign).passed is False
+
+
+def test_blocked_missing_zero_fields_fail_closed():
+    for key in ("n_completed", "n_accepted", "runs", "pass_rate"):
+        campaign = _honest_blocked()
+        campaign.pop(key)
+        issues = validate_real_llm_campaign(campaign)
+        assert issues, f"absent {key} must fail closed"
+        assert any(key in f or "present" in f or "pass_rate=None" in f for f in issues)
+        layer = real_llm_layer_status(campaign)
+        assert layer.passed is False
+        assert layer.status == "invalid_blocked"
+        assert unified_golden_gate(real_llm_campaign=campaign).passed is False
+
+
+def test_blocked_campaign_producer_presents_zero_fields():
+    payload = blocked_campaign().as_dict()
+    assert payload["passed"] is False
+    assert payload["pass_rate"] is None
+    assert payload["n_completed"] == 0
+    assert payload["n_accepted"] == 0
+    assert payload["runs"] == []
+    assert validate_real_llm_campaign(payload) == []
+
+
+def test_consistent_failed_live_campaign_is_valid_shape():
+    campaign = _claimed_live_pass()
+    campaign["passed"] = False
+    campaign["n_accepted"] = 0
+    campaign["pass_rate"] = 0.0
+    for row in campaign["runs"]:
+        row["accepted"] = False
+        row["status"] = "failed"
+    assert validate_real_llm_campaign(campaign) == []
+    assert real_llm_layer_status(campaign).passed is False
+
+
+def test_claimed_pass_missing_accepted_fields_fail_closed():
+    missing_n = _claimed_live_pass()
+    missing_n.pop("n_accepted")
+    issues = validate_real_llm_campaign(missing_n)
+    assert any("n_accepted" in f for f in issues)
+    assert real_llm_layer_status(missing_n).passed is False
+    assert unified_golden_gate(real_llm_campaign=missing_n).passed is False
+
+    missing_run_flag = _claimed_live_pass()
+    for row in missing_run_flag["runs"]:
+        row.pop("accepted")
+    issues = validate_real_llm_campaign(missing_run_flag)
+    assert any("missing accepted" in f for f in issues)
+    assert real_llm_layer_status(missing_run_flag).passed is False
+    assert unified_golden_gate(real_llm_campaign=missing_run_flag).passed is False
+
+    missing_completed = _claimed_live_pass()
+    missing_completed.pop("n_completed")
+    issues = validate_real_llm_campaign(missing_completed)
+    assert any("n_completed" in f for f in issues)
+    assert unified_golden_gate(real_llm_campaign=missing_completed).passed is False
