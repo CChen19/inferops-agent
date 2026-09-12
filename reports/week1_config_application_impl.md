@@ -73,7 +73,7 @@ ss -ltnp 'sport = :8000'
 ### SQLite checks
 
 ```bash
-sqlite3 data/experiments.db <<'SQL'
+sqlite3 inferops_memory.db <<'SQL'
 .headers on
 .mode column
 SELECT experiment_id, run_id, status, promotable,
