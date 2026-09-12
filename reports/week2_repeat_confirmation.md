@@ -110,6 +110,14 @@ CPU / ledger fixtures in `tests/test_repeat_confirmation.py`:
 - Unevidenced row + beautiful confirmation numbers → still not promotable
 - GPU-not-run ≠ pass
 
+```bash
+pytest -q
+```
+
+```text
+268 passed in 17.10s
+```
+
 No real vLLM / GPU numbers are claimed in this environment.
 
 ## Out of scope
