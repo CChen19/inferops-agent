@@ -10,6 +10,7 @@
     "result_persisted": false,
     "budget_consumed": true,
     "partial_not_confirmed": true,
+    "best_identity_unchanged": true,
     "no_double_budget": true,
     "next_action": "remeasure",
     "confirmed_promotable": false

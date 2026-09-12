@@ -60,6 +60,60 @@ REQUIRED_GOLDEN_IDS: tuple[str, ...] = (
     "resume_equivalence",
 )
 
+# U vs R must match this full comparable_terminal projection — not a subset.
+RESUME_EQUIVALENCE_FIELDS: tuple[str, ...] = (
+    "stop_reason",
+    "should_stop",
+    "next_action",
+    "best_experiment_id",
+    "best_run_id",
+    "best_promotable",
+    "best_confirmed_promotable",
+    "confirmed_gate",
+    "experiments_remaining",
+    "tried_experiment_ids",
+    "summary_run_ids",
+    "last_result_run_id",
+    "last_result_validity_status",
+    "confirmation_verdict",
+    "confirmation_phase",
+    "confirmation_search_winner",
+    "confirmation_bound_run_ids",
+    "reflect_cited_run_ids",
+    "trajectory_identity",
+)
+
+TRAJECTORY_IDENTITY_KEYS: tuple[str, ...] = (
+    "node",
+    "action_kind",
+    "experiment_id",
+    "run_id",
+    "validity_status",
+    "promoted_to_best",
+)
+
+
+def required_ids_floor(catalog: dict[str, Any] | None = None) -> tuple[str, ...]:
+    """``REQUIRED_GOLDEN_IDS`` is the minimum set. Catalog extras may only add."""
+    extras: list[str] = []
+    for gid in (catalog or {}).get("required_ids") or ():
+        if gid not in REQUIRED_GOLDEN_IDS and gid not in extras:
+            extras.append(str(gid))
+    return tuple([*REQUIRED_GOLDEN_IDS, *extras])
+
+
+def catalog_shrunk_below_floor(catalog: dict[str, Any]) -> list[str]:
+    if "required_ids" not in catalog:
+        return []
+    listed = {str(gid) for gid in (catalog.get("required_ids") or [])}
+    return [gid for gid in REQUIRED_GOLDEN_IDS if gid not in listed]
+
+
+def _best_identity(summary: Any) -> tuple[Any, Any]:
+    if not isinstance(summary, dict):
+        return (None, None)
+    return (summary.get("experiment_id"), summary.get("run_id"))
+
 CONDITIONS = RunConditions(
     workload_name="chat_short",
     num_requests=10,
@@ -369,7 +423,12 @@ def _assert_recovery_fields(event: dict[str, Any] | None, golden_id: str) -> lis
     return failures
 
 
-def _no_false_promote(state: dict[str, Any], golden_id: str) -> list[str]:
+def _no_false_promote(
+    state: dict[str, Any],
+    golden_id: str,
+    *,
+    starting_best: dict[str, Any] | None = None,
+) -> list[str]:
     failures: list[str] = []
     best = state.get("best_summary") or {}
     if best.get("confirmed_promotable") is True:
@@ -381,6 +440,34 @@ def _no_false_promote(state: dict[str, Any], golden_id: str) -> list[str]:
     for step in state.get("trajectory") or []:
         if (step.get("result") or {}).get("promoted_to_best") is True:
             failures.append(f"{golden_id}: trajectory promoted_to_best")
+    # Fail-closed: a search winner / partial campaign must not become best
+    # even when confirmed_promotable stays false (do not loosen ⑤).
+    anchor = (
+        starting_best
+        if starting_best is not None
+        else (state.get("baseline_summary") or {})
+    )
+    if _best_identity(best) != _best_identity(anchor):
+        kind = "search winner / partial campaign"
+        if getattr(decision, "search_winner", False):
+            kind = "search winner"
+        elif "confirm_" in str(best.get("experiment_id") or ""):
+            kind = "partial campaign"
+        failures.append(
+            f"{golden_id}: best swapped to {_best_identity(best)!r} from "
+            f"{_best_identity(anchor)!r} ({kind})"
+        )
+    if "confirm_" in str(best.get("experiment_id") or ""):
+        failures.append(f"{golden_id}: best is a confirmation slot (partial campaign)")
+    last_eid = getattr(last, "experiment_id", None)
+    if (
+        decision is not None
+        and getattr(decision, "search_winner", False)
+        and best.get("experiment_id")
+        and best.get("experiment_id") == last_eid
+        and last_eid != (anchor or {}).get("experiment_id")
+    ):
+        failures.append(f"{golden_id}: best swapped to search winner")
     return failures
 
 
@@ -408,6 +495,7 @@ def _drive_propose_tool_error() -> dict[str, Any]:
         "exec_patch": exec_patch,
         "budget_before": state["experiments_remaining"],
         "prior_run_id": state["experiment_summaries"][-1]["run_id"],
+        "starting_best": dict(state.get("best_summary") or {}),
     }
 
 
@@ -425,6 +513,7 @@ def _drive_benchmark_no_result() -> dict[str, Any]:
         "state": final,
         "exec_patch": exec_patch,
         "budget_before": state["experiments_remaining"],
+        "starting_best": dict(state.get("best_summary") or {}),
     }
 
 
@@ -459,6 +548,7 @@ def _drive_benchmark_error_failed_result() -> dict[str, Any]:
         "exec_patch": exec_patch,
         "failed": failed,
         "budget_before": state["experiments_remaining"],
+        "starting_best": dict(state.get("best_summary") or {}),
     }
 
 
@@ -481,6 +571,7 @@ def _drive_confirmation_mid_fail() -> dict[str, Any]:
         "conditions": CONDITIONS,
     }
     completed: list[str] = []
+    starting_best = dict(state.get("best_summary") or {})
 
     class _Arm:
         last_candidate_result = None
@@ -501,6 +592,7 @@ def _drive_confirmation_mid_fail() -> dict[str, Any]:
         "completed": completed,
         "budget_before": state["experiments_remaining"],
         "stub": stub,
+        "starting_best": starting_best,
     }
 
 
@@ -522,6 +614,7 @@ def _drive_prior_success_current_fail() -> dict[str, Any]:
         "exec_patch": exec_patch,
         "prior": prior,
         "budget_before": state["experiments_remaining"],
+        "starting_best": dict(state.get("best_summary") or {}),
     }
 
 
@@ -657,7 +750,14 @@ def _run_production_graph(
         state = _invoke(None)
         for _ in range(max(0, resume_times - 1)):
             state = _invoke(None)
-    return {"state": state, "calls": calls, "config": config, "store": store, "graph": graph}
+    return {
+        "state": state,
+        "calls": calls,
+        "config": config,
+        "store": store,
+        "graph": graph,
+        "starting_best": dict(start.get("best_summary") or {}),
+    }
 
 
 def _drive_pre_tool_interrupt() -> dict[str, Any]:
@@ -713,6 +813,7 @@ def _drive_post_persist_pre_commit() -> dict[str, Any]:
         "eid": eid,
         "budget_before": state["experiments_remaining"],
         "confirm_persist": confirm,
+        "starting_best": dict(state.get("best_summary") or {}),
     }
 
 
@@ -864,7 +965,11 @@ def evaluate_golden(spec: dict[str, Any]) -> GoldenCaseResult:
     state = payload["state"]
     terminal = comparable_terminal(state)
     expect = spec.get("expect") or {}
-    failures.extend(_no_false_promote(state, golden_id))
+    failures.extend(
+        _no_false_promote(
+            state, golden_id, starting_best=payload.get("starting_best")
+        )
+    )
 
     exec_patch = payload.get("exec_patch") or {}
     event = exec_patch.get("last_recovery") or state.get("last_recovery")
@@ -964,11 +1069,33 @@ def evaluate_golden(spec: dict[str, Any]) -> GoldenCaseResult:
         rec_ids = list((event or {}).get("cited_run_ids") or [])
         if completed and completed[0] not in rec_ids:
             failures.append(f"{golden_id}: completed confirm slot run_id not recorded")
+        start_best = payload.get("starting_best") or {}
+        now_best = state.get("best_summary") or {}
+        if _best_identity(now_best) != _best_identity(start_best):
+            failures.append(
+                f"{golden_id}: best_summary identity changed on mid-fail "
+                f"{_best_identity(start_best)!r} → {_best_identity(now_best)!r}"
+            )
+
+    if expect.get("best_identity_unchanged"):
+        start_best = payload.get("starting_best") or {}
+        now_best = state.get("best_summary") or {}
+        if _best_identity(now_best) != _best_identity(start_best):
+            failures.append(
+                f"{golden_id}: best_summary identity changed "
+                f"{_best_identity(start_best)!r} → {_best_identity(now_best)!r}"
+            )
 
     if expect.get("single_tool_call"):
-        calls = [c for c in (payload.get("calls") or []) if "confirm_" not in c]
-        if len(calls) != 1:
-            failures.append(f"{golden_id}: expected one tool call, got {calls}")
+        calls = list(payload.get("calls") or [])
+        search_calls = [c for c in calls if "confirm_" not in c]
+        confirm_calls = [c for c in calls if "confirm_" in c]
+        if len(search_calls) != 1:
+            failures.append(f"{golden_id}: expected one search tool call, got {calls}")
+        if confirm_calls:
+            failures.append(
+                f"{golden_id}: unexpected confirm_ tool calls {confirm_calls}"
+            )
 
     confirm_persist = payload.get("confirm_persist")
     if confirm_persist:
@@ -1027,39 +1154,48 @@ def evaluate_golden(spec: dict[str, Any]) -> GoldenCaseResult:
                 failures.append(
                     f"{golden_id}: re-resume {key} {t1[key]!r} != {t2[key]!r}"
                 )
-        c1 = [c for c in payload["first"]["calls"] if "confirm_" not in c]
-        c2 = [c for c in payload["second"]["calls"] if "confirm_" not in c]
+        c1 = list(payload["first"]["calls"] or [])
+        c2 = list(payload["second"]["calls"] or [])
         if c1 != c2 or len(c2) != 1:
             failures.append(f"{golden_id}: re-resume duplicate attempt {c1} vs {c2}")
 
     if golden_id == "resume_equivalence":
         tu = comparable_terminal(payload["uninterrupted"]["state"])
         tr = comparable_terminal(payload["resumed"]["state"])
-        for key in (
-            "stop_reason",
-            "should_stop",
-            "best_experiment_id",
-            "best_confirmed_promotable",
-            "confirmed_gate",
-            "experiments_remaining",
-            "tried_experiment_ids",
-        ):
-            if tu[key] != tr[key]:
+        missing_fields = [k for k in RESUME_EQUIVALENCE_FIELDS if k not in tu or k not in tr]
+        if missing_fields:
+            failures.append(
+                f"{golden_id}: comparable_terminal missing {missing_fields}"
+            )
+        extra = sorted((set(tu) | set(tr)) - set(RESUME_EQUIVALENCE_FIELDS))
+        if extra:
+            failures.append(
+                f"{golden_id}: comparable_terminal grew {extra}; "
+                "update RESUME_EQUIVALENCE_FIELDS"
+            )
+        for key in RESUME_EQUIVALENCE_FIELDS:
+            if key == "trajectory_identity":
+                continue
+            if tu.get(key) != tr.get(key):
                 failures.append(
-                    f"{golden_id}: U vs R {key} {tu[key]!r} != {tr[key]!r}"
+                    f"{golden_id}: U vs R {key} {tu.get(key)!r} != {tr.get(key)!r}"
                 )
-        u_keys = [
-            (k["node"], k["action_kind"], k["experiment_id"])
-            for k in tu["trajectory_identity"]
-            if k["node"] == "executor"
+        u_traj = [
+            tuple(row.get(k) for k in TRAJECTORY_IDENTITY_KEYS)
+            for row in tu.get("trajectory_identity") or []
         ]
-        r_keys = [
-            (k["node"], k["action_kind"], k["experiment_id"])
-            for k in tr["trajectory_identity"]
-            if k["node"] == "executor"
+        r_traj = [
+            tuple(row.get(k) for k in TRAJECTORY_IDENTITY_KEYS)
+            for row in tr.get("trajectory_identity") or []
         ]
-        if u_keys != r_keys:
-            failures.append(f"{golden_id}: executor trajectory identity {u_keys} != {r_keys}")
+
+        def _without_interrupt(rows: list[tuple[Any, ...]]) -> list[tuple[Any, ...]]:
+            return [row for row in rows if row[1] != "interrupt"]
+
+        if _without_interrupt(u_traj) != _without_interrupt(r_traj):
+            failures.append(
+                f"{golden_id}: U vs R trajectory_identity {u_traj} != {r_traj}"
+            )
         notes.append(f"U.stop={tu['stop_reason']!r} R.stop={tr['stop_reason']!r}")
 
     if expect.get("week1_gate_closed"):
@@ -1119,7 +1255,12 @@ def recovery_golden_gate(
     if gpu_status == "not_run" and catalog.get("cpu_only") is not True:
         failures.append("CPU-only catalog required while GPU is not queued")
 
-    required = tuple(catalog.get("required_ids") or REQUIRED_GOLDEN_IDS)
+    shrunk = catalog_shrunk_below_floor(catalog)
+    if shrunk:
+        failures.append(
+            f"catalog.required_ids shrinks below REQUIRED_GOLDEN_IDS floor: {shrunk}"
+        )
+    required = required_ids_floor(catalog)
     specs = load_golden_specs(root)
     by_id = {str(spec.get("id")): spec for spec in specs}
     missing = [gid for gid in required if gid not in by_id]

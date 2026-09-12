@@ -52,9 +52,13 @@ from inferops.agent.executor import tool_boundary_overrides
 | ⑥ Reflect | `too_noisy` remasures; `no_diff` → `no_reliable_improvement`. Best only via bind + confirm |
 | Tune ⑧ | `last_recovery`, MemorySaver + `thread_id`, propose/no-budget, generic/`BenchmarkError` −1, confirm campaign −1 once, slot ids `{prefix}confirm_{param}_{value}_rN_{b\|c}{i}` |
 
-Stubs are allowed **only** at `tool_boundary_overrides` (propose /
-`run_benchmark` / confirmation `run_arm`). Planner, executor, and
-reflector stay production.
+Stubs are allowed at `tool_boundary_overrides` (propose /
+`run_benchmark` / confirmation `run_arm`). Some recovery drivers
+also patch persist/lookup and analysis helpers
+(`get_result_by_id`, `analyze_bottleneck`, `compare_experiments`,
+`propose_config_patch`, `confirmation_run_arm_override`) so
+persist-reuse and mid-slot failure can be scripted without a second
+schema. Planner, executor, and reflector stay production.
 
 ## Tune ⑧ contract (consumed)
 
@@ -101,15 +105,21 @@ trajectory_identity (node, action_kind, experiment_id, run_id,
                      validity_status, promoted_to_best)
 ```
 
-Step numbers may differ if Tune records an interrupt marker; executor
-identity keys must match.
+Step numbers may differ if Tune records an interrupt marker; remaining
+trajectory identity keys (including `run_id`, `validity_status`,
+`promoted_to_best`) must match — not only
+`(node, action_kind, experiment_id)`.
 
 ## Acceptance matrix
 
-Shared gate: no false promote, no invented GPU/metrics
+Shared gate: no false promote (including `best_summary` swapped to a
+search winner / partial campaign even when `confirmed_promotable`
+stays false), no invented GPU/metrics
 (`gpu_utilization_pct` / `gpu_memory_used_gb` / `cost_usd`), empty /
-skipped set **FAIL** (missing required ids, empty dir, or `skip`/`skipped`
-on a fixture), `INFEROPS_GPU_GOLDENS` unset → CPU/fixture only.
+skipped set **FAIL**. `REQUIRED_GOLDEN_IDS` is a floor:
+`catalog.required_ids` must not shrink below it; a non-empty catalog
+subset + deleted fixtures still **FAIL** missing ids. `skip`/`skipped`
+on a fixture also fails. `INFEROPS_GPU_GOLDENS` unset → CPU/fixture only.
 This thin set does **not** claim `confirmed_promotable=true`.
 
 | id | Fail-closed asserts |
@@ -117,12 +127,12 @@ This thin set does **not** claim `confirmed_promotable=true`.
 | `propose_tool_error` | Tune `propose_tool_error`; no budget; no forged summary; stale latest ignored; no promote |
 | `benchmark_no_result` | `BenchmarkError` without `exc.result`; no forged row/metrics; budget −1 once; no promote |
 | `benchmark_error_failed_result` | real failed contract row kept; `is_promotable` false; `current_attempt_latest` is that row |
-| `confirmation_mid_fail` | `confirmation_slot_failed`; completed slot `run_id` recorded; no ⑤ decision; remasure (under cap) |
+| `confirmation_mid_fail` | `confirmation_slot_failed`; completed slot `run_id` recorded; no ⑤ decision; remasure (under cap); `best_summary` identity unchanged |
 | `prior_success_current_fail` | `tool_exception`; Reflect does not treat prior success as current; bind cleared |
-| `pre_tool_interrupt` | tool not called at interrupt; one benchmark on resume; no confirmed promote |
+| `pre_tool_interrupt` | tool not called at interrupt; one benchmark on resume; no confirmed promote; extra `confirm_` calls fail |
 | `post_persist_pre_commit_interrupt` | search persist reused; confirm slots reuse `_rN_` ids; campaign budget −1 once |
 | `idempotent_re_resume` | second resume matches budget / tried ids / run_ids; no duplicate attempt |
-| `resume_equivalence` | U vs R match on `stop_reason` / best / budget / executor trajectory identity |
+| `resume_equivalence` | U vs R match the full comparable end-state (`next_action`, best run/promotable, summary/last-result ids, confirmation/bindings/Reflect refs, full trajectory identity) |
 
 ## Fixtures + runner
 
@@ -161,7 +171,13 @@ python scripts/run_recovery_goldens.py
 ```
 
 ```text
-369 passed in 13.48s
+370 passed in 13.80s
 measurement-trust golden gate passed (CPU/fixture; GPU-not-run ≠ pass)
 recovery golden gate passed (CPU/fixture; GPU-not-run ≠ pass)
 ```
+
+Proving tests (Codex P1 on `4a16220`):
+`test_catalog_subset_and_deleted_fixtures_fail_floor`,
+`test_resume_equivalence_compares_full_end_state`,
+`test_search_winner_best_swap_fails_without_confirmed_flag`,
+`test_confirmation_mid_fail_keeps_best_identity`.
