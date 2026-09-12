@@ -138,7 +138,7 @@ pytest -q
 ```
 
 ```text
-381 passed in 17.00s
+384 passed in 15.64s
 ```
 
 Fixture / CPU only. GPU was not run in this environment — **GPU-not-run ≠ pass**.
