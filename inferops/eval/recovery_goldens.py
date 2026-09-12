@@ -43,6 +43,7 @@ GOLDEN_SCHEMA = "inferops.recovery_goldens.v1"
 GPU_QUEUE_ENV = "INFEROPS_GPU_GOLDENS"
 INVENTED_GPU_FIELDS = ("gpu_utilization_pct", "gpu_memory_used_gb", "cost_usd")
 TUNE_TIP_SHA = "d1e5e8259601ec3eca69e5852cdb3774dfd9881d"
+TUNE_MASTER_SHA = "45d2d4ed5253fa29ae98cd25826b894597c16288"
 TUNE_PR = "https://github.com/CChen19/inferops-agent/pull/11"
 
 DEFAULT_FIXTURE_DIR = Path("tests/fixtures/recovery_goldens")
@@ -832,6 +833,8 @@ def evaluate_golden(spec: dict[str, Any]) -> GoldenCaseResult:
     golden_id = str(spec.get("id") or "unknown")
     failures = _refuse_invented_gpu_numbers(spec)
     notes: list[str] = []
+    if spec.get("skip") or spec.get("skipped"):
+        failures.append(f"{golden_id}: skipped golden is not a pass")
     if spec.get("schema") != GOLDEN_SCHEMA:
         failures.append(f"{golden_id}: schema {spec.get('schema')!r} != {GOLDEN_SCHEMA!r}")
     if spec.get("synthetic") is not True:
@@ -1104,6 +1107,10 @@ def recovery_golden_gate(
         failures.append(
             f"tune tip_sha {contract.get('tip_sha')!r} != frozen {TUNE_TIP_SHA!r}"
         )
+    if contract.get("master_sha") not in (None, TUNE_MASTER_SHA):
+        failures.append(
+            f"tune master_sha {contract.get('master_sha')!r} != frozen {TUNE_MASTER_SHA!r}"
+        )
     if catalog.get("gpu_queued") and gpu_status != "queued":
         failures.append(
             "catalog.gpu_queued=true but GPU goldens were not queued; "
@@ -1120,6 +1127,13 @@ def recovery_golden_gate(
         failures.append(f"required goldens missing: {missing}")
     if not specs:
         failures.append("GPU-not-run ≠ pass: no CPU goldens evaluated")
+    skipped_ids = [
+        gid
+        for gid, spec in by_id.items()
+        if spec.get("skip") or spec.get("skipped")
+    ]
+    if skipped_ids:
+        failures.append(f"skipped fixture set is not a pass: {skipped_ids}")
 
     extra = sorted(set(by_id) - set(required) - set(REQUIRED_GOLDEN_IDS))
     if extra:

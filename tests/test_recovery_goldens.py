@@ -18,6 +18,7 @@ from inferops.eval.recovery_goldens import (
     DEFAULT_FIXTURE_DIR,
     GPU_QUEUE_ENV,
     REQUIRED_GOLDEN_IDS,
+    TUNE_MASTER_SHA,
     TUNE_TIP_SHA,
     evaluate_golden,
     load_catalog,
@@ -42,6 +43,7 @@ def test_catalog_requires_the_thin_p0_set():
     assert tuple(catalog["required_ids"]) == REQUIRED_GOLDEN_IDS
     assert catalog["tune_contract"]["status"] == "frozen"
     assert catalog["tune_contract"]["tip_sha"] == TUNE_TIP_SHA
+    assert catalog["tune_contract"]["master_sha"] == TUNE_MASTER_SHA
     for key in RECOVERY_FIELDS:
         assert key
 
@@ -74,6 +76,43 @@ def test_gpu_not_run_is_not_a_pass_on_empty_set(tmp_path: Path):
     gate = recovery_golden_gate(tmp_path)
     assert gate.passed is False
     assert any("no CPU goldens" in f or "required goldens missing" in f for f in gate.failures)
+
+
+def test_skipped_fixture_set_fails_closed(tmp_path: Path):
+    """A present-but-skipped golden set must not green-light the gate."""
+    (tmp_path / "catalog.json").write_text(
+        json.dumps(
+            {
+                "schema": "inferops.recovery_goldens.v1",
+                "cpu_only": True,
+                "gpu_queued": False,
+                "required_ids": ["propose_tool_error"],
+                "tune_contract": {
+                    "status": "frozen",
+                    "tip_sha": TUNE_TIP_SHA,
+                    "master_sha": TUNE_MASTER_SHA,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "propose_tool_error.json").write_text(
+        json.dumps(
+            {
+                "id": "propose_tool_error",
+                "schema": "inferops.recovery_goldens.v1",
+                "synthetic": True,
+                "gpu_sampled": False,
+                "skip": True,
+                "driver": "propose_tool_error",
+                "expect": {"confirmed_promotable": False},
+            }
+        ),
+        encoding="utf-8",
+    )
+    gate = recovery_golden_gate(tmp_path)
+    assert gate.passed is False
+    assert any("skipped" in f for f in gate.failures)
 
 
 def test_blocked_catalog_fails_closed(tmp_path: Path):

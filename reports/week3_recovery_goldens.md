@@ -160,7 +160,7 @@ python scripts/run_recovery_goldens.py
 ```
 
 ```text
-369 passed in 13.74s
+369 passed in 13.48s
 measurement-trust golden gate passed (CPU/fixture; GPU-not-run ≠ pass)
 recovery golden gate passed (CPU/fixture; GPU-not-run ≠ pass)
 ```
