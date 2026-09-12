@@ -1,6 +1,8 @@
-# Stable interfaces for item ⑤ (consumers)
+# Stable interfaces for items ④ / ⑤
 
-Item ⑤ (not this PR) should consume these names. Do not invent parallel schemas.
+④ is the ledger + recalculation surface. ⑤ consumes those names and adds
+repeat / confirmation types in `inferops.metrics.confirm`. Do not invent
+parallel metrics schemas.
 
 ## Identity
 
@@ -41,6 +43,16 @@ Item ⑤ (not this PR) should consume these names. Do not invent parallel schema
 | `persist_ledger` / `load_ledger` | JSON round-trip |
 | `ledger_from_result` | Rebuild ledger from a result |
 | `is_promotable` / `derive_status` | Week-1 gates — **do not loosen** |
+| `interleave_schedule` / `run_interleaved_repeats` | ⑤: independent B/C repeats, same `RunConditions` |
+| `verdict_from_ledgers` / `evaluate_campaign` | ⑤: **only** compute entries that may mint `confirmed_improvement` |
+| `is_confirmed_promotable` | ⑤: `is_promotable` **and** confirmation-phase improvement |
+| `ConfirmationDecision` / `RepeatPhase` / `RepeatCampaign` | ⑤: search winner ≠ confirmed; hand-built confirm rejected |
+| `require_unique_repeat_identities` | ⑤: unique `run_id`s; same ledger ≠ two pairs |
+| `require_interleaved_schedule` | ⑤: schedule must be B0 C0 … or C0 B0 … (`interleave_schedule`) |
+| `require_positive_bounds` | ⑤: `min_pairs > 0`, finite `min_rel_delta > 0` |
+
+Search-phase wins must not auto-promote. See
+[`week2_repeat_confirmation.md`](./week2_repeat_confirmation.md).
 
 ## Persistence
 
@@ -53,4 +65,9 @@ Item ⑤ (not this PR) should consume these names. Do not invent parallel schema
 - Treat `incomplete` / timeout / cancel as success.
 - Fill missing TTFT/TPOT/GPU/cost with `0`.
 - Promote `best` without `is_promotable`.
-- Invent a second `run_id`.
+- Treat a search-phase winner as `confirmed_improvement`.
+- Hand-build `confirmed_improvement` (must come from `verdict_from_ledgers`).
+- Count the same `run_id` / ledger object as multiple independent repeats.
+- Ignore `campaign.schedule` or treat a non-interleaved order as confirmation.
+- Mutate a computed decision into `confirmed_improvement`.
+- Invent a second `run_id` or a second metrics/ledger schema.
