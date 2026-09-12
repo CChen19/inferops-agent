@@ -35,6 +35,13 @@ class TerminationReason(str, Enum):
     ZERO_OUTPUT = "zero_output"
 
 
+class TokenCountSource(str, Enum):
+    """Where output/input token counts came from. Never invent from SSE chunks."""
+
+    USAGE = "usage"  # server `usage.completion_tokens` / `prompt_tokens`
+    MISSING = "missing"  # no reliable count — TPOT / tok-s must not invent
+
+
 class RunConditions(BaseModel):
     """Workload / concurrency / arrival / sampling / warmup / cache context.
 
@@ -74,9 +81,10 @@ class RequestRecord(BaseModel):
     e2e_ms: float | None = None
     tpot_ms: float | None = None  # None when output_tokens < 2 — NEVER 0
 
-    # Actual token counts (never invent; 0 is allowed and meaningful)
+    # Actual token counts (never invent). None = missing (not the same as 0).
     input_tokens: int | None = None
-    output_tokens: int = 0
+    output_tokens: int | None = None
+    token_count_source: TokenCountSource = TokenCountSource.MISSING
 
     outcome: RequestOutcome
     termination_reason: TerminationReason
@@ -95,18 +103,17 @@ class RequestRecord(BaseModel):
             self.e2e_ms = (self.t_end_s - self.t_start_s) * 1000.0
 
         # Recompute TPOT from canonical formula; never leave a fake 0 for N=1.
+        n_out = self.output_tokens
         computed = compute_tpot_ms(
             e2e_ms=self.e2e_ms,
             ttft_ms=self.ttft_ms,
-            output_tokens=self.output_tokens,
+            output_tokens=n_out,
         )
-        if self.output_tokens < 2:
-            # Hard rule: single / zero output → TPOT missing, never 0.
+        if n_out is None or n_out < 2:
+            # Hard rule: missing / single / zero output → TPOT missing, never 0.
             self.tpot_ms = None
         elif computed is not None:
             self.tpot_ms = computed
-        elif self.tpot_ms == 0.0 and self.output_tokens < 2:
-            self.tpot_ms = None
 
         # Incomplete / fail paths must not look like success with TTFT=0.
         if self.outcome == RequestOutcome.INCOMPLETE:
@@ -130,11 +137,31 @@ class RequestLedger(BaseModel):
     window_start_s: float | None = None
     window_end_s: float | None = None
 
+    @model_validator(mode="after")
+    def _enforce_unique_keys(self) -> RequestLedger:
+        seen: set[str] = set()
+        for rec in self.records:
+            if rec.run_id != self.run_id:
+                raise ValueError(
+                    f"record.run_id={rec.run_id!r} does not match ledger "
+                    f"run_id={self.run_id!r}"
+                )
+            if rec.request_id in seen:
+                raise ValueError(
+                    f"duplicate request_id={rec.request_id!r} for run_id={self.run_id!r}"
+                )
+            seen.add(rec.request_id)
+        return self
+
     def add(self, record: RequestRecord) -> None:
         if record.run_id != self.run_id:
             raise ValueError(
                 f"record.run_id={record.run_id!r} does not match ledger "
                 f"run_id={self.run_id!r}"
+            )
+        if any(r.request_id == record.request_id for r in self.records):
+            raise ValueError(
+                f"duplicate request_id={record.request_id!r} for run_id={self.run_id!r}"
             )
         self.records.append(record)
 

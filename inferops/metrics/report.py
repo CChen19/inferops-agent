@@ -22,9 +22,10 @@ def ledger_from_result(result: Any) -> RequestLedger | None:
     payload = getattr(result, "request_ledger", None)
     run_id = getattr(result, "run_id", "") or ""
     path = getattr(result, "ledger_path", None)
-    if isinstance(payload, dict) and payload.get("records"):
+    # Empty-but-valid embedded ledger (records=[]) is still a ledger.
+    if isinstance(payload, dict) and "records" in payload:
         return RequestLedger.model_validate(payload)
-    if isinstance(payload, list) and payload and run_id:
+    if isinstance(payload, list) and run_id:
         # Legacy: records-only list (window unknown → derive from timestamps).
         return RequestLedger.model_validate(
             {
@@ -59,10 +60,16 @@ def report_from_ledger(
 def report_from_result(result: Any) -> tuple[AggregateMetrics | None, str]:
     """Recalculate from a persisted ExperimentResult's ledger, or explain why not."""
     ledger = ledger_from_result(result)
+    result_run_id = getattr(result, "run_id", "") or ""
     if ledger is None:
         return None, (
-            f"No request ledger for run_id=`{getattr(result, 'run_id', '')}`. "
+            f"No request ledger for run_id=`{result_run_id}`. "
             "Aggregates cannot be independently recalculated."
+        )
+    if ledger.run_id != result_run_id:
+        return None, (
+            f"ledger.run_id=`{ledger.run_id}` does not match "
+            f"result.run_id=`{result_run_id}` — refusing recalculation."
         )
     gpu_u = getattr(result, "gpu_utilization_pct", None)
     gpu_m = getattr(result, "gpu_memory_used_gb", None)

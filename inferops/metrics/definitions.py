@@ -7,6 +7,7 @@ fake gains (no phantom tokens, no TPOT=0 for single-token, no missing→0).
 
 from __future__ import annotations
 
+import math
 from typing import Iterable, Sequence
 
 from inferops.metrics.ledger import RequestOutcome, RequestRecord, TerminationReason
@@ -50,16 +51,16 @@ def compute_tpot_ms(
     *,
     e2e_ms: float | None,
     ttft_ms: float | None,
-    output_tokens: int,
+    output_tokens: int | None,
 ) -> float | None:
     """Per-request TPOT = (e2e − ttft) / (output_tokens − 1).
 
     Returns None (N/A / missing) when:
-      - output_tokens < 2 (single or zero output → NEVER write 0)
+      - output_tokens is missing or < 2 (single or zero → NEVER write 0)
       - e2e or ttft missing
       - e2e < ttft (clock anomaly)
     """
-    if output_tokens < TPOT_MIN_OUTPUT_TOKENS:
+    if output_tokens is None or output_tokens < TPOT_MIN_OUTPUT_TOKENS:
         return None
     if e2e_ms is None or ttft_ms is None:
         return None
@@ -96,17 +97,20 @@ def is_tpot_eligible(record: RequestRecord) -> bool:
 # ---------------------------------------------------------------------------
 
 def percentile(data: Sequence[float], p: float) -> float | None:
-    """Nearest-rank percentile. Empty → None (never 0.0 as a fake value)."""
+    """Nearest-rank percentile: index = ceil(p * n / 100) - 1.
+
+    Empty → None (never 0.0 as a fake value). ``p`` is in (0, 100].
+    """
     if not data:
         return None
-    if p <= 0:
-        return float(data[0])
-    if p >= 100:
-        return float(data[-1])
     sorted_data = sorted(data)
-    # nearest-rank: index = ceil(p/100 * n) - 1  ≈ int(n * p / 100) clamped
-    idx = int(len(sorted_data) * p / 100)
-    idx = min(max(idx, 0), len(sorted_data) - 1)
+    n = len(sorted_data)
+    if p <= 0:
+        return float(sorted_data[0])
+    if p >= 100:
+        return float(sorted_data[-1])
+    idx = math.ceil(p * n / 100) - 1
+    idx = min(max(idx, 0), n - 1)
     return float(sorted_data[idx])
 
 
@@ -126,11 +130,17 @@ def classify_http_outcome(
     timed_out: bool,
     cancelled: bool,
     finish_reason: str | None,
-    output_tokens: int,
+    output_tokens: int | None,
     first_token_seen: bool,
     error: str = "",
+    stream_response: bool = False,
+    saw_done: bool = False,
 ) -> tuple[RequestOutcome, TerminationReason]:
-    """Map raw transport/API signals → outcome + termination (no fake success)."""
+    """Map raw transport/API signals → outcome + termination (no fake success).
+
+    Stream + partial content + EOF without ``[DONE]`` / ``finish_reason``
+    is **incomplete**, never success.
+    """
     if cancelled:
         return RequestOutcome.CANCEL, TerminationReason.CANCEL
     if timed_out:
@@ -139,19 +149,24 @@ def classify_http_outcome(
         return RequestOutcome.FAIL, TerminationReason.ERROR
     if error:
         return RequestOutcome.FAIL, TerminationReason.ERROR
-    # Streaming finished without a clean stop/length and no usable body.
-    if not first_token_seen and output_tokens <= 0:
+
+    fr = (finish_reason or "").strip().lower()
+    clean_end = (not stream_response) or saw_done or bool(fr)
+
+    if stream_response and not clean_end:
+        # Partial or empty stream cut off — never package as success.
         return RequestOutcome.INCOMPLETE, TerminationReason.INCOMPLETE
 
-    fr = (finish_reason or "").lower()
+    if not first_token_seen and (output_tokens is None or output_tokens <= 0):
+        return RequestOutcome.INCOMPLETE, TerminationReason.INCOMPLETE
+
     if fr in {"length", "max_tokens", "max_token"}:
         return RequestOutcome.TRUNCATE, TerminationReason.LENGTH
-    if output_tokens <= 0:
-        # Completed HTTP but zero completion tokens — not a latency success.
+    if output_tokens == 0:
+        # Explicit zero from usage — not a latency success.
         return RequestOutcome.FAIL, TerminationReason.ZERO_OUTPUT
     if fr in {"stop", "end_turn", "eos", ""}:
         return RequestOutcome.SUCCESS, TerminationReason.STOP
-    # Unknown finish_reason with tokens: treat as success but keep reason.
     return RequestOutcome.SUCCESS, TerminationReason.STOP
 
 

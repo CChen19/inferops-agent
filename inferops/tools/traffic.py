@@ -28,6 +28,7 @@ from inferops.metrics.ledger import (
     RequestOutcome,
     RequestRecord,
     RunConditions,
+    TokenCountSource,
     TerminationReason,
 )
 from inferops.schemas import WorkloadSpec
@@ -116,14 +117,16 @@ async def _send_one(
     t_start = time.time()
     t_first: float | None = None
     t_end: float | None = None
-    output_tokens = 0
+    output_tokens: int | None = None
     input_tokens: int | None = None
+    token_source = TokenCountSource.MISSING
     finish_reason: str | None = None
     http_status: int | None = None
     timed_out = False
     cancelled = False
     error = ""
     first_token_seen = False
+    saw_done = False
 
     try:
         if not stream_response:
@@ -135,10 +138,12 @@ async def _send_one(
             else:
                 body = resp.json()
                 usage = body.get("usage") or {}
-                try:
-                    output_tokens = int(usage.get("completion_tokens") or 0)
-                except Exception:
-                    output_tokens = 0
+                if usage.get("completion_tokens") is not None:
+                    try:
+                        output_tokens = int(usage["completion_tokens"])
+                        token_source = TokenCountSource.USAGE
+                    except Exception:
+                        output_tokens = None
                 try:
                     if usage.get("prompt_tokens") is not None:
                         input_tokens = int(usage["prompt_tokens"])
@@ -162,36 +167,34 @@ async def _send_one(
                             continue
                         chunk = line[6:]
                         if chunk == "[DONE]":
+                            saw_done = True
                             break
                         data = _parse_sse_chunk(chunk)
                         if not data:
-                            # Fallback heuristic for non-JSON SSE test doubles
+                            # Content presence only — never count a chunk as a token.
                             if '"content":"' in chunk and '""' not in chunk:
                                 if not first_token_seen:
                                     t_first = time.time()
                                     first_token_seen = True
-                                output_tokens += 1
                             continue
                         usage = data.get("usage") or {}
-                        if usage:
+                        if usage.get("completion_tokens") is not None:
                             try:
-                                if usage.get("completion_tokens") is not None:
-                                    output_tokens = int(usage["completion_tokens"])
+                                output_tokens = int(usage["completion_tokens"])
+                                token_source = TokenCountSource.USAGE
                             except Exception:
                                 pass
-                            try:
-                                if usage.get("prompt_tokens") is not None:
-                                    input_tokens = int(usage["prompt_tokens"])
-                            except Exception:
-                                pass
+                        try:
+                            if usage.get("prompt_tokens") is not None:
+                                input_tokens = int(usage["prompt_tokens"])
+                        except Exception:
+                            pass
                         content = _content_from_chunk(data)
                         if content:
                             if not first_token_seen:
                                 t_first = time.time()
                                 first_token_seen = True
-                            # Rough count when usage absent
-                            if not usage:
-                                output_tokens += 1
+                            # Do NOT increment output_tokens per chunk.
                         fr = _finish_reason_from_chunk(data)
                         if fr:
                             finish_reason = fr
@@ -221,8 +224,11 @@ async def _send_one(
         cancelled=cancelled,
         finish_reason=finish_reason,
         output_tokens=output_tokens,
-        first_token_seen=first_token_seen or (not stream_response and output_tokens > 0),
+        first_token_seen=first_token_seen
+        or (not stream_response and output_tokens is not None and output_tokens > 0),
         error=error,
+        stream_response=stream_response,
+        saw_done=saw_done,
     )
     # Non-stream with tokens: first_token_seen forced true for classify only;
     # TTFT remains None because it was not client-measured.
@@ -248,6 +254,7 @@ async def _send_one(
         tpot_ms=tpot_ms,
         input_tokens=input_tokens,
         output_tokens=output_tokens,
+        token_count_source=token_source,
         outcome=outcome,
         termination_reason=term,
         http_status=http_status,

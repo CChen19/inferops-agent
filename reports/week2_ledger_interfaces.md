@@ -19,7 +19,8 @@ Item ⑤ (not this PR) should consume these names. Do not invent parallel schema
 |---|---|---|
 | `RequestOutcome` | `inferops.metrics.ledger` | `success\|fail\|timeout\|cancel\|truncate\|incomplete` |
 | `TerminationReason` | `inferops.metrics.ledger` | `stop\|length\|timeout\|cancel\|error\|incomplete\|zero_output` |
-| `RequestRecord` | `inferops.metrics.ledger` | One row |
+| `RequestRecord` | `inferops.metrics.ledger` | One row (`token_count_source`: `usage` \| `missing`) |
+| `TokenCountSource` | `inferops.metrics.ledger` | Never invent tokens from SSE chunks |
 | `RequestLedger` | `inferops.metrics.ledger` | Rows + `RunConditions` + window |
 | `RunConditions` | `inferops.metrics.ledger` | Workload / arrival / warmup / cache / sampling |
 | `AggregateMetrics` | `inferops.metrics.aggregate` | Recalculated summary |

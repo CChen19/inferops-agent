@@ -32,14 +32,7 @@ from rich.console import Console
 from rich.table import Table
 
 from inferops.metrics.aggregate import format_aggregate_report, recalculate_from_ledger
-from inferops.metrics.ledger import (
-    RequestLedger,
-    RequestOutcome,
-    RequestRecord,
-    RunConditions,
-    TerminationReason,
-    persist_ledger,
-)
+from inferops.metrics.ledger import persist_ledger
 from inferops.observability import init_mlflow, log_experiment_result, mlflow_run
 from inferops.schemas import (
     ExperimentConfig,
@@ -56,7 +49,7 @@ from inferops.schemas import (
     resolve_git_sha,
 )
 from inferops.tools.gpu_monitor import GPUMonitor
-from inferops.tools.traffic import run_load
+from inferops.tools.traffic import extract_percentiles, run_load
 from inferops.tools.vllm_process import (
     VLLMProcess,
     assert_listener_bound_to_child,
@@ -412,62 +405,6 @@ def _ensure_managed_vllm(
         raise  # pragma: no cover
 
 
-def _ledger_from_legacy_load(load, *, run_id: str, workload) -> RequestLedger:
-    """Synthesize a ledger when a LoadResult-like object has no `.ledger`.
-
-    Used by older test doubles. Incomplete rows are marked incomplete — never
-    success — when counts do not match sample lists.
-    """
-    window_s = float(getattr(load, "total_time_s", 0.0) or 0.0)
-    t0 = 0.0
-    ledger = RequestLedger(
-        run_id=run_id,
-        conditions=RunConditions(
-            workload_name=getattr(workload, "name", ""),
-            num_requests=getattr(workload, "num_requests", None),
-            concurrency=getattr(workload, "concurrency", None),
-        ),
-        window_start_s=t0,
-        window_end_s=t0 + window_s,
-    )
-    ttfts = list(getattr(load, "ttft_ms", []) or [])
-    e2es = list(getattr(load, "e2e_ms", []) or [])
-    successful = int(getattr(load, "successful", 0) or 0)
-    total = int(getattr(load, "total_requests", 0) or 0)
-    n_ok = max(successful, len(ttfts), len(e2es))
-    for i in range(n_ok):
-        ttft = ttfts[i] if i < len(ttfts) else None
-        e2e = e2es[i] if i < len(e2es) else (ttft or 0.0)
-        ledger.add(
-            RequestRecord(
-                run_id=run_id,
-                request_id=f"legacy-{i:04d}",
-                t_start_s=t0,
-                t_first_token_s=(t0 + ttft / 1000.0) if ttft is not None else None,
-                t_end_s=t0 + (e2e or 0.0) / 1000.0,
-                ttft_ms=ttft,
-                e2e_ms=e2e,
-                output_tokens=2,  # enough for TPOT eligibility if durations exist
-                outcome=RequestOutcome.SUCCESS,
-                termination_reason=TerminationReason.STOP,
-            )
-        )
-    for i in range(max(0, total - n_ok)):
-        ledger.add(
-            RequestRecord(
-                run_id=run_id,
-                request_id=f"legacy-fail-{i:04d}",
-                t_start_s=t0,
-                t_end_s=t0,
-                output_tokens=0,
-                outcome=RequestOutcome.FAIL,
-                termination_reason=TerminationReason.ERROR,
-                error="legacy load without per-request row",
-            )
-        )
-    return ledger
-
-
 def run_experiment(
     cfg: ExperimentConfig,
     prompts: list[str],
@@ -646,12 +583,6 @@ def run_experiment(
 
         assert load is not None
         ledger = getattr(load, "ledger", None)
-        if ledger is None:
-            ledger = _ledger_from_legacy_load(load, run_id=run_id, workload=cfg.workload)
-
-        # Persist ledger under logs/ for independent recalculation.
-        ledger_path = Path("logs") / f"ledger_{run_id}.json"
-        persist_ledger(ledger, ledger_path)
 
         # GPU only if sampled (samples > 0). Never invent 0 util as a measurement.
         gpu_util = None
@@ -660,19 +591,6 @@ def run_experiment(
         if gpu_summary is not None and gpu_samples > 0:
             gpu_util = gpu_summary.avg_util_pct
             gpu_mem = gpu_summary.max_mem_used_gb
-
-        agg = recalculate_from_ledger(
-            ledger,
-            gpu_utilization_pct=gpu_util,
-            gpu_memory_used_gb=gpu_mem,
-        )
-
-        status = derive_status(
-            evidence=evidence,
-            actual_config=actual,
-            requested_config=requested,
-            successful_requests=agg.successful_requests,
-        )
 
         def _lp(stat) -> LatencyPercentiles:
             return LatencyPercentiles(
@@ -684,37 +602,104 @@ def run_experiment(
                 sample_scope=stat.sample_scope,
             )
 
-        result = ExperimentResult(
-            experiment_id=cfg.experiment_id,
-            config=cfg,
-            total_requests=agg.total_requests,
-            successful_requests=agg.successful_requests,
-            total_time_s=agg.total_time_s if agg.total_time_s is not None else 0.0,
-            throughput_rps=agg.throughput_rps,
-            tokens_per_second=agg.tokens_per_second,
-            error_rate=agg.error_rate,
-            ttft=_lp(agg.ttft),
-            tpot=_lp(agg.tpot),
-            e2e_latency=_lp(agg.e2e),
-            gpu_memory_used_gb=gpu_mem,
-            gpu_utilization_pct=gpu_util,
-            raw_ttft_ms=load.ttft_ms,
-            raw_e2e_ms=load.e2e_ms,
-            request_ledger=ledger.model_dump(mode="json"),
-            ledger_path=str(ledger_path),
-            run_id=run_id,
-            schema_version="1",
-            code_sha=code_sha,
-            session_id=sess_str,
-            mlflow_run_id=mlflow_id,
-            requested_config=requested,
-            actual_config=actual,
-            config_evidence=evidence,
-            status=status,
-            workload_hash=compute_workload_hash(cfg.workload),
-            hardware=hardware,
-            notes=format_aggregate_report(agg).strip(),
-        )
+        if ledger is None:
+            # Legacy load without raw per-request facts — do NOT forge a ledger.
+            # Persist nothing canonical; TPOT stays missing.
+            ledger_path = None
+            request_ledger: dict = {}
+            raw_ttft = list(getattr(load, "ttft_ms", []) or [])
+            raw_e2e = list(getattr(load, "e2e_ms", []) or [])
+            ttft_p = extract_percentiles(raw_ttft)
+            e2e_p = extract_percentiles(raw_e2e)
+            n_ttft = len(raw_ttft)
+            n_e2e = len(raw_e2e)
+            successful = int(getattr(load, "successful", 0) or 0)
+            status = derive_status(
+                evidence=evidence,
+                actual_config=actual,
+                requested_config=requested,
+                successful_requests=successful,
+            )
+            result = ExperimentResult(
+                experiment_id=cfg.experiment_id,
+                config=cfg,
+                total_requests=int(getattr(load, "total_requests", 0) or 0),
+                successful_requests=successful,
+                total_time_s=float(getattr(load, "total_time_s", 0.0) or 0.0),
+                throughput_rps=getattr(load, "throughput_rps", None),
+                tokens_per_second=getattr(load, "tokens_per_second", None),
+                error_rate=getattr(load, "error_rate", None),
+                ttft=LatencyPercentiles(
+                    **ttft_p, sample_n=n_ttft, sample_scope="legacy_raw_ttft_ms"
+                ),
+                tpot=empty_latency(),
+                e2e_latency=LatencyPercentiles(
+                    **e2e_p, sample_n=n_e2e, sample_scope="legacy_raw_e2e_ms"
+                ),
+                gpu_memory_used_gb=gpu_mem,
+                gpu_utilization_pct=gpu_util,
+                raw_ttft_ms=raw_ttft,
+                raw_e2e_ms=raw_e2e,
+                request_ledger=request_ledger,
+                ledger_path=ledger_path,
+                run_id=run_id,
+                schema_version="1",
+                code_sha=code_sha,
+                session_id=sess_str,
+                mlflow_run_id=mlflow_id,
+                requested_config=requested,
+                actual_config=actual,
+                config_evidence=evidence,
+                status=status,
+                workload_hash=compute_workload_hash(cfg.workload),
+                hardware=hardware,
+                notes="No canonical request ledger (legacy load without per-request facts).",
+            )
+        else:
+            ledger_path = Path("logs") / f"ledger_{run_id}.json"
+            persist_ledger(ledger, ledger_path)
+            agg = recalculate_from_ledger(
+                ledger,
+                gpu_utilization_pct=gpu_util,
+                gpu_memory_used_gb=gpu_mem,
+            )
+            status = derive_status(
+                evidence=evidence,
+                actual_config=actual,
+                requested_config=requested,
+                successful_requests=agg.successful_requests,
+            )
+            result = ExperimentResult(
+                experiment_id=cfg.experiment_id,
+                config=cfg,
+                total_requests=agg.total_requests,
+                successful_requests=agg.successful_requests,
+                total_time_s=agg.total_time_s if agg.total_time_s is not None else 0.0,
+                throughput_rps=agg.throughput_rps,
+                tokens_per_second=agg.tokens_per_second,
+                error_rate=agg.error_rate,
+                ttft=_lp(agg.ttft),
+                tpot=_lp(agg.tpot),
+                e2e_latency=_lp(agg.e2e),
+                gpu_memory_used_gb=gpu_mem,
+                gpu_utilization_pct=gpu_util,
+                raw_ttft_ms=load.ttft_ms,
+                raw_e2e_ms=load.e2e_ms,
+                request_ledger=ledger.model_dump(mode="json"),
+                ledger_path=str(ledger_path),
+                run_id=run_id,
+                schema_version="1",
+                code_sha=code_sha,
+                session_id=sess_str,
+                mlflow_run_id=mlflow_id,
+                requested_config=requested,
+                actual_config=actual,
+                config_evidence=evidence,
+                status=status,
+                workload_hash=compute_workload_hash(cfg.workload),
+                hardware=hardware,
+                notes=format_aggregate_report(agg).strip(),
+            )
 
         log_experiment_result(result)
         rps_s = f"{result.throughput_rps:.1f}" if result.throughput_rps is not None else "n/a"

@@ -23,7 +23,7 @@ Primary ledger key: **`(run_id, request_id)`**.
 | `RequestMetrics.ttft_ms` (always float; E2E used if no first token) | `ttft_ms` + `t_first_token_s` | **Client TTFT only** when first token observed. Else `None` (never E2E-as-TTFT) |
 | `RequestMetrics.e2e_ms` | `e2e_ms` + `t_start_s` / `t_end_s` | Wall duration; kept on fail/timeout |
 | *(none — TPOT was `e2e_p[k] - ttft_p[k]` on percentiles)* | `tpot_ms` | Per-request `(e2e−ttft)/(n−1)`; `None` if `n<2` |
-| `RequestMetrics.output_tokens` (`max(..., 1)` phantom) | `output_tokens` | Actual count; `0` allowed |
+| `RequestMetrics.output_tokens` (`max(..., 1)` phantom) | `output_tokens` + `token_count_source` | Server `usage` only; missing stays `None` (never one-chunk-one-token) |
 | *(none)* | `input_tokens` | From `usage.prompt_tokens` when present |
 | `RequestMetrics.error` | `error` + `http_status` + `finish_reason` | Transport / API signals |
 | *(none)* | `termination_reason` | `stop\|length\|timeout\|cancel\|error\|incomplete\|zero_output` |
@@ -67,7 +67,7 @@ failures. Actual `0` is stored; zero-output classifies as fail/`zero_output`.
 | Path | Before | After |
 |---|---|---|
 | `observability.log_experiment_result` | Always logged rps/ttft/e2e (0 on fail) | Logs only non-`None` metrics; tags `run_id`; artifact `ledger/` |
-| `write_report_section` / `write_final_report` | Session summaries | Unchanged UI; metric Markdown via `report_from_ledger` / `format_aggregate_report` |
+| `write_report_section` / `write_final_report` | Session summaries | Agent session log only — does **not** recompute bench metrics. Recalc is `report_from_ledger` / `report_from_result` |
 | `analyze_bottleneck` | `gpu or 0.0`; crash on None latency | Missing latency → `unknown`; unsamped GPU not treated as 0% |
 | `compare_experiments` | Fake samples from p50=0 | Missing percentiles → empty samples / error, not 0-ms |
 | `agent.state.summary_from_result` | `round(float)` | Missing → `0.0` **in the summary table only**; `validity_status` / `promotable` carry trust (gate unchanged) |

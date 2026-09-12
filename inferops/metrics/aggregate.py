@@ -74,8 +74,8 @@ class AggregateMetrics(BaseModel):
     window_end_s: float | None = None
     total_time_s: float | None = None  # window_end - window_start
     throughput_rps: float | None = None  # successful / total_time_s
-    tokens_per_second: float | None = None  # sum(output tokens of successes) / time
-    total_output_tokens: int = 0
+    tokens_per_second: float | None = None  # known success output tokens / time
+    total_output_tokens: int | None = None  # None if any success is missing usage
     total_input_tokens: int | None = None
 
     ttft: LatencyStat = Field(default_factory=LatencyStat)
@@ -136,7 +136,9 @@ def recalculate_from_ledger(
 
     start, end, total_time = _window_seconds(ledger)
 
-    total_out = sum(r.output_tokens for r in successful)
+    success_token_counts = [r.output_tokens for r in successful]
+    tokens_complete = bool(successful) and all(t is not None for t in success_token_counts)
+    total_out = sum(int(t) for t in success_token_counts) if tokens_complete else None
     input_vals = [r.input_tokens for r in measured if r.input_tokens is not None]
     total_in = sum(input_vals) if input_vals else None
 
@@ -144,7 +146,8 @@ def recalculate_from_ledger(
     tok_s = None
     if total_time is not None and total_time > 0:
         throughput = len(successful) / total_time
-        tok_s = total_out / total_time
+        if total_out is not None:
+            tok_s = total_out / total_time
 
     ttft_samples = [r.ttft_ms for r in measured if is_ttft_eligible(r) and r.ttft_ms is not None]
     tpot_samples = [r.tpot_ms for r in measured if is_tpot_eligible(r) and r.tpot_ms is not None]
@@ -194,7 +197,7 @@ def ledger_to_experiment_fields(agg: AggregateMetrics) -> dict[str, Any]:
     return {
         "total_requests": agg.total_requests,
         "successful_requests": agg.successful_requests,
-        "total_time_s": agg.total_time_s if agg.total_time_s is not None else 0.0,
+        "total_time_s": agg.total_time_s if agg.total_time_s is not None else 0.0,  # window; not a latency metric
         "throughput_rps": agg.throughput_rps,
         "tokens_per_second": agg.tokens_per_second,
         "error_rate": agg.error_rate,

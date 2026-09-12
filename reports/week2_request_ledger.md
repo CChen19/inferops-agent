@@ -16,10 +16,14 @@ agg, md = report_from_ledger(ledger)           # same numbers + Markdown
 agg, md = report_from_result(experiment_result)
 ```
 
-Reports and MLflow use the **same** `run_id`. Ledger JSON is written to
+MLflow uses the **same** `run_id`. Ledger JSON is written to
 `logs/ledger_<run_id>.json` and attached as an MLflow artifact under `ledger/`.
 
 Missing metrics are `None` / `n/a`. They are **never** defaulted to `0`.
+
+The session Markdown from `write_final_report` is an agent-level experiment log
+(validity / deploy gate). It does **not** recompute bench aggregates; those go
+through `report_from_ledger` / `report_from_result` only.
 
 ## Metric definitions (encoded)
 
@@ -62,7 +66,7 @@ unevidenced row **cannot** promote best.
 - Cases: success, fail, timeout, cancel, truncate, zero output, single output token
 - Independent recalculation from persisted ledger matches report
 - Incomplete ≠ success
-- `pytest -q` → **236 passed** (2026-09-12)
+- `pytest -q` → **247 passed** (2026-09-12, correction round)
 
 Synthetic example (not a real vLLM measurement):
 

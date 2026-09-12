@@ -46,7 +46,7 @@ def _rec(
     t0: float,
     t_first: float | None,
     t_end: float,
-    output_tokens: int,
+    output_tokens: int | None,
     outcome: RequestOutcome,
     termination: TerminationReason,
     input_tokens: int | None = 10,
@@ -428,3 +428,179 @@ def test_write_minimal_ledger_example():
     )
     assert ledger_path.is_file()
     assert "throughput_rps" in report_path.read_text()
+
+
+def test_eof_without_done_or_finish_reason_is_incomplete():
+    outcome, term = classify_http_outcome(
+        status_code=200,
+        timed_out=False,
+        cancelled=False,
+        finish_reason=None,
+        output_tokens=None,
+        first_token_seen=True,
+        stream_response=True,
+        saw_done=False,
+    )
+    assert outcome == RequestOutcome.INCOMPLETE
+    assert term == TerminationReason.INCOMPLETE
+
+
+def test_missing_output_tokens_excluded_from_tpot_and_tok_s():
+    assert compute_tpot_ms(e2e_ms=200.0, ttft_ms=50.0, output_tokens=None) is None
+    ledger = RequestLedger(run_id=RUN_ID, window_start_s=0.0, window_end_s=1.0)
+    ledger.add(
+        _rec(
+            "no-usage",
+            t0=0.0,
+            t_first=0.05,
+            t_end=0.25,
+            output_tokens=None,
+            outcome=RequestOutcome.SUCCESS,
+            termination=TerminationReason.STOP,
+        )
+    )
+    agg = recalculate_from_ledger(ledger)
+    assert agg.tpot.sample_n == 0
+    assert agg.tpot.p50 is None
+    assert agg.tokens_per_second is None
+    assert agg.total_output_tokens is None
+
+
+def test_duplicate_request_id_rejected():
+    ledger = RequestLedger(run_id=RUN_ID)
+    ledger.add(
+        _rec(
+            "dup",
+            t0=0.0,
+            t_first=0.01,
+            t_end=0.02,
+            output_tokens=2,
+            outcome=RequestOutcome.SUCCESS,
+            termination=TerminationReason.STOP,
+        )
+    )
+    with pytest.raises(ValueError, match="duplicate request_id"):
+        ledger.add(
+            _rec(
+                "dup",
+                t0=0.1,
+                t_first=0.11,
+                t_end=0.12,
+                output_tokens=2,
+                outcome=RequestOutcome.SUCCESS,
+                termination=TerminationReason.STOP,
+            )
+        )
+    with pytest.raises(ValueError, match="duplicate request_id"):
+        RequestLedger.model_validate(
+            {
+                "run_id": RUN_ID,
+                "records": [
+                    _rec(
+                        "x",
+                        t0=0.0,
+                        t_first=0.01,
+                        t_end=0.02,
+                        output_tokens=2,
+                        outcome=RequestOutcome.SUCCESS,
+                        termination=TerminationReason.STOP,
+                    ).model_dump(mode="json"),
+                    _rec(
+                        "x",
+                        t0=0.1,
+                        t_first=0.11,
+                        t_end=0.12,
+                        output_tokens=3,
+                        outcome=RequestOutcome.SUCCESS,
+                        termination=TerminationReason.STOP,
+                    ).model_dump(mode="json"),
+                ],
+            }
+        )
+
+
+def test_mismatched_record_run_id_rejected():
+    ledger = RequestLedger(run_id=RUN_ID)
+    with pytest.raises(ValueError, match="does not match ledger"):
+        ledger.add(
+            RequestRecord(
+                run_id="other_run",
+                request_id="r1",
+                t_start_s=0.0,
+                t_end_s=0.1,
+                outcome=RequestOutcome.FAIL,
+                termination_reason=TerminationReason.ERROR,
+            )
+        )
+    with pytest.raises(ValueError, match="does not match ledger"):
+        RequestLedger.model_validate(
+            {
+                "run_id": RUN_ID,
+                "records": [
+                    {
+                        "run_id": "other_run",
+                        "request_id": "r1",
+                        "t_start_s": 0.0,
+                        "t_end_s": 0.1,
+                        "outcome": "fail",
+                        "termination_reason": "error",
+                    }
+                ],
+            }
+        )
+
+
+def test_empty_embedded_ledger_is_recalculable(result):
+    empty = RequestLedger(run_id=RUN_ID, records=[])
+    attached = result.model_copy(
+        update={
+            "run_id": RUN_ID,
+            "request_ledger": empty.model_dump(mode="json"),
+        }
+    )
+    agg, md = report_from_result(attached)
+    assert agg is not None
+    assert agg.total_requests == 0
+    assert agg.throughput_rps is None
+    assert agg.ttft.p50 is None
+    assert RUN_ID in md
+
+
+def test_report_from_result_rejects_run_id_mismatch(result):
+    ledger = RequestLedger(run_id="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", records=[])
+    attached = result.model_copy(
+        update={
+            "run_id": RUN_ID,
+            "request_ledger": ledger.model_dump(mode="json"),
+        }
+    )
+    agg, msg = report_from_result(attached)
+    assert agg is None
+    assert "does not match" in msg
+
+
+def test_missing_latency_stays_none_in_summary(result):
+    from inferops.agent.state import summary_from_result
+
+    missing = result.model_copy(
+        update={
+            "throughput_rps": None,
+            "tokens_per_second": None,
+            "ttft": empty_latency(),
+            "tpot": empty_latency(),
+            "e2e_latency": empty_latency(),
+        }
+    )
+    summary = summary_from_result(
+        missing,
+        param_changed=None,
+        value_changed=None,
+        baseline_primary=2.0,
+        primary_metric="throughput_rps",
+    )
+    assert summary["throughput_rps"] is None
+    assert summary["tokens_per_second"] is None
+    assert summary["ttft_p50_ms"] is None
+    assert summary["ttft_p99_ms"] is None
+    assert summary["e2e_p50_ms"] is None
+    assert summary["vs_baseline_pct"] is None

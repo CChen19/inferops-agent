@@ -18,10 +18,11 @@ def test_extract_percentiles_empty_returns_nones():
     }
 
 
-def test_extract_percentiles_sorts_input():
+def test_extract_percentiles_nearest_rank_ceil():
+    # sorted [10, 50, 90, 100]; p50 = ceil(0.5*4)-1 = 1 → 50
     out = extract_percentiles([100.0, 10.0, 50.0, 90.0])
 
-    assert out["p50"] == 90.0
+    assert out["p50"] == 50.0
     assert out["p90"] == 100.0
     assert out["p99"] == 100.0
 
@@ -175,3 +176,105 @@ async def test_run_load_can_return_without_closing_client(monkeypatch):
     )
 
     assert out.successful == 1
+
+
+class _FakeStream:
+    def __init__(self, lines: list[str], status_code: int = 200):
+        self.status_code = status_code
+        self._lines = lines
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+    async def aiter_lines(self):
+        for line in self._lines:
+            yield line
+
+    async def aread(self):
+        return b""
+
+
+class _FakeStreamClient:
+    def __init__(self, lines: list[str]):
+        self._lines = lines
+
+    def stream(self, *a, **k):
+        return _FakeStream(self._lines)
+
+
+@pytest.mark.asyncio
+async def test_stream_chunks_do_not_invent_tokens():
+    from inferops.metrics.ledger import TokenCountSource
+    from inferops.tools.traffic import _send_one
+
+    lines = [
+        'data: {"choices":[{"delta":{"content":"Hello"},"finish_reason":null}]}',
+        'data: {"choices":[{"delta":{"content":" world"},"finish_reason":null}]}',
+        'data: {"choices":[{"delta":{"content":"!"},"finish_reason":"stop"}]}',
+        "data: [DONE]",
+    ]
+    rec = await _send_one(
+        _FakeStreamClient(lines),
+        "http://example.test",
+        "hi",
+        16,
+        run_id="rid",
+        request_id="req-1",
+        stream_response=True,
+    )
+    assert rec.output_tokens is None
+    assert rec.token_count_source == TokenCountSource.MISSING
+    assert rec.tpot_ms is None
+    assert rec.ttft_ms is not None
+    assert rec.outcome.value == "success"  # stop + [DONE], tokens unknown
+
+
+@pytest.mark.asyncio
+async def test_stream_eof_without_done_is_incomplete():
+    from inferops.tools.traffic import _send_one
+
+    lines = [
+        'data: {"choices":[{"delta":{"content":"partial"},"finish_reason":null}]}',
+    ]
+    rec = await _send_one(
+        _FakeStreamClient(lines),
+        "http://example.test",
+        "hi",
+        16,
+        run_id="rid",
+        request_id="req-eof",
+        stream_response=True,
+    )
+    assert rec.outcome.value == "incomplete"
+    assert rec.termination_reason.value == "incomplete"
+    assert rec.output_tokens is None
+    assert rec.tpot_ms is None
+
+
+@pytest.mark.asyncio
+async def test_stream_usage_tokens_are_recorded():
+    from inferops.metrics.ledger import TokenCountSource
+    from inferops.tools.traffic import _send_one
+
+    lines = [
+        'data: {"choices":[{"delta":{"content":"ab"},"finish_reason":null}]}',
+        'data: {"choices":[{"delta":{},"finish_reason":"stop"}],'
+        '"usage":{"prompt_tokens":3,"completion_tokens":5}}',
+        "data: [DONE]",
+    ]
+    rec = await _send_one(
+        _FakeStreamClient(lines),
+        "http://example.test",
+        "hi",
+        16,
+        run_id="rid",
+        request_id="req-usage",
+        stream_response=True,
+    )
+    assert rec.output_tokens == 5
+    assert rec.input_tokens == 3
+    assert rec.token_count_source == TokenCountSource.USAGE
+    assert rec.outcome.value == "success"
