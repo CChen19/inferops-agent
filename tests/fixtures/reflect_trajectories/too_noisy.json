@@ -1,0 +1,31 @@
+{
+  "step": 2,
+  "node": "reflector",
+  "workload": "chat_short",
+  "action": "reflect",
+  "hypothesis": {
+    "id": "h1",
+    "param": "max_num_batched_tokens",
+    "value": 4096,
+    "text": "rps=2.0 compute-bound; raise batch tokens [source: vllm_scheduler]"
+  },
+  "config_diff": {
+    "param": "max_num_batched_tokens",
+    "from": "baseline",
+    "to": 4096,
+    "summary": "max_num_batched_tokens: baseline → 4096"
+  },
+  "cited_run_ids": ["tnb_00", "tnc_00"],
+  "constraint_checks": {
+    "validity_status": "valid",
+    "slo_ok": true,
+    "budget_remaining": 3,
+    "is_duplicate": false,
+    "verdict": "too_noisy",
+    "phase": "confirmation",
+    "confirmed_promotable": false,
+    "gate": "is_confirmed_promotable"
+  },
+  "next_action": "remeasure",
+  "stop_reason": ""
+}

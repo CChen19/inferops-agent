@@ -79,14 +79,38 @@ def executor_node(state: AgentState) -> dict:
     hyp = pending[0]
     primary_metric = WORKLOAD_PRIMARY_METRIC[state["workload_name"]]
 
-    # --- Deduplication check ---
-    if is_duplicate(state, hyp["param"], hyp["value"]):
+    # --- Deduplication check (remeasure of the same hyp is not a skip) ---
+    remeasuring = state.get("next_action") == "remeasure"
+    if not remeasuring and is_duplicate(state, hyp["param"], hyp["value"]):
         console.print(f"  [dim]executor: skip duplicate ({hyp['param']}={hyp['value']})[/dim]")
         updated_hyps = _set_status(state["hypotheses"], hyp["id"], "skipped", None)
-        return {"hypotheses": updated_hyps}
+        traj_step = {
+            "step": len(state["trajectory"]) + 1,
+            "node": "executor",
+            "workload": state["workload_name"],
+            "action": f"skip_duplicate({hyp['param']}={hyp['value']})",
+            "hypothesis": {
+                "id": hyp["id"],
+                "param": hyp["param"],
+                "value": hyp["value"],
+                "text": hyp.get("rationale") or "",
+            },
+            "result": {"skip_reason": "duplicate_candidate", "promoted_to_best": False},
+        }
+        return {
+            "hypotheses": updated_hyps,
+            "last_skip_reason": "duplicate_candidate",
+            "last_skipped_hypothesis_id": hyp["id"],
+            "last_result": None,
+            "trajectory": state["trajectory"] + [traj_step],
+        }
 
     # --- Build experiment ID ---
-    eid = f"{state['session_prefix']}{hyp['param']}_{hyp['value']}"
+    remasure_n = int(state.get("remeasure_count") or 0)
+    if remeasuring and remasure_n > 0:
+        eid = f"{state['session_prefix']}{hyp['param']}_{hyp['value']}_r{remasure_n}"
+    else:
+        eid = f"{state['session_prefix']}{hyp['param']}_{hyp['value']}"
 
     # --- Check DB for existing result (in case of resume) ---
     existing = get_result_by_id(eid)
@@ -171,6 +195,7 @@ def executor_node(state: AgentState) -> dict:
                 patch["trajectory"] = state["trajectory"] + [traj_step]
                 # best_summary unchanged — failed rows are never promotable
                 patch["best_summary"] = state["best_summary"]
+                patch["last_result"] = exc.result
             return patch
         except Exception as exc:
             console.print(f"  [red]executor: benchmark failed ({exc})[/red]")
@@ -240,28 +265,26 @@ def executor_node(state: AgentState) -> dict:
             has_config_evidence=False,
             promotable=False,
             failure_reason="",
+            error_rate=bench_dict.get("error_rate"),
         )
 
-    # --- Update best (gated on contract validity + critical evidence) ---
-    # Failing path this closes: high primary metric without actual-config evidence
-    # used to win best_summary. Scores alone never promote.
+    # --- Best is owned by Reflect (⑥) via is_confirmed_promotable ---
+    # Search-phase scores / Week-1 is_promotable alone must not promote.
     current_primary = bench_dict.get(primary_metric, 0.0)
-    candidate_ok = (
+    new_best = state["best_summary"]
+    week1_ok = (
         is_promotable(result) if result is not None else is_promotable_summary(summary)
     )
-    best = state["best_summary"]
-    if candidate_ok:
-        if best is None or not is_promotable_summary(best):
-            new_best = summary
-        else:
-            best_primary = best[primary_metric]
-            new_best = summary if current_primary > best_primary else best
-    else:
-        new_best = best
+    if not week1_ok:
         console.print(
             f"  [yellow]executor: not promoting {eid} to best "
             f"(status={summary.get('validity_status')}, "
             f"evidence={summary.get('has_config_evidence')})[/yellow]"
+        )
+    else:
+        console.print(
+            f"  [dim]executor: search result recorded; Reflect owns promotion "
+            f"(is_confirmed_promotable)[/dim]"
         )
 
     # --- Mark hypothesis done ---
@@ -283,8 +306,7 @@ def executor_node(state: AgentState) -> dict:
             "ttft_p99_ms": summary["ttft_p99_ms"],
             "bottleneck": bottleneck,
             "vs_baseline_pct": vs_baseline_pct,
-            "promoted_to_best": new_best is not None
-            and new_best.get("experiment_id") == eid,
+            "promoted_to_best": False,
         },
     }
 
@@ -301,6 +323,8 @@ def executor_node(state: AgentState) -> dict:
         "best_summary":          new_best,
         "current_bottleneck":    bottleneck,
         "experiments_remaining": state["experiments_remaining"] - 1,
+        "last_result":           result,
+        "last_skip_reason":      "",
         "trajectory":            state["trajectory"] + [traj_step],
     }
 
@@ -334,4 +358,5 @@ def _result_to_bench_dict(result) -> dict[str, Any]:
         "run_id":           getattr(result, "run_id", ""),
         "status":           status_value,
         "mlflow_run_id":    getattr(result, "mlflow_run_id", None),
+        "error_rate":       getattr(result, "error_rate", None),
     }

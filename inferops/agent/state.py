@@ -39,6 +39,7 @@ class ExperimentSummary(TypedDict):
     # Single full-gate result — MUST be set via is_promotable(result), never guessed
     promotable: bool
     failure_reason: str  # notes / error from failed contract rows ("" if none)
+    error_rate: float | None  # ④ field; Reflect SLO reads this — never invent 0
 
 
 # ---------------------------------------------------------------------------
@@ -66,6 +67,13 @@ class AgentState(TypedDict):
     no_improvement_streak: int
     should_stop: bool
     stop_reason: str
+    next_action: str             # continue | remeasure | rollback | stop
+    last_skip_reason: str        # executor → reflector (e.g. duplicate_candidate)
+    last_skipped_hypothesis_id: str
+    remeasure_count: int
+    last_result: Any             # latest ExperimentResult (promotion gate input)
+    confirmation_decision: Any   # ConfirmationDecision | None — never hand-minted
+    repeat_ledgers: dict[str, Any] | None
 
     # Trajectory (for eval/judge in Phase 3 eval framework)
     trajectory: list[dict[str, Any]]
@@ -135,6 +143,13 @@ def initial_state(
         "no_improvement_streak": 0,
         "should_stop":           False,
         "stop_reason":           "",
+        "next_action":           "continue",
+        "last_skip_reason":      "",
+        "last_skipped_hypothesis_id": "",
+        "remeasure_count":       0,
+        "last_result":           None,
+        "confirmation_decision": None,
+        "repeat_ledgers":        None,
         "trajectory":            [],
         "messages":              [],
     }
@@ -192,6 +207,7 @@ def summary_from_result(
         failure_reason=(getattr(result, "notes", None) or "") if (
             status_value == "failed"
         ) else "",
+        error_rate=_round(getattr(result, "error_rate", None), 4),
     )
 
 

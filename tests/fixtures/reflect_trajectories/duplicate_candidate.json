@@ -1,0 +1,29 @@
+{
+  "step": 2,
+  "node": "reflector",
+  "workload": "chat_short",
+  "action": "reflect",
+  "hypothesis": {
+    "id": "h1",
+    "param": "max_num_seqs",
+    "value": 256,
+    "text": "rps=2.0 more parallelism [source: vllm_scheduler]"
+  },
+  "config_diff": {
+    "param": "max_num_seqs",
+    "from": "baseline",
+    "to": 256,
+    "summary": "max_num_seqs: baseline → 256"
+  },
+  "cited_run_ids": ["bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"],
+  "constraint_checks": {
+    "validity_status": "valid",
+    "slo_ok": true,
+    "budget_remaining": 3,
+    "is_duplicate": true,
+    "confirmed_promotable": false,
+    "gate": "is_confirmed_promotable"
+  },
+  "next_action": "continue",
+  "stop_reason": ""
+}
