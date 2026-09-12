@@ -415,22 +415,58 @@ def managed_start_evidence(
     host: str,
     port: int,
     observed_params: dict[str, Any],
+    instance_id: str | None = None,
+    start_token: str | None = None,
+    notes: str | None = None,
 ) -> ConfigEvidence:
     """Evidence for CLI knobs actually passed when bench_runner started vLLM.
 
     `observed_params` must be the CLI-evidenced subset only — never the full
-    requested dict (non-CLI knobs are unverified until item ②).
+    requested dict (non-CLI knobs are unverified until item ② verifies them
+    with complete coverage).
     """
-    instance_id = f"{host}:{port}:pid={process_pid}" if process_pid else f"{host}:{port}"
+    if instance_id is None:
+        instance_id = (
+            f"{host}:{port}:pid={process_pid}" if process_pid else f"{host}:{port}"
+        )
+        if start_token:
+            instance_id = f"{instance_id}:gen={start_token}"
     return ConfigEvidence(
         kind="managed_process_start",
         verified=True,
         instance_id=instance_id,
         process_pid=process_pid,
         observed_params=dict(observed_params),
-        notes=(
+        notes=notes
+        or (
             "vLLM process started by bench_runner; observed_params lists only "
             "knobs passed on the CLI. Non-CLI requested knobs are unverified."
+        ),
+    )
+
+
+def instance_identity_evidence(
+    *,
+    process_pid: int | None,
+    host: str,
+    port: int,
+    observed: dict[str, Any],
+    instance_id: str,
+    start_token: str | None = None,
+    notes: str = "",
+) -> ConfigEvidence:
+    """Critical evidence when live instance identity + knobs were verified."""
+    return ConfigEvidence(
+        kind="instance_identity",
+        verified=True,
+        instance_id=instance_id,
+        process_pid=process_pid,
+        observed_params=dict(observed),
+        notes=notes
+        or (
+            f"Instance identity verified (start_token={start_token or 'n/a'}); "
+            "observed CLI knobs recorded. Complete requested coverage still required "
+            "for status=valid / promotion."
         ),
     )
 

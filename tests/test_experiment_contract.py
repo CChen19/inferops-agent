@@ -533,7 +533,12 @@ def test_bench_runner_oom_builds_failed_result_with_mlflow_id(config):
 
     class FakeProc:
         log_path = Path("/tmp/fake.log")
-        _proc = MagicMock(pid=42)
+        _pid = 42
+        start_token = "tok"
+
+        @property
+        def pid(self):
+            return self._pid
 
         def start(self):
             return None
@@ -548,13 +553,24 @@ def test_bench_runner_oom_builds_failed_result_with_mlflow_id(config):
             return False
 
         def stop(self):
-            return None
+            self._pid = None
+
+        def identity(self):
+            from inferops.tools.vllm_process import InstanceIdentity
+            return InstanceIdentity(
+                host="127.0.0.1", port=8000, pid=self._pid, start_token=self.start_token
+            )
+
+        def evidenced_actual_config(self):
+            return {}
 
     with patch("inferops.bench_runner.init_mlflow"), \
          patch("inferops.bench_runner.mlflow_run") as mock_mlf, \
          patch("inferops.bench_runner.log_experiment_result") as mock_log, \
          patch("inferops.bench_runner.VLLMProcess", return_value=FakeProc()), \
-         patch("httpx.get", side_effect=Exception("down")):
+         patch("inferops.bench_runner.probe_live_instance") as mock_probe:
+        from inferops.tools.vllm_process import LiveProbe
+        mock_probe.return_value = LiveProbe(healthy=False)
         mock_mlf.return_value.__enter__.return_value = fake_run
         mock_mlf.return_value.__exit__.return_value = None
 
@@ -868,6 +884,8 @@ def test_run_experiment_zero_success_not_promotable(config):
     """Nice-to-have: successful=0 after load → failed / not promotable."""
     from types import SimpleNamespace
 
+    from inferops.tools.vllm_process import InstanceIdentity, LiveProbe
+
     load = SimpleNamespace(
         total_requests=10,
         successful=0,
@@ -881,9 +899,16 @@ def test_run_experiment_zero_success_not_promotable(config):
     fake_run = MagicMock()
     fake_run.info.run_id = "mlf-zero-success"
 
+    req = config_knobs(config)
+
     class FakeProc:
         log_path = None
-        _proc = MagicMock(pid=7)
+        _pid = 7
+        start_token = "tok"
+
+        @property
+        def pid(self):
+            return self._pid
 
         def start(self):
             return None
@@ -894,6 +919,21 @@ def test_run_experiment_zero_success_not_promotable(config):
         def stop(self):
             return None
 
+        def identity(self):
+            return InstanceIdentity(
+                host="127.0.0.1", port=8000, pid=self._pid, start_token=self.start_token
+            )
+
+        def evidenced_actual_config(self):
+            # Full actual so the only failure mode is zero successes
+            return dict(req)
+
+        def oom_in_log(self):
+            return False
+
+        def is_crashed(self):
+            return False
+
     class FakeGPU:
         def start(self):
             return None
@@ -901,8 +941,6 @@ def test_run_experiment_zero_success_not_promotable(config):
         def stop(self):
             return gpu_summary
 
-    req = config_knobs(config)
-    # Full actual so the only failure mode is zero successes
     with patch("inferops.bench_runner.init_mlflow"), \
          patch("inferops.bench_runner.mlflow_run") as mock_mlf, \
          patch("inferops.bench_runner.log_experiment_result"), \
@@ -912,8 +950,8 @@ def test_run_experiment_zero_success_not_promotable(config):
          patch("inferops.bench_runner.extract_percentiles", return_value={
              "p50": 0.0, "p90": 0.0, "p95": 0.0, "p99": 0.0
          }), \
-         patch("httpx.get", side_effect=Exception("down")), \
-         patch("inferops.bench_runner.managed_cli_actual_config", return_value=dict(req)), \
+         patch("inferops.bench_runner.probe_live_instance", return_value=LiveProbe(healthy=False)), \
+         patch("inferops.bench_runner.assert_listener_bound_to_child", return_value=7), \
          patch("inferops.bench_runner.config_knobs", return_value=dict(req)):
         mock_mlf.return_value.__enter__.return_value = fake_run
         mock_mlf.return_value.__exit__.return_value = None
