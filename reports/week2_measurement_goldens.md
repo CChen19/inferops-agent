@@ -66,5 +66,15 @@ are unchanged.
 
 ## Evidence
 
+```bash
+pytest -q
+python scripts/run_measurement_goldens.py
+```
+
+```text
+327 passed in 15.89s
+measurement-trust golden gate passed (CPU/fixture; GPU-not-run ≠ pass)
+```
+
 CPU / fixture only. No real vLLM / GPU numbers are claimed in this
 environment.

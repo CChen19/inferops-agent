@@ -13,8 +13,8 @@ import pytest
 
 from inferops.eval.measurement_goldens import (
     DEFAULT_FIXTURE_DIR,
-    REQUIRED_GOLDEN_IDS,
     GPU_QUEUE_ENV,
+    REQUIRED_GOLDEN_IDS,
     evaluate_golden,
     load_catalog,
     load_golden_specs,
@@ -32,7 +32,6 @@ from inferops.metrics import (
 )
 from inferops.metrics.confirm import RepeatPhase
 from inferops.schemas import derive_status, is_promotable
-
 
 FIXTURE_ROOT = Path(DEFAULT_FIXTURE_DIR)
 
