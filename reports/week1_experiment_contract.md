@@ -63,19 +63,27 @@ Encoded in `INSUFFICIENT_EVIDENCE_KINDS` / `ConfigEvidence.is_critical_evidence(
 - performance change alone
 - `external_unverified` (healthy external server without instance identity)
 
-## Best-candidate gate
+### Best-candidate gate
 
 A candidate may become `best_summary` / deploy recommendation **only if**
-`is_promotable(result)` is true:
+`is_promotable(result)` is true — the **single** full gate used by executor,
+baseline seeding, eval best selection, DB `promotable_only`, summary
+`promotable` flag, and final-report deploy:
 
 ```text
 status == valid
-AND actual_config is not None
-AND config_evidence.is_critical_evidence()
+AND critical config evidence
+AND actual_config covers EVERY requested knob (missing keys ≠ match)
+AND successful_requests > 0
 ```
 
-High primary-metric scores alone never promote. Executor, baseline seeding,
-eval `_best_agent_result`, and final-report deploy text all honor this gate.
+Managed starts only record CLI-evidenced keys in `actual_config`
+(`MANAGED_CLI_EVIDENCED_KEYS`). Non-CLI requested knobs
+(`scheduler_policy`, `tensor_parallel_size`, …) keep status at
+`insufficient_evidence` until item ② can verify them.
+
+High primary-metric scores alone never promote. Empty/partial actual never
+promotes — even if status was incorrectly stamped `valid`.
 
 ### Failing path closed by this change
 

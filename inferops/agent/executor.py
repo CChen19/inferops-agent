@@ -158,6 +158,7 @@ def executor_node(state: AgentState) -> dict:
             validity_status=bench_dict.get("status") or "insufficient_evidence",
             mlflow_run_id=bench_dict.get("mlflow_run_id"),
             has_config_evidence=False,
+            promotable=False,
         )
 
     # --- Update best (gated on contract validity + critical evidence) ---

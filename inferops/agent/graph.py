@@ -130,9 +130,14 @@ def _run_baseline(workload_name: str, session_prefix: str) -> tuple[ExperimentSu
         base_cfg = make_configs(workload)[0].model_copy(update={"experiment_id": eid})
         from workloads.definitions import get_prompts
         prompts = get_prompts(workload)
-        from inferops.bench_runner import run_experiment
-        result = run_experiment(base_cfg, prompts, session_id=session_prefix)
-        save_result(result)
+        from inferops.bench_runner import BenchmarkError, run_experiment
+        try:
+            result = run_experiment(base_cfg, prompts, session_id=session_prefix)
+            save_result(result)
+        except BenchmarkError as exc:
+            if exc.result is not None:
+                save_result(exc.result)
+            raise
     else:
         console.print(f"[dim]Baseline loaded from DB: {eid}[/dim]")
         result = existing

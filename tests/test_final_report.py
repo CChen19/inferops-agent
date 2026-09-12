@@ -21,6 +21,7 @@ _BASELINE = {
     "validity_status": "valid",
     "mlflow_run_id": "mlflow-baseline",
     "has_config_evidence": True,
+    "promotable": True,
 }
 
 _BEST = {
@@ -38,6 +39,7 @@ _BEST = {
     "validity_status": "valid",
     "mlflow_run_id": "mlflow-best",
     "has_config_evidence": True,
+    "promotable": True,
 }
 
 

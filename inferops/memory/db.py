@@ -24,6 +24,7 @@ _CONTRACT_COLUMNS: tuple[tuple[str, str], ...] = (
     ("mlflow_run_id", "TEXT"),
     ("schema_version", "TEXT"),
     ("workload_hash", "TEXT"),
+    ("promotable", "INTEGER"),
 )
 
 
@@ -65,7 +66,8 @@ def init_db(db_path: Path = _DEFAULT_DB) -> None:
                 session_id       TEXT,
                 mlflow_run_id    TEXT,
                 schema_version   TEXT,
-                workload_hash    TEXT
+                workload_hash    TEXT,
+                promotable       INTEGER DEFAULT 0
             )
         """)
         _migrate_contract_columns(conn)
@@ -97,6 +99,7 @@ def save_result(result: ExperimentResult, db_path: Path = _DEFAULT_DB) -> None:
         if isinstance(result.status, ExperimentValidityStatus)
         else str(result.status)
     )
+    promotable_flag = 1 if is_promotable(result) else 0
     with _connect(db_path) as conn:
         conn.execute(
             """
@@ -104,8 +107,9 @@ def save_result(result: ExperimentResult, db_path: Path = _DEFAULT_DB) -> None:
                 (experiment_id, workload_name, config_hash, config_json, result_json,
                  throughput_rps, ttft_p50_ms, ttft_p99_ms, e2e_p50_ms, e2e_p99_ms,
                  gpu_util_pct, gpu_mem_gb,
-                 run_id, status, session_id, mlflow_run_id, schema_version, workload_hash)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                 run_id, status, session_id, mlflow_run_id, schema_version,
+                 workload_hash, promotable)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(experiment_id) DO UPDATE SET
                 result_json    = excluded.result_json,
                 throughput_rps = excluded.throughput_rps,
@@ -121,6 +125,7 @@ def save_result(result: ExperimentResult, db_path: Path = _DEFAULT_DB) -> None:
                 mlflow_run_id  = excluded.mlflow_run_id,
                 schema_version = excluded.schema_version,
                 workload_hash  = excluded.workload_hash,
+                promotable     = excluded.promotable,
                 config_hash    = excluded.config_hash,
                 config_json    = excluded.config_json
             """,
@@ -143,6 +148,7 @@ def save_result(result: ExperimentResult, db_path: Path = _DEFAULT_DB) -> None:
                 result.mlflow_run_id,
                 result.schema_version,
                 result.workload_hash,
+                promotable_flag,
             ),
         )
         conn.commit()
@@ -159,9 +165,8 @@ def query_results(
 ) -> list[dict[str, Any]]:
     """Return top-k experiment summaries, optionally filtered by workload/status.
 
-    When promotable_only=True, only rows with status='valid' are returned.
-    Callers that pick a "best" candidate for deploy/eval MUST use promotable_only
-    (or is_promotable on the full ExperimentResult) so missing evidence cannot win.
+    When promotable_only=True, filter on the denormalized `promotable` flag set
+    by the full is_promotable() gate at save time (not status='valid' alone).
     """
     init_db(db_path)
     allowed_sort = {"throughput_rps", "ttft_p50_ms", "e2e_p50_ms", "ttft_p99_ms", "e2e_p99_ms"}
@@ -176,8 +181,7 @@ def query_results(
         clauses.append("workload_name = ?")
         params.append(workload_name)
     if promotable_only:
-        clauses.append("status = ?")
-        params.append(ExperimentValidityStatus.VALID.value)
+        clauses.append("promotable = 1")
     elif status is not None:
         clauses.append("status = ?")
         params.append(status.value if isinstance(status, ExperimentValidityStatus) else status)
@@ -192,7 +196,7 @@ def query_results(
                    throughput_rps, ttft_p50_ms, ttft_p99_ms,
                    e2e_p50_ms, e2e_p99_ms, gpu_util_pct, gpu_mem_gb,
                    created_at, run_id, status, session_id, mlflow_run_id,
-                   schema_version, workload_hash
+                   schema_version, workload_hash, promotable
             FROM experiments
             {where}
             ORDER BY {sort_by} {order}
@@ -207,7 +211,8 @@ def get_result_by_id(experiment_id: str, db_path: Path = _DEFAULT_DB) -> Experim
     """Fetch the full ExperimentResult for a given experiment_id.
 
     Legacy JSON without contract fields deserializes with
-    status=insufficient_evidence (schema default) — never auto-valid.
+    status=insufficient_evidence and a stable legacy run_id. Missing run_id is
+    backfilled into the DB so re-reads stay identical (P2-6).
     """
     init_db(db_path)
     with _connect(db_path) as conn:
@@ -217,7 +222,13 @@ def get_result_by_id(experiment_id: str, db_path: Path = _DEFAULT_DB) -> Experim
         ).fetchone()
     if row is None:
         return None
-    return ExperimentResult.model_validate_json(row["result_json"])
+    raw = json.loads(row["result_json"])
+    had_run_id = bool(raw.get("run_id"))
+    result = ExperimentResult.model_validate(raw)
+    if not had_run_id:
+        # Persist stable backfill so subsequent reads never mint a new id.
+        save_result(result, db_path=db_path)
+    return result
 
 
 def get_promotable_result(

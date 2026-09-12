@@ -36,6 +36,8 @@ class ExperimentSummary(TypedDict):
     validity_status: str        # valid | invalid | failed | insufficient_evidence
     mlflow_run_id: str | None
     has_config_evidence: bool
+    # Single full-gate result — MUST be set via is_promotable(result), never guessed
+    promotable: bool
 
 
 # ---------------------------------------------------------------------------
@@ -149,7 +151,11 @@ def summary_from_result(
     primary_metric: str,
     bottleneck: str = "unknown",
 ) -> ExperimentSummary:
-    from inferops.schemas import ExperimentValidityStatus, has_critical_config_evidence
+    from inferops.schemas import (
+        ExperimentValidityStatus,
+        has_critical_config_evidence,
+        is_promotable,
+    )
 
     primary_val = getattr(result, primary_metric, result.throughput_rps)
     vs_baseline = (primary_val - baseline_primary) / baseline_primary * 100 if baseline_primary else 0.0
@@ -172,17 +178,21 @@ def summary_from_result(
         has_config_evidence=has_critical_config_evidence(
             getattr(result, "config_evidence", None)
         ),
+        # ONE full gate — identical criterion as executor / eval / DB / report
+        promotable=is_promotable(result),
     )
 
 
 def is_promotable_summary(summary: ExperimentSummary | dict[str, Any] | None) -> bool:
-    """Gate best-candidate selection at the summary level."""
+    """Same full gate as is_promotable(result), via the summary.promotable flag.
+
+    Callers MUST populate `promotable` from is_promotable(result). A summary that
+    only claims status=valid / has_config_evidence without promotable=True is
+    rejected (prevents the inconsistent-gate bug).
+    """
     if not summary:
         return False
-    return (
-        summary.get("validity_status") == "valid"
-        and bool(summary.get("has_config_evidence"))
-    )
+    return bool(summary.get("promotable")) is True
 
 
 def pending_hypotheses(state: AgentState) -> list[Hypothesis]:

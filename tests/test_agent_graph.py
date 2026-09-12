@@ -51,6 +51,7 @@ def test_run_agent_initializes_state_and_invokes_graph():
         "validity_status": "valid",
         "mlflow_run_id": "m0",
         "has_config_evidence": True,
+        "promotable": True,
     }
     captured = {}
 
@@ -93,6 +94,7 @@ def test_prepare_initial_state_includes_baseline_and_best():
         "validity_status": "valid",
         "mlflow_run_id": "m0",
         "has_config_evidence": True,
+        "promotable": True,
     }
 
     with patch("inferops.agent.graph._run_baseline", return_value=(baseline, "compute-bound")):
@@ -122,6 +124,7 @@ def test_prepare_initial_state_skips_best_when_baseline_unevidenced():
         "validity_status": "insufficient_evidence",
         "mlflow_run_id": None,
         "has_config_evidence": False,
+        "promotable": False,
     }
 
     with patch("inferops.agent.graph._run_baseline", return_value=(baseline, "compute-bound")):

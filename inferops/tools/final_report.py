@@ -8,16 +8,12 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from inferops.observability import span
+from inferops.agent.state import is_promotable_summary
 
 
 def _is_deployable_best(best: dict[str, Any] | None) -> bool:
-    """Deploy recommendations require valid status + critical config evidence."""
-    if not best:
-        return False
-    return (
-        best.get("validity_status") == "valid"
-        and bool(best.get("has_config_evidence"))
-    )
+    """Deploy recommendations use the SAME full gate as executor/eval/DB."""
+    return is_promotable_summary(best)
 
 
 class FinalReportInput(BaseModel):

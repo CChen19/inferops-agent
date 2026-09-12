@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 import subprocess
-import uuid
 from enum import Enum
 from typing import Any
 
@@ -64,6 +63,22 @@ CONFIG_KNOB_KEYS: tuple[str, ...] = (
     "enable_prefix_caching",
     "scheduler_policy",
     "tensor_parallel_size",
+)
+
+# Keys that vllm_process._build_cmd actually passes on the CLI.
+# Anything else (e.g. scheduler_policy, tensor_parallel_size) is NOT evidenced
+# by a managed start until item ② can verify instance knobs.
+MANAGED_CLI_EVIDENCED_KEYS: frozenset[str] = frozenset(
+    {
+        "model_name",
+        "max_num_seqs",
+        "max_num_batched_tokens",
+        "max_model_len",
+        "gpu_memory_utilization",
+        "enforce_eager",
+        "enable_chunked_prefill",
+        "enable_prefix_caching",
+    }
 )
 
 # Evidence kinds that are NEVER sufficient on their own (item ② / contract).
@@ -208,8 +223,10 @@ class ExperimentResult(BaseModel):
     raw_e2e_ms: list[float] = Field(default_factory=list)
 
     # --- Week-1 experiment contract ---
-    # Unique identity (distinct from human-readable experiment_id)
-    run_id: str = Field(default_factory=lambda: uuid.uuid4().hex)
+    # Unique identity (distinct from human-readable experiment_id).
+    # Empty / missing → filled by validator with a *stable* legacy id (not a
+    # fresh UUID on every deserialize). New runs must pass an explicit run_id.
+    run_id: str = ""
     schema_version: str = EXPERIMENT_SCHEMA_VERSION
     code_sha: str | None = None
     # Mapping: experiment_id ↔ session prefix ↔ MLflow
@@ -229,7 +246,7 @@ class ExperimentResult(BaseModel):
     notes: str = ""
 
     @model_validator(mode="after")
-    def _fill_requested_and_workload_hash(self) -> ExperimentResult:
+    def _fill_contract_defaults(self) -> ExperimentResult:
         if not self.requested_config:
             self.requested_config = config_knobs(self.config)
         if not self.workload_hash:
@@ -238,6 +255,11 @@ class ExperimentResult(BaseModel):
             self.hardware = HardwareInfo(
                 model_name=self.config.model_name,
                 engine=self.config.engine.value,
+            )
+        if not self.run_id:
+            # Stable across re-reads of the same legacy row (P2-6).
+            self.run_id = stable_legacy_run_id(
+                self.experiment_id, self.mlflow_run_id
             )
         return self
 
@@ -253,6 +275,15 @@ def config_knobs(cfg: ExperimentConfig) -> dict[str, Any]:
         val = getattr(cfg, key)
         out[key] = val.value if isinstance(val, Enum) else val
     return out
+
+
+def managed_cli_actual_config(requested: dict[str, Any]) -> dict[str, Any]:
+    """Subset of requested knobs that `_build_cmd` actually passes on the CLI.
+
+    Non-CLI keys (scheduler_policy, tensor_parallel_size, …) are omitted so they
+    cannot be falsely recorded as applied.
+    """
+    return {k: requested[k] for k in MANAGED_CLI_EVIDENCED_KEYS if k in requested}
 
 
 def compute_workload_hash(workload: WorkloadSpec) -> str:
@@ -278,24 +309,70 @@ def resolve_git_sha(short: bool = True) -> str | None:
         return None
 
 
+def stable_legacy_run_id(experiment_id: str, mlflow_run_id: str | None = None) -> str:
+    """Deterministic run_id for pre-contract rows (stable across re-reads)."""
+    seed = f"legacy:{experiment_id}:{mlflow_run_id or ''}"
+    return hashlib.sha256(seed.encode()).hexdigest()[:32]
+
+
 def has_critical_config_evidence(evidence: ConfigEvidence | None) -> bool:
     return evidence is not None and evidence.is_critical_evidence()
 
 
-def is_promotable(result: ExperimentResult) -> bool:
-    """True iff a candidate may become best / deploy recommendation.
+def actual_covers_requested(
+    requested_config: dict[str, Any] | None,
+    actual_config: dict[str, Any] | None,
+) -> bool:
+    """True iff every requested key is present in actual AND values match.
 
-    Requires:
+    Missing keys are NOT matches (P1-2). Empty actual never covers non-empty
+    requested.
+    """
+    if requested_config is None or actual_config is None:
+        return False
+    if not requested_config:
+        return False
+    for key, req_val in requested_config.items():
+        if key not in actual_config:
+            return False
+        if actual_config[key] != req_val:
+            return False
+    return True
+
+
+def actual_has_mismatch(
+    requested_config: dict[str, Any] | None,
+    actual_config: dict[str, Any] | None,
+) -> bool:
+    """True if any *shared* key disagrees (used to distinguish invalid vs insuff)."""
+    if not requested_config or not actual_config:
+        return False
+    for key, req_val in requested_config.items():
+        if key in actual_config and actual_config[key] != req_val:
+            return True
+    return False
+
+
+def is_promotable(result: ExperimentResult) -> bool:
+    """Single full promotion gate used everywhere (P1-3).
+
+    Requires ALL of:
       - status == valid
       - critical config evidence present
-      - actual_config recorded (not None)
-    High scores alone never suffice. Missing evidence never promotes.
+      - actual_config covers every requested knob (no missing keys)
+      - at least one successful request (all-failed workloads are not promotable)
+    High scores alone never suffice. Empty/partial actual never promotes.
     """
     if result.status != ExperimentValidityStatus.VALID:
         return False
-    if result.actual_config is None:
+    if not has_critical_config_evidence(result.config_evidence):
         return False
-    return has_critical_config_evidence(result.config_evidence)
+    requested = result.requested_config or config_knobs(result.config)
+    if not actual_covers_requested(requested, result.actual_config):
+        return False
+    if result.successful_requests <= 0:
+        return False
+    return True
 
 
 def derive_status(
@@ -304,23 +381,31 @@ def derive_status(
     evidence: ConfigEvidence | None = None,
     actual_config: dict[str, Any] | None = None,
     requested_config: dict[str, Any] | None = None,
+    successful_requests: int | None = None,
 ) -> ExperimentValidityStatus:
     """Derive contract status from evidence + actual/requested config.
 
-    Never returns valid unless evidence is critical AND actual_config is set.
-    Mismatched knobs → invalid. Missing/weak evidence → insufficient_evidence.
+    Never returns valid unless evidence is critical AND actual covers every
+    requested key. Missing keys → insufficient_evidence (not a match).
+    Mismatched shared keys → invalid. Zero successes → failed.
     """
     if failed:
+        return ExperimentValidityStatus.FAILED
+    if successful_requests is not None and successful_requests <= 0:
         return ExperimentValidityStatus.FAILED
     if not has_critical_config_evidence(evidence):
         return ExperimentValidityStatus.INSUFFICIENT_EVIDENCE
     if actual_config is None:
         return ExperimentValidityStatus.INSUFFICIENT_EVIDENCE
-    if requested_config is not None:
-        # Compare shared keys only
-        for key, req_val in requested_config.items():
-            if key in actual_config and actual_config[key] != req_val:
-                return ExperimentValidityStatus.INVALID
+    if requested_config:
+        if actual_has_mismatch(requested_config, actual_config):
+            return ExperimentValidityStatus.INVALID
+        if not actual_covers_requested(requested_config, actual_config):
+            # Partial actual (e.g. CLI-only managed keys) → not valid yet.
+            return ExperimentValidityStatus.INSUFFICIENT_EVIDENCE
+    else:
+        # No requested snapshot → cannot claim valid application.
+        return ExperimentValidityStatus.INSUFFICIENT_EVIDENCE
     return ExperimentValidityStatus.VALID
 
 
@@ -329,19 +414,23 @@ def managed_start_evidence(
     process_pid: int | None,
     host: str,
     port: int,
-    requested: dict[str, Any],
+    observed_params: dict[str, Any],
 ) -> ConfigEvidence:
-    """Evidence for a bench_runner-managed vLLM process started with CLI knobs."""
+    """Evidence for CLI knobs actually passed when bench_runner started vLLM.
+
+    `observed_params` must be the CLI-evidenced subset only — never the full
+    requested dict (non-CLI knobs are unverified until item ②).
+    """
     instance_id = f"{host}:{port}:pid={process_pid}" if process_pid else f"{host}:{port}"
     return ConfigEvidence(
         kind="managed_process_start",
         verified=True,
         instance_id=instance_id,
         process_pid=process_pid,
-        observed_params=dict(requested),
+        observed_params=dict(observed_params),
         notes=(
-            "vLLM process started by bench_runner with CLI args matching "
-            "requested config; ready after health wait."
+            "vLLM process started by bench_runner; observed_params lists only "
+            "knobs passed on the CLI. Non-CLI requested knobs are unverified."
         ),
     )
 
@@ -357,6 +446,10 @@ def external_unverified_evidence(*, host: str, port: int) -> ConfigEvidence:
             "verified. Health/HTTP 200 alone is never sufficient evidence."
         ),
     )
+
+
+def empty_latency() -> LatencyPercentiles:
+    return LatencyPercentiles(p50=0.0, p90=0.0, p95=0.0, p99=0.0)
 
 
 # ---------------------------------------------------------------------------

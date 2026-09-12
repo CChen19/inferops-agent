@@ -7,7 +7,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from configs.search_space import make_configs
-from inferops.bench_runner import run_experiment
+from inferops.bench_runner import BenchmarkError, run_experiment
 from inferops.memory.db import save_result
 from inferops.observability import span
 from inferops.schemas import ExperimentResult
@@ -133,11 +133,17 @@ def run_benchmark(inp: RunBenchmarkInput) -> RunBenchmarkOutput:
             "session_id": inp.session_id or "",
         },
     ):
-        result: ExperimentResult = run_experiment(
-            patched,
-            prompts,
-            session_id=inp.session_id,
-        )
+        try:
+            result: ExperimentResult = run_experiment(
+                patched,
+                prompts,
+                session_id=inp.session_id,
+            )
+        except BenchmarkError as exc:
+            # P2-5: persist failed contract row so eval counts the attempt
+            if exc.result is not None and inp.persist:
+                save_result(exc.result)
+            raise
 
     if inp.persist:
         save_result(result)

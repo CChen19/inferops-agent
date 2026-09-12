@@ -33,7 +33,9 @@ from inferops.schemas import (
     config_knobs,
     compute_workload_hash,
     derive_status,
+    empty_latency,
     external_unverified_evidence,
+    managed_cli_actual_config,
     managed_start_evidence,
     resolve_git_sha,
 )
@@ -48,7 +50,11 @@ VLLM_PORT = int(os.getenv("VLLM_PORT", "8000"))
 
 
 class BenchmarkError(Exception):
-    pass
+    """Benchmark failure. May carry a persisted failed ExperimentResult (P2-5)."""
+
+    def __init__(self, message: str, result: ExperimentResult | None = None):
+        super().__init__(message)
+        self.result = result
 
 
 class OOMError(BenchmarkError):
@@ -120,12 +126,16 @@ def run_experiment(
 ) -> ExperimentResult:
     """
     Run one full experiment: start vLLM → benchmark → collect → stop.
-    Raises OOMError or StartupTimeoutError on failure.
+
+    On startup failure, builds a failed ExperimentResult (same run_id / MLflow
+    mapping), logs it, attaches it to the raised BenchmarkError, and re-raises
+    so callers can persist the attempt (P2-5).
 
     Contract status/evidence:
-      - Managed start (we launch vLLM): may be valid with managed_process_start evidence.
-      - External healthy server: always insufficient_evidence (healthy ≠ config applied).
-    Status hooks via on_progress for callers / reports.
+      - Managed start: actual_config = CLI-evidenced keys only. Non-CLI requested
+        knobs keep status at insufficient_evidence until item ② verifies them.
+      - External healthy server: always insufficient_evidence.
+      - Zero successful requests: status=failed (never promotable).
     """
 
     def log(msg: str) -> None:
@@ -138,6 +148,15 @@ def run_experiment(
     code_sha = resolve_git_sha()
     run_id = uuid.uuid4().hex
     sess = session_id or cfg.tags.get("session_id") or cfg.tags.get("session_prefix")
+    sess_str = str(sess) if sess else None
+
+    hardware = HardwareInfo(
+        model_name=cfg.model_name,
+        engine=cfg.engine.value,
+        vllm_version=os.getenv("VLLM_VERSION"),
+        gpu_name=os.getenv("INFEROPS_GPU_NAME"),
+        cuda_version=os.getenv("CUDA_VERSION"),
+    )
 
     # If vLLM is already running externally (e.g. via start_vllm.sh), skip
     # lifecycle management and send traffic directly. This avoids port conflicts
@@ -157,16 +176,49 @@ def run_experiment(
         "experiment_id": cfg.experiment_id,
         "schema_version": "1",
     }
-    if sess:
-        tags["session_id"] = str(sess)
+    if sess_str:
+        tags["session_id"] = sess_str
     if code_sha:
         tags["code_sha"] = code_sha
+
+    def _failed_result(
+        mlflow_run_id: str | None,
+        reason: str,
+        *,
+        evidence=None,
+        actual=None,
+    ) -> ExperimentResult:
+        return ExperimentResult(
+            experiment_id=cfg.experiment_id,
+            config=cfg,
+            total_requests=0,
+            successful_requests=0,
+            total_time_s=0.0,
+            throughput_rps=0.0,
+            tokens_per_second=0.0,
+            ttft=empty_latency(),
+            tpot=empty_latency(),
+            e2e_latency=empty_latency(),
+            run_id=run_id,
+            schema_version="1",
+            code_sha=code_sha,
+            session_id=sess_str,
+            mlflow_run_id=mlflow_run_id,
+            requested_config=requested,
+            actual_config=actual,
+            config_evidence=evidence,
+            status=ExperimentValidityStatus.FAILED,
+            workload_hash=compute_workload_hash(cfg.workload),
+            hardware=hardware,
+            notes=reason,
+        )
 
     with mlflow_run(run_name=cfg.experiment_id, tags=tags) as run:
         proc: VLLMProcess | None = None
         evidence = None
         actual: dict | None = None
         status = ExperimentValidityStatus.INSUFFICIENT_EVIDENCE
+        mlflow_id = run.info.run_id
 
         if _external:
             log(f"Using external vLLM at {VLLM_HOST}:{VLLM_PORT} (skipping lifecycle)")
@@ -184,7 +236,15 @@ def run_experiment(
             if on_progress:
                 on_progress("status:starting_managed_vllm")
             proc = VLLMProcess(cfg, host=VLLM_HOST, port=VLLM_PORT)
-            proc.start()
+            try:
+                proc.start()
+            except Exception as exc:
+                if on_progress:
+                    on_progress("status:failed:start_exception")
+                failed = _failed_result(mlflow_id, f"vLLM start exception: {exc}")
+                log_experiment_result(failed)
+                raise BenchmarkError(str(exc), result=failed) from exc
+
             if proc.log_path:
                 log(f"  vLLM log → {proc.log_path}")
 
@@ -193,20 +253,36 @@ def run_experiment(
                 if on_progress:
                     on_progress("status:failed:startup")
                 if proc.oom_in_log():
-                    raise OOMError(f"vLLM OOM during startup — config: {cfg.experiment_id}")
+                    reason = f"vLLM OOM during startup — config: {cfg.experiment_id}"
+                    failed = _failed_result(mlflow_id, reason)
+                    log_experiment_result(failed)
+                    proc.stop()
+                    raise OOMError(reason, result=failed)
                 if proc.is_crashed():
-                    raise BenchmarkError(f"vLLM crashed (exit {proc.exit_code()}) — see {proc.log_path}")
-                raise StartupTimeoutError(f"vLLM not ready after startup timeout — see {proc.log_path}")
+                    reason = (
+                        f"vLLM crashed (exit {proc.exit_code()}) — see {proc.log_path}"
+                    )
+                    failed = _failed_result(mlflow_id, reason)
+                    log_experiment_result(failed)
+                    proc.stop()
+                    raise BenchmarkError(reason, result=failed)
+                reason = (
+                    f"vLLM not ready after startup timeout — see {proc.log_path}"
+                )
+                failed = _failed_result(mlflow_id, reason)
+                log_experiment_result(failed)
+                proc.stop()
+                raise StartupTimeoutError(reason, result=failed)
 
             pid = proc._proc.pid if proc._proc is not None else None
+            # P1-1: only CLI-evidenced keys — never copy full requested → actual
+            actual = managed_cli_actual_config(requested)
             evidence = managed_start_evidence(
                 process_pid=pid,
                 host=VLLM_HOST,
                 port=VLLM_PORT,
-                requested=requested,
+                observed_params=actual,
             )
-            # Managed process was started with CLI knobs == requested.
-            actual = dict(requested)
             status = derive_status(
                 evidence=evidence,
                 actual_config=actual,
@@ -219,27 +295,37 @@ def run_experiment(
 
         gpu = GPUMonitor(interval_s=0.5)
         gpu.start()
-
+        gpu_summary = None
+        load = None
         try:
             load = _run_load_with_cleanup_workaround(cfg, prompts)
+        except Exception as exc:
+            if on_progress:
+                on_progress("status:failed:load")
+            failed = _failed_result(
+                mlflow_id, f"load failed: {exc}", evidence=evidence, actual=actual
+            )
+            log_experiment_result(failed)
+            raise BenchmarkError(str(exc), result=failed) from exc
         finally:
             gpu_summary = gpu.stop()
             if proc is not None:
                 log("Stopping vLLM …")
                 proc.stop()
 
+        assert load is not None and gpu_summary is not None
+
         # Build result
         ttft_p = extract_percentiles(load.ttft_ms)
         e2e_p = extract_percentiles(load.e2e_ms)
-        # TPOT = (E2E - TTFT) / (output_tokens - 1) ≈ E2E percentiles for now
         tpot_p = {k: max(0.0, e2e_p[k] - ttft_p[k]) for k in ttft_p}
 
-        hardware = HardwareInfo(
-            model_name=cfg.model_name,
-            engine=cfg.engine.value,
-            vllm_version=os.getenv("VLLM_VERSION"),
-            gpu_name=os.getenv("INFEROPS_GPU_NAME"),
-            cuda_version=os.getenv("CUDA_VERSION"),
+        # P1-4: re-derive status after workload — zero successes → failed
+        status = derive_status(
+            evidence=evidence,
+            actual_config=actual,
+            requested_config=requested,
+            successful_requests=load.successful,
         )
 
         result = ExperimentResult(
@@ -260,8 +346,8 @@ def run_experiment(
             run_id=run_id,
             schema_version="1",
             code_sha=code_sha,
-            session_id=str(sess) if sess else None,
-            mlflow_run_id=run.info.run_id,
+            session_id=sess_str,
+            mlflow_run_id=mlflow_id,
             requested_config=requested,
             actual_config=actual,
             config_evidence=evidence,
