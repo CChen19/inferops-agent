@@ -1,0 +1,213 @@
+{
+  "schema": "inferops.unified_goldens.v1",
+  "cpu_only": true,
+  "min_cases": 20,
+  "max_cases": 30,
+  "reviewer_default": "eval",
+  "layers": {
+    "offline_fixture": "deterministic CPU/fixture — CI fail-closed",
+    "real_llm": "separate multi-run evidence; never label fake/offline as live",
+    "gpu": "GPU: 未执行 / Blocked unless a 3060 worker archives real logs"
+  },
+  "follow_ups": [
+    {
+      "id": "tune_8_incomplete_receipt_lost",
+      "status": "not_frozen",
+      "note": "Tune ⑧ recovery fields on master (attempt_id, experiment_id, hypothesis, stage/tool, reason/code, result_persisted, budget_consumed, retryable, next_action) do not yet include incomplete/receipt-lost. Matching recovery goldens wait for Tune freeze. Do not invent schema."
+    }
+  ],
+  "cases": [
+    {
+      "id": "missing_requests",
+      "source": "measurement_goldens",
+      "expected_behavior": "Empty ledger stays None. A lost request is incomplete. token_count_source=missing cannot invent tok/s.",
+      "judge_rule": "measurement_trust.missing_neq_0",
+      "reviewer": "eval",
+      "holdout": false
+    },
+    {
+      "id": "failures_not_dropped",
+      "source": "measurement_goldens",
+      "expected_behavior": "fail / timeout / cancel / incomplete stay in the error numerator and measured denominator. Incomplete is never success.",
+      "judge_rule": "measurement_trust.failures_in_denominator",
+      "reviewer": "eval",
+      "holdout": false
+    },
+    {
+      "id": "tpot_na",
+      "source": "measurement_goldens",
+      "expected_behavior": "Zero-token, single-token, and missing provenance rows keep TPOT N/A — never 0.",
+      "judge_rule": "measurement_trust.tpot_na",
+      "reviewer": "eval",
+      "holdout": true
+    },
+    {
+      "id": "search_win_unconfirmed",
+      "source": "measurement_goldens",
+      "expected_behavior": "Search-phase +50% is search_winner only. Not confirmed_improvement. Not is_confirmed_promotable. Reflect remasures.",
+      "judge_rule": "confirmation.search_neq_confirmed",
+      "reviewer": "eval",
+      "holdout": false
+    },
+    {
+      "id": "too_noisy",
+      "source": "measurement_goldens",
+      "expected_behavior": "Disagreeing confirmation pairs stay too_noisy. Reflect remasures under the cap. Not promotable.",
+      "judge_rule": "confirmation.too_noisy_remeasure",
+      "reviewer": "eval",
+      "holdout": false
+    },
+    {
+      "id": "no_reliable_improvement",
+      "source": "measurement_goldens",
+      "expected_behavior": "Confirmation no_diff → ⑥ stop_reason=no_reliable_improvement. Not a promote.",
+      "judge_rule": "reflect.no_reliable_improvement",
+      "reviewer": "eval",
+      "holdout": true
+    },
+    {
+      "id": "propose_tool_error",
+      "source": "recovery_goldens",
+      "expected_behavior": "Propose tool error emits Tune propose_tool_error. No budget. No forged summary. Stale latest ignored. No promote.",
+      "judge_rule": "recovery.propose_no_budget",
+      "reviewer": "eval",
+      "holdout": false
+    },
+    {
+      "id": "benchmark_no_result",
+      "source": "recovery_goldens",
+      "expected_behavior": "BenchmarkError without exc.result forges no row/metrics. Budget −1 once. No promote.",
+      "judge_rule": "recovery.benchmark_no_forge",
+      "reviewer": "eval",
+      "holdout": false
+    },
+    {
+      "id": "benchmark_error_failed_result",
+      "source": "recovery_goldens",
+      "expected_behavior": "Persisted failed contract row is kept. is_promotable false. current_attempt_latest is that row.",
+      "judge_rule": "recovery.failed_row_kept",
+      "reviewer": "eval",
+      "holdout": false
+    },
+    {
+      "id": "confirmation_mid_fail",
+      "source": "recovery_goldens",
+      "expected_behavior": "Mid-slot fail records completed run_id. No ⑤ decision. Remasure under cap. best_summary identity unchanged.",
+      "judge_rule": "recovery.confirm_mid_fail",
+      "reviewer": "eval",
+      "holdout": false
+    },
+    {
+      "id": "prior_success_current_fail",
+      "source": "recovery_goldens",
+      "expected_behavior": "tool_exception on this attempt. Reflect does not treat prior success as current. Bind cleared.",
+      "judge_rule": "recovery.prior_success_not_current",
+      "reviewer": "eval",
+      "holdout": false
+    },
+    {
+      "id": "pre_tool_interrupt",
+      "source": "recovery_goldens",
+      "expected_behavior": "Tool is not called at interrupt. One benchmark on resume. No confirmed promote.",
+      "judge_rule": "recovery.pre_tool_once",
+      "reviewer": "eval",
+      "holdout": false
+    },
+    {
+      "id": "post_persist_pre_commit_interrupt",
+      "source": "recovery_goldens",
+      "expected_behavior": "Search persist is reused. Confirm slots reuse _rN_ ids. Campaign budget −1 once.",
+      "judge_rule": "recovery.persist_reuse",
+      "reviewer": "eval",
+      "holdout": false
+    },
+    {
+      "id": "idempotent_re_resume",
+      "source": "recovery_goldens",
+      "expected_behavior": "Second resume matches budget / tried ids / run_ids. No duplicate attempt.",
+      "judge_rule": "recovery.idempotent_resume",
+      "reviewer": "eval",
+      "holdout": true
+    },
+    {
+      "id": "resume_equivalence",
+      "source": "recovery_goldens",
+      "expected_behavior": "Uninterrupted vs interrupted+resumed match the full comparable end-state.",
+      "judge_rule": "recovery.resume_equivalence",
+      "reviewer": "eval",
+      "holdout": true
+    },
+    {
+      "id": "failed_row_remembered_not_promotable",
+      "source": "error_memory_goldens",
+      "expected_behavior": "A failed unrun row is stored. get_promotable_result is None. promotable_only excludes it.",
+      "judge_rule": "error_memory.failed_not_promotable",
+      "reviewer": "eval",
+      "holdout": false
+    },
+    {
+      "id": "unevidenced_high_score_not_promotable",
+      "source": "error_memory_goldens",
+      "expected_behavior": "High RPS without critical evidence stays insufficient_evidence. ① is_promotable false. Not best.",
+      "judge_rule": "error_memory.unevidenced_not_promotable",
+      "reviewer": "eval",
+      "holdout": true
+    },
+    {
+      "id": "invalid_actual_mismatch_not_promotable",
+      "source": "error_memory_goldens",
+      "expected_behavior": "Mismatched actual vs requested derives invalid. Remembered, never promotable.",
+      "judge_rule": "error_memory.invalid_not_promotable",
+      "reviewer": "eval",
+      "holdout": false
+    },
+    {
+      "id": "insufficient_evidence_cli_only_not_promotable",
+      "source": "error_memory_goldens",
+      "expected_behavior": "CLI-only actual (missing non-CLI knobs) is insufficient_evidence. ① stays closed.",
+      "judge_rule": "error_memory.cli_only_not_promotable",
+      "reviewer": "eval",
+      "holdout": false
+    },
+    {
+      "id": "zero_success_failed_not_promotable",
+      "source": "error_memory_goldens",
+      "expected_behavior": "successful_requests=0 derives failed. Remembered, not promotable.",
+      "judge_rule": "error_memory.zero_success_failed",
+      "reviewer": "eval",
+      "holdout": false
+    },
+    {
+      "id": "legacy_incomplete_row_not_promotable",
+      "source": "error_memory_goldens",
+      "expected_behavior": "Legacy / incomplete rows default to insufficient_evidence with a stable legacy run_id. Reload does not promote.",
+      "judge_rule": "error_memory.legacy_insufficient",
+      "reviewer": "eval",
+      "holdout": false
+    },
+    {
+      "id": "duplicate_failed_config_stays_remembered",
+      "source": "error_memory_goldens",
+      "expected_behavior": "Retrying the same failed config upserts one remembered failed row. Still not promotable.",
+      "judge_rule": "error_memory.duplicate_failed_remembered",
+      "reviewer": "eval",
+      "holdout": false
+    },
+    {
+      "id": "oom_failed_row_not_best",
+      "source": "error_memory_goldens",
+      "expected_behavior": "OOM-at-start failed row is remembered. A Week-1-valid neighbor can be promotable; the OOM row cannot.",
+      "judge_rule": "error_memory.oom_not_best",
+      "reviewer": "eval",
+      "holdout": false
+    },
+    {
+      "id": "promotable_only_excludes_errors",
+      "source": "error_memory_goldens",
+      "expected_behavior": "Mixed failed / unevidenced / invalid / valid rows: promotable_only returns only the Week-1-valid row.",
+      "judge_rule": "error_memory.promotable_only_filter",
+      "reviewer": "eval",
+      "holdout": true
+    }
+  ]
+}

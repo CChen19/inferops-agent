@@ -1,0 +1,15 @@
+{
+  "id": "oom_failed_row_not_best",
+  "schema": "inferops.error_memory_goldens.v1",
+  "synthetic": true,
+  "gpu_sampled": false,
+  "driver": "oom_failed_row_not_best",
+  "expect": {
+    "is_promotable": false,
+    "status": "failed",
+    "remembered": true,
+    "get_promotable_result_none": true,
+    "promotable_only_includes": false,
+    "promotable_flag": 0
+  }
+}

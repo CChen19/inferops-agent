@@ -1,0 +1,16 @@
+{
+  "schema": "inferops.error_memory_goldens.v1",
+  "cpu_only": true,
+  "gpu_queued": false,
+  "required_ids": [
+    "failed_row_remembered_not_promotable",
+    "unevidenced_high_score_not_promotable",
+    "invalid_actual_mismatch_not_promotable",
+    "insufficient_evidence_cli_only_not_promotable",
+    "zero_success_failed_not_promotable",
+    "legacy_incomplete_row_not_promotable",
+    "duplicate_failed_config_stays_remembered",
+    "oom_failed_row_not_best",
+    "promotable_only_excludes_errors"
+  ]
+}
