@@ -108,7 +108,8 @@ identity keys must match.
 
 Shared gate: no false promote, no invented GPU/metrics
 (`gpu_utilization_pct` / `gpu_memory_used_gb` / `cost_usd`), empty /
-skipped set **FAIL**, `INFEROPS_GPU_GOLDENS` unset → CPU/fixture only.
+skipped set **FAIL** (missing required ids, empty dir, or `skip`/`skipped`
+on a fixture), `INFEROPS_GPU_GOLDENS` unset → CPU/fixture only.
 This thin set does **not** claim `confirmed_promotable=true`.
 
 | id | Fail-closed asserts |
