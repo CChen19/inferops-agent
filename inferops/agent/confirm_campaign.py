@@ -3,9 +3,9 @@
 Consumes ``run_interleaved_repeats`` / ``evaluate_campaign`` / ``verdict_from_ledgers``.
 Does not mint ``confirmed_improvement`` and does not invent a metrics schema.
 
-CI / offline tests inject a ledger ``run_arm`` (no GPU). Production wiring may
-call ``run_benchmark`` per interleave slot — that path is not exercised in CI
-and must not invent GPU numbers.
+Production remasure default: per-slot ``run_benchmark`` at the existing tool
+boundary (④ ledger on each ``ExperimentResult``). CI / offline tests inject a
+fixture ``run_arm`` or stub that tool edge — GPU-free, no invented numbers.
 """
 
 from __future__ import annotations
@@ -22,7 +22,9 @@ from inferops.metrics import (
     RepeatSlot,
     RunConditions,
     evaluate_campaign,
+    ledger_from_result,
     run_interleaved_repeats,
+    verdict_from_ledgers,
 )
 
 
@@ -109,6 +111,118 @@ def decision_applies_to_latest(
     return True
 
 
+def search_verdict_from_results(
+    baseline: Any,
+    candidate: Any,
+    *,
+    metric: str = "throughput_rps",
+) -> ConfirmationDecision | None:
+    """⑤ search-phase verdict from two persisted ④-backed results.
+
+    Returns ``None`` when either result lacks a request ledger. Callers must
+    not invent ``search_winner`` from metric-only rows.
+    """
+    if baseline is None or candidate is None:
+        return None
+    base_ledger = ledger_from_result(baseline)
+    cand_ledger = ledger_from_result(candidate)
+    if base_ledger is None or cand_ledger is None:
+        return None
+    try:
+        return verdict_from_ledgers(
+            [base_ledger],
+            [cand_ledger],
+            metric=metric,
+            phase=RepeatPhase.SEARCH,
+            min_pairs=1,
+        )
+    except (TypeError, ValueError):
+        return None
+
+
+def search_winner_state_pack(
+    *,
+    baseline: Any,
+    candidate: Any,
+    hyp: dict[str, Any],
+    primary_metric: str,
+) -> dict[str, Any]:
+    """State overlay after a genuine ⑤ search winner. Empty if not a winner."""
+    decision = search_verdict_from_results(
+        baseline, candidate, metric=primary_metric
+    )
+    if decision is None or not decision.search_winner:
+        return {}
+    base_ledger = ledger_from_result(baseline)
+    cand_ledger = ledger_from_result(candidate)
+    if base_ledger is None or cand_ledger is None:
+        return {}
+    return {
+        "confirmation_decision": decision,
+        "repeat_ledgers": {
+            "baseline": [base_ledger],
+            "candidate": [cand_ledger],
+            "phase": RepeatPhase.SEARCH,
+            "metric": primary_metric,
+            "min_pairs": 1,
+            "conditions": base_ledger.conditions,
+        },
+        "confirmation_target": candidate_fingerprint(hyp.get("param"), hyp.get("value")),
+        "confirmation_bound_run_ids": [str(getattr(candidate, "run_id", "") or "")],
+    }
+
+
+def production_slot_run_arm(
+    *,
+    hypothesis: dict[str, Any],
+    session_prefix: str,
+    run_slot: Callable[[str, dict[str, Any]], Any],
+) -> Callable[[RepeatArm, RepeatSlot], Any]:
+    """Per-slot ``run_arm`` that calls the benchmark tool boundary.
+
+    ``run_slot(experiment_id, config_patch)`` must return an
+    ``ExperimentResult`` with a ④ ``request_ledger``. Baseline slots apply
+    no candidate override; candidate slots apply ``{param: value}``.
+
+    The last candidate result is stored as ``.last_candidate_result`` so the
+    executor can bind ``last_result`` / ``experiment_summaries`` to a run_id
+    that appears on the confirmation decision.
+    """
+
+    class _SlotRunner:
+        last_candidate_result: Any = None
+
+        def __call__(self, arm: RepeatArm, slot: RepeatSlot) -> Any:
+            if arm == RepeatArm.BASELINE:
+                config: dict[str, Any] = {}
+                tag = "b"
+            elif arm == RepeatArm.CANDIDATE:
+                config = {hypothesis["param"]: hypothesis["value"]}
+                tag = "c"
+            else:
+                raise ValueError(f"unknown confirmation arm {arm!r}")
+            eid = (
+                f"{session_prefix}confirm_{hypothesis['param']}_"
+                f"{hypothesis['value']}_{tag}{slot.pair_index}"
+            )
+            result = run_slot(eid, config)
+            ledger = ledger_from_result(result)
+            if ledger is None:
+                raise RuntimeError(
+                    "confirmation slot produced no request ledger; "
+                    "run_benchmark must persist ④ request_ledger on ExperimentResult"
+                )
+            if ledger.run_id != getattr(result, "run_id", None):
+                raise RuntimeError(
+                    "confirmation slot ledger run_id does not match ExperimentResult.run_id"
+                )
+            if arm == RepeatArm.CANDIDATE:
+                self.last_candidate_result = result
+            return ledger
+
+    return _SlotRunner()
+
+
 def run_confirmation_campaign(
     run_arm: Callable[[RepeatArm, RepeatSlot], Any],
     *,
@@ -118,7 +232,12 @@ def run_confirmation_campaign(
     expected_conditions: RunConditions | None = None,
     start_arm: RepeatArm = RepeatArm.BASELINE,
 ) -> tuple[RepeatCampaign, ConfirmationDecision]:
-    """One interleaved B/C campaign → official ⑤ decision. Fixture ``run_arm`` OK."""
+    """One interleaved B/C campaign → official ⑤ decision.
+
+    ``run_arm`` is the per-slot runner. Production wires this to
+    ``run_benchmark`` at the tool boundary. Tests may inject a fixture
+    ``run_arm`` that returns pre-authored ledgers so CI stays GPU-free.
+    """
     campaign = run_interleaved_repeats(
         run_arm,
         n_pairs,
