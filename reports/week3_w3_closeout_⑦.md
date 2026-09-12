@@ -96,10 +96,28 @@ Invented GPU / vLLM numbers. Auto-merge — Chris merges manually.
 
 ## Evidence
 
-Recorded after `pytest -q` and the golden runners on this tip. CPU /
-fixture only for the deterministic gates.
+```bash
+pytest -q
+python scripts/run_measurement_goldens.py
+python scripts/run_recovery_goldens.py
+python scripts/run_error_memory_goldens.py
+python scripts/run_unified_goldens.py
+python scripts/run_real_llm_goldens.py
+```
+
+```text
+412 passed in 15.48s
+measurement-trust golden gate passed (CPU/fixture; GPU-not-run ≠ pass)
+recovery golden gate passed (CPU/fixture; GPU-not-run ≠ pass)
+error-memory golden gate passed (CPU/fixture; GPU-not-run ≠ pass)
+unified golden gate passed (offline fixtures; GPU-not-run ≠ pass; real-LLM is separate)
+real-LLM: BLOCKED (not a pass; not fake-LLM)
+```
 
 ```text
 GPU: 未执行 / Blocked — no 3060 / no GPU worker in this environment.
 real-LLM: BLOCKED — OPENROUTER_API_KEY missing. Not a pass. Not fake-LLM.
 ```
+
+CPU / fixture only for the deterministic gates. No invented vLLM / GPU
+numbers.

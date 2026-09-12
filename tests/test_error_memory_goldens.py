@@ -138,11 +138,12 @@ def test_week1_promotable_gate_unchanged(result_b, result_b_unevidenced):
 
 
 def test_promotable_only_uses_existing_memory_api(result_b, result_b_unevidenced, tmp_db):
+    hot = result_b_unevidenced.model_copy(update={"experiment_id": "test_unevidenced_hot"})
     save_result(result_b, db_path=tmp_db)
-    save_result(result_b_unevidenced, db_path=tmp_db)
+    save_result(hot, db_path=tmp_db)
     promo = query_results(top_k=10, db_path=tmp_db, promotable_only=True)
     assert [r["experiment_id"] for r in promo] == [result_b.experiment_id]
-    assert get_promotable_result(result_b_unevidenced.experiment_id, db_path=tmp_db) is None
+    assert get_promotable_result(hot.experiment_id, db_path=tmp_db) is None
 
 
 def test_every_fixture_is_synthetic_cpu():

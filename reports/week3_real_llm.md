@@ -11,7 +11,7 @@ Fake-scripted or `--real-graph` output must not be labeled live.
 - **n_completed**: `0`
 - **pass_rate**: `None`
 - **llm_boundary**: `None`
-- **generated_at**: `2026-09-12T19:05:29.632769+00:00`
+- **generated_at**: `2026-09-12T19:06:40.468086+00:00`
 
 ## Blocker
 
