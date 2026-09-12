@@ -33,6 +33,7 @@ from inferops.agent.confirm_campaign import (
     search_winner_state_pack,
 )
 from inferops.agent.recovery import (
+    CODE_ACK_LOST,
     STAGE_ANALYZE,
     STAGE_BENCHMARK,
     STAGE_COMPARE,
@@ -40,9 +41,13 @@ from inferops.agent.recovery import (
     STAGE_CONFIRM_SLOT,
     STAGE_PROPOSE,
     clear_stale_attempt_fields,
+    contract_status_value,
+    is_ack_lost,
     recovery_event,
     reraise_hard_control,
     tool_unavailable,
+    trajectory_audit_fields,
+    unconfirmable_contract_result,
 )
 from inferops.agent.reflect_constraints import MAX_REMEASURES
 from inferops.agent.state import (
@@ -56,8 +61,8 @@ from inferops.agent.state import (
     summary_from_result,
 )
 from inferops.bench_runner import BenchmarkError
-from inferops.memory.db import get_result_by_id
-from inferops.schemas import ExperimentResult, is_promotable
+from inferops.memory.db import get_result_by_id, save_result
+from inferops.schemas import ExperimentResult, ExperimentValidityStatus, is_promotable
 from inferops.tools.analyze_bottleneck import AnalyzeBottleneckInput, analyze_bottleneck
 from inferops.tools.compare_experiments import CompareExperimentsInput, compare_experiments
 from inferops.tools.run_benchmark import RunBenchmarkInput, run_benchmark
@@ -151,6 +156,9 @@ def executor_node(state: AgentState) -> dict:
                 "text": hyp.get("rationale") or "",
             },
             "result": {"skip_reason": "duplicate_candidate", "promoted_to_best": False},
+            **trajectory_audit_fields(
+                state, budget_consumed=False, next_action="", stop_reason=""
+            ),
         }
         return {
             "hypotheses": updated_hyps,
@@ -235,46 +243,29 @@ def executor_node(state: AgentState) -> dict:
                 persist=True,
                 session_id=state["session_prefix"],
             ))
-        except BenchmarkError as exc:
-            # P2-5: failed contract row already built/persisted — surface it in
-            # experiment_summaries + trajectory so final_report can show the attempt.
-            # Generic exceptions must not forge that row.
-            console.print(f"  [red]executor: benchmark failed ({exc})[/red]")
-            return _attempt_failure_patch(
-                state,
-                hyp,
-                experiment_id=eid,
-                stage=STAGE_BENCHMARK,
-                reason=str(exc),
-                code="benchmark_error",
-                result_persisted=exc.result is not None,
-                budget_consumed=True,
-                retryable=False,
-                next_action="rollback",
-                persist_result=exc.result,
-                primary_metric=primary_metric,
-                extra_clear=stale_clear,
-            )
         except Exception as exc:
             reraise_hard_control(exc)
-            console.print(f"  [red]executor: benchmark failed ({exc})[/red]")
-            return _attempt_failure_patch(
-                state,
-                hyp,
-                experiment_id=eid,
-                stage=STAGE_BENCHMARK,
-                reason=str(exc),
-                code="tool_exception",
-                result_persisted=False,
-                budget_consumed=True,
-                retryable=False,
-                next_action="rollback",
-                persist_result=None,
-                primary_metric=primary_metric,
-                extra_clear=stale_clear,
-            )
-        bench_dict = bench_out.model_dump() if hasattr(bench_out, "model_dump") else {}
-        result = _experiment_result_from_tool(eid, bench_out)
+            recovered = _factcheck_persisted_attempt(eid)
+            if recovered is not None:
+                # Startup-ok / receipt lost: reuse by stable attempt id.
+                # Do not re-start or re-benchmark.
+                console.print(
+                    f"  [dim]executor: ack/receipt lost — reused persisted {eid}[/dim]"
+                )
+                result = recovered
+                bench_dict = _result_to_bench_dict(recovered)
+            else:
+                return _benchmark_unconfirmed_failure(
+                    state,
+                    hyp,
+                    experiment_id=eid,
+                    exc=exc,
+                    primary_metric=primary_metric,
+                    extra_clear=stale_clear,
+                )
+        else:
+            bench_dict = bench_out.model_dump() if hasattr(bench_out, "model_dump") else {}
+            result = _experiment_result_from_tool(eid, bench_out)
 
     # --- analyze_bottleneck (may degrade; never silent 0 / promotion change) ---
     bottleneck = "unknown"
@@ -388,6 +379,12 @@ def executor_node(state: AgentState) -> dict:
             "promoted_to_best": False,
             "tools": tool_status,
         },
+        **trajectory_audit_fields(
+            state,
+            budget_consumed=True,
+            next_action="",
+            stop_reason="",
+        ),
     }
 
     vs_log = summary.get("vs_baseline_pct")
@@ -462,6 +459,14 @@ def _attempt_failure_patch(
         retryable=retryable,
         next_action=next_action,
         cited_run_ids=cited_run_ids,
+        validity_status=contract_status_value(persist_result),
+        retry_count=int(state.get("remeasure_count") or 0),
+        incomplete=bool(
+            persist_result is not None
+            and contract_status_value(persist_result)
+            == ExperimentValidityStatus.INSUFFICIENT_EVIDENCE.value
+            and code == CODE_ACK_LOST
+        ),
     )
     updated_hyps = _set_status(state["hypotheses"], hyp["id"], "failed", experiment_id)
     patch: dict[str, Any] = {
@@ -511,7 +516,11 @@ def _attempt_failure_patch(
         "action": f"{stage}({hyp['param']}={hyp['value']})",
         "experiment_id": experiment_id,
         "run_id": (failed_summary or {}).get("run_id") if failed_summary else None,
-        "validity_status": (failed_summary or {}).get("validity_status") or "failed",
+        "validity_status": (
+            (failed_summary or {}).get("validity_status")
+            or event.get("validity_status")
+            or "failed"
+        ),
         "mlflow_run_id": (failed_summary or {}).get("mlflow_run_id") if failed_summary else None,
         "reasoning": hyp["rationale"],
         "recovery": event,
@@ -529,9 +538,126 @@ def _attempt_failure_patch(
             "promoted_to_best": False,
             "this_attempt_failed": True,
         },
+        **trajectory_audit_fields(
+            state,
+            budget_consumed=budget_consumed,
+            next_action=next_action,
+            stop_reason="",
+        ),
     }
     patch["trajectory"] = list(state["trajectory"]) + [traj_step]
     return patch
+
+
+def _factcheck_persisted_attempt(experiment_id: str) -> Any:
+    """Lookup by stable attempt/experiment id — never invent a row."""
+    if not experiment_id:
+        return None
+    return get_result_by_id(experiment_id)
+
+
+def _unconfirmable_config(state: AgentState, hyp: Hypothesis, experiment_id: str):
+    """Requested config snapshot for an unconfirmable ① row (no GPU numbers)."""
+    from configs.search_space import make_configs
+    from workloads.definitions import ALL_WORKLOADS
+
+    workload = {w.name: w for w in ALL_WORKLOADS}[state["workload_name"]]
+    base = make_configs(workload)[0]
+    update: dict[str, Any] = {"experiment_id": experiment_id}
+    param = hyp.get("param")
+    if param:
+        update[str(param)] = hyp.get("value")
+    return base.model_copy(update=update)
+
+
+def _persist_unconfirmable_attempt(
+    state: AgentState,
+    hyp: Hypothesis,
+    *,
+    experiment_id: str,
+    reason: str,
+) -> ExperimentResult:
+    """Write explicit Week-1 insufficient_evidence when completion is unconfirmable."""
+    row = unconfirmable_contract_result(
+        experiment_id=experiment_id,
+        config=_unconfirmable_config(state, hyp, experiment_id),
+        session_id=state.get("session_prefix"),
+        reason=reason,
+    )
+    try:
+        save_result(row)
+    except Exception as exc:
+        reraise_hard_control(exc)
+    return row
+
+
+def _benchmark_unconfirmed_failure(
+    state: AgentState,
+    hyp: Hypothesis,
+    *,
+    experiment_id: str,
+    exc: BaseException,
+    primary_metric: str,
+    extra_clear: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Bench error with no persisted row: ack-lost → explicit ① status; else legacy fail."""
+    if is_ack_lost(exc):
+        reason = (
+            f"incomplete: {exc}. startup succeeded but receipt/ack lost; "
+            "cannot confirm completion"
+        )
+        console.print(f"  [red]executor: ack/receipt lost, unconfirmable ({exc})[/red]")
+        incomplete = _persist_unconfirmable_attempt(
+            state, hyp, experiment_id=experiment_id, reason=reason
+        )
+        return _attempt_failure_patch(
+            state,
+            hyp,
+            experiment_id=experiment_id,
+            stage=STAGE_BENCHMARK,
+            reason=reason,
+            code=CODE_ACK_LOST,
+            result_persisted=True,
+            budget_consumed=True,
+            retryable=False,
+            next_action="rollback",
+            persist_result=incomplete,
+            primary_metric=primary_metric,
+            extra_clear=extra_clear,
+        )
+    if isinstance(exc, BenchmarkError):
+        console.print(f"  [red]executor: benchmark failed ({exc})[/red]")
+        return _attempt_failure_patch(
+            state,
+            hyp,
+            experiment_id=experiment_id,
+            stage=STAGE_BENCHMARK,
+            reason=str(exc),
+            code="benchmark_error",
+            result_persisted=exc.result is not None,
+            budget_consumed=True,
+            retryable=False,
+            next_action="rollback",
+            persist_result=exc.result,
+            primary_metric=primary_metric,
+            extra_clear=extra_clear,
+        )
+    console.print(f"  [red]executor: benchmark failed ({exc})[/red]")
+    return _attempt_failure_patch(
+        state,
+        hyp,
+        experiment_id=experiment_id,
+        stage=STAGE_BENCHMARK,
+        reason=str(exc),
+        code="tool_exception",
+        result_persisted=False,
+        budget_consumed=True,
+        retryable=False,
+        next_action="rollback",
+        persist_result=None,
+        primary_metric=primary_metric,
+        extra_clear=extra_clear,
+    )
 
 
 def _experiment_result_from_tool(experiment_id: str, bench_out: Any) -> Any:
@@ -579,13 +705,23 @@ def _production_confirm_run_arm(state: AgentState, hyp: Hypothesis):
             console.print(f"  [dim]executor: confirmation slot reused: {eid}[/dim]")
             return existing
         bench_fn = _run_benchmark_override or run_benchmark
-        out = bench_fn(RunBenchmarkInput(
-            experiment_id=eid,
-            config_patch=config,
-            workload_name=state["workload_name"],
-            persist=True,
-            session_id=state["session_prefix"],
-        ))
+        try:
+            out = bench_fn(RunBenchmarkInput(
+                experiment_id=eid,
+                config_patch=config,
+                workload_name=state["workload_name"],
+                persist=True,
+                session_id=state["session_prefix"],
+            ))
+        except Exception as exc:
+            reraise_hard_control(exc)
+            reused = _factcheck_persisted_attempt(eid)
+            if reused is not None:
+                console.print(
+                    f"  [dim]executor: confirmation slot ack-lost reuse: {eid}[/dim]"
+                )
+                return reused
+            raise
         result = _experiment_result_from_tool(eid, out)
         if result is None:
             raise RuntimeError(
@@ -667,6 +803,7 @@ def _execute_confirmation_campaign(
             retryable=retryable,
             next_action=next_action,
             cited_run_ids=list(completed_run_ids),
+            retry_count=remasure_n,
         )
         updated_hyps = _set_status(
             state["hypotheses"], hyp["id"], "failed", hyp.get("experiment_id")
@@ -691,6 +828,13 @@ def _execute_confirmation_campaign(
                 "promoted_to_best": False,
                 "this_attempt_failed": True,
             },
+            **trajectory_audit_fields(
+                state,
+                budget_consumed=True,
+                next_action=next_action,
+                stop_reason="",
+                retry_count=remasure_n,
+            ),
         }
         return {
             "hypotheses": updated_hyps,
@@ -764,6 +908,13 @@ def _execute_confirmation_campaign(
             "search_winner": decision.search_winner,
             "promoted_to_best": False,
         },
+        **trajectory_audit_fields(
+            state,
+            budget_consumed=True,
+            next_action="",
+            stop_reason="",
+            retry_count=remasure_n,
+        ),
     }
     console.print(
         f"  executor: confirmation campaign — verdict={decision.verdict.value} "

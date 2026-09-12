@@ -34,7 +34,11 @@ from inferops.agent.confirm_campaign import (
     candidate_fingerprint,
     clear_confirmation_fields,
 )
-from inferops.agent.recovery import current_attempt_latest, hypothesis_fact
+from inferops.agent.recovery import (
+    current_attempt_latest,
+    hypothesis_fact,
+    trajectory_audit_fields,
+)
 from inferops.agent.reflect_constraints import (
     LLM_MUST_NOT_OWN,
     conclude_experiment,
@@ -213,6 +217,13 @@ def _apply_conclusion(
             "confirmation": conclusion.confirmation,
             "this_attempt_failed": bool(recovery and recovery.get("this_attempt_failed")),
         },
+        **trajectory_audit_fields(
+            state,
+            budget_consumed=bool((recovery or {}).get("budget_consumed")),
+            next_action=conclusion.next_action,
+            stop_reason=conclusion.stop_reason or "",
+            retry_count=remasure_count,
+        ),
     }
 
     patch: dict[str, Any] = {

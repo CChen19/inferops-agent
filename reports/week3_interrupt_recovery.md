@@ -23,9 +23,24 @@ trajectory step. Required fields:
 | `budget_consumed` | Whether `experiments_remaining` was decremented |
 | `retryable` | Confirmation-slot fail under remasure/budget cap |
 | `next_action` | Suggested `rollback` / `remeasure` (Reflect re-checks) |
+| `validity_status` | **Additive residual.** Week-1 status on the contract row, or `""` when none. Unconfirmable incomplete uses `insufficient_evidence` (not a new enum). |
+| `retry_count` | **Additive residual.** `remeasure_count` for this attempt (0 on first search). |
 
 No parallel metrics schema. Generic exceptions do **not** invent
 `run_id`, perf, GPU, ledger, or a success summary.
+
+Residual P0 (this Tune PR) does **not** rewrite Eval goldens (#10).
+`RECOVERY_FIELDS` grew by two keys only. Existing goldens already iterate
+the tuple; `recovery_event()` always emits the new keys. Eval can follow
+this freeze surface without a schema rewrite:
+
+```text
+RECOVERY_FIELDS += validity_status, retry_count
+TRAJECTORY_AUDIT_FIELDS = retry_count, budget_consumed, next_action, stop_reason
+codes += ack_lost
+Week-1 status for unconfirmable incomplete = insufficient_evidence
+(optional additive event.incomplete=true — not a ① enum)
+```
 
 ## State table (this-attempt failure)
 
@@ -33,6 +48,8 @@ No parallel metrics schema. Generic exceptions do **not** invent
 |---|---|---|---|
 | Propose `ValueError` / generic propose exception | `last_recovery` + trajectory; **no** budget; `last_result` / ⑤ bind **cleared**; no forged summary | Prior `experiment_summaries[-1]` is **not** current | No |
 | Generic tool exception (no result) | Budget −1; recovery fact; **no** forged row; stale bind cleared | Prior success ignored | No |
+| Startup-ok + receipt/ack lost, **row already persisted** | Fact-check `get_result_by_id(attempt_id)`; reuse; **no second bench** | Reused row is current | No (⑥ still owns promote) |
+| Startup-ok + ack lost, **lookup miss** | Persist ① row via `derive_status` → `insufficient_evidence` (`code=ack_lost`, `incomplete=true`); not only `result_persisted=false` | That insuff. row **is** current | No (`is_promotable` fail-closed) |
 | `BenchmarkError` + `exc.result` | Keep that persisted failed contract row as `last_result` + summary | That failed row **is** current | No (`is_promotable` fail-closed) |
 | Confirmation mid-slot fail | Stage + completed `cited_run_ids`; `confirmation_decision=None`; budget −1 | Prior search success ignored | No confirm / no promote |
 | `analyze_bottleneck` / `compare_experiments` degrade | Trajectory `tools.*.status=unavailable`; vs from result metrics, **never silent 0** | Unchanged success/fail of the bench itself | No promotion change |
@@ -60,6 +77,7 @@ START → planner → │ executor │ → reflector ⇄ planner | executor | EN
 |---|---|---|
 | `interrupt_before=["executor"]` | Planner patch + checkpoint | Executor runs **once**; tool not called during the interrupt |
 | Tool persist, node not returned | SQLite/store row exists; LangGraph state still pre-executor | `get_result_by_id` reuses the row; **no second benchmark** |
+| vLLM/startup ok, receipt/ack lost | Result may already be at the stable `experiment_id` / confirm slot id | Fact-check that id; reuse if present; else persist `insufficient_evidence`; **never blindly re-start** |
 | Confirm slot persist, campaign not committed | Slot rows at `{prefix}confirm_{param}_{value}_r{N}_{b\|c}{i}` | Resume reuses those slot ids; remaining slots run; budget −1 once on commit |
 | Executor / Reflect return | Budget, trajectory, `last_result` / recovery | Same attempt is not double-counted |
 
@@ -101,6 +119,12 @@ survive a failure or a new hyp.
 - `test_last_budget_slot_missing_error_rate_does_not_promote`
 - `test_generic_propose_tool_error_emits_recovery_no_forge`
 - `test_graphinterrupt_is_reraised_not_swallowed`
+- `test_is_ack_lost_matches_receipt_and_ack_wording`
+- `test_unconfirmable_row_uses_week1_insufficient_evidence`
+- `test_ack_lost_reuses_persisted_row_no_second_benchmark`
+- `test_ack_lost_unconfirmable_persists_insufficient_evidence`
+- `test_confirm_slot_ack_lost_reuses_persisted_no_rebench`
+- `test_trajectory_records_retry_budget_stop_and_next_action`
 
 ## Evidence
 
@@ -109,11 +133,15 @@ pytest -q
 ```
 
 ```text
-350 passed in 13.76s
+(pending this PR pytest -q line)
 ```
 
 Fixture / CPU only. GPU was not run in this environment — **GPU-not-run ≠ pass**.
 No invented vLLM / GPU numbers.
+
+Executor + Reflect trajectory steps now carry `retry_count`,
+`budget_consumed`, `next_action`, and `stop_reason` (Reflect fills
+`stop_reason`; executor failure records the suggested `next_action`).
 
 ## Out of scope
 
