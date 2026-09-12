@@ -34,6 +34,7 @@ from inferops.agent.confirm_campaign import (
     candidate_fingerprint,
     clear_confirmation_fields,
 )
+from inferops.agent.recovery import current_attempt_latest, hypothesis_fact
 from inferops.agent.reflect_constraints import (
     LLM_MUST_NOT_OWN,
     conclude_experiment,
@@ -52,8 +53,17 @@ from inferops.agent.reflect_constraints import (  # noqa: F401
 )
 
 
-def _latest_hypothesis(state: AgentState, latest: dict[str, Any] | None) -> dict[str, Any] | None:
+def _latest_hypothesis(
+    state: AgentState,
+    latest: dict[str, Any] | None,
+    recovery: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
     hyps = list(state.get("hypotheses") or [])
+    rec_hyp = (recovery or {}).get("hypothesis") if recovery else None
+    if rec_hyp and rec_hyp.get("id"):
+        for h in reversed(hyps):
+            if h.get("id") == rec_hyp.get("id"):
+                return h
     if latest:
         eid = latest.get("experiment_id")
         for h in reversed(hyps):
@@ -87,7 +97,9 @@ def reflector_node(state: AgentState) -> dict:
     """Evaluate the most recent experiment and update control flags."""
 
     summaries = list(state.get("experiment_summaries") or [])
-    latest = summaries[-1] if summaries else None
+    recovery = state.get("last_recovery")
+    latest = current_attempt_latest(summaries, recovery)
+    this_attempt_failed = bool(recovery and recovery.get("this_attempt_failed"))
     # Budget-only stop is still recorded even with no summaries.
     if state["experiments_remaining"] <= 0:
         conclusion = conclude_experiment(
@@ -100,16 +112,17 @@ def reflector_node(state: AgentState) -> dict:
             summaries=summaries,
             last_skip_reason=state.get("last_skip_reason") or "",
             remeasure_count=int(state.get("remeasure_count") or 0),
-            last_result=state.get("last_result"),
+            last_result=state.get("last_result") if not this_attempt_failed or latest is not None else None,
             confirmation_decision=state.get("confirmation_decision"),
             repeat_ledgers=state.get("repeat_ledgers"),
             primary_metric=WORKLOAD_PRIMARY_METRIC[state["workload_name"]],
             bound_run_ids=state.get("confirmation_bound_run_ids"),
             bound_target=state.get("confirmation_target"),
+            last_recovery=recovery,
         )
-        return _apply_conclusion(state, conclusion, latest)
+        return _apply_conclusion(state, conclusion, latest, recovery)
 
-    if not summaries:
+    if latest is None and not this_attempt_failed:
         return {}
 
     conclusion = conclude_experiment(
@@ -122,22 +135,24 @@ def reflector_node(state: AgentState) -> dict:
         summaries=summaries,
         last_skip_reason=state.get("last_skip_reason") or "",
         remeasure_count=int(state.get("remeasure_count") or 0),
-        last_result=state.get("last_result"),
+        last_result=state.get("last_result") if not this_attempt_failed or latest is not None else None,
         confirmation_decision=state.get("confirmation_decision"),
         repeat_ledgers=state.get("repeat_ledgers"),
         primary_metric=WORKLOAD_PRIMARY_METRIC[state["workload_name"]],
         bound_run_ids=state.get("confirmation_bound_run_ids"),
         bound_target=state.get("confirmation_target"),
+        last_recovery=recovery,
     )
-    return _apply_conclusion(state, conclusion, latest)
+    return _apply_conclusion(state, conclusion, latest, recovery)
 
 
 def _apply_conclusion(
     state: AgentState,
     conclusion,
     latest: dict[str, Any] | None,
+    recovery: dict[str, Any] | None = None,
 ) -> dict:
-    hyp = _latest_hypothesis(state, latest)
+    hyp = _latest_hypothesis(state, latest, recovery)
     current = state.get("best_summary") or state.get("baseline_summary")
     config_diff = summarize_config_diff(current, latest)
 
@@ -182,19 +197,21 @@ def _apply_conclusion(
         "node": "reflector",
         "workload": state["workload_name"],
         "action": "reflect",
-        "hypothesis": hypothesis_record(hyp),
+        "hypothesis": hypothesis_record(hyp) or hypothesis_fact((recovery or {}).get("hypothesis")),
         "config_diff": config_diff,
         "cited_run_ids": list(conclusion.cited_run_ids),
         "constraint_checks": dict(conclusion.constraint_checks),
         "next_action": conclusion.next_action,
         "stop_reason": conclusion.stop_reason,
         "reasoning": explanation,
+        "recovery": dict(recovery) if recovery else None,
         "result": {
             "vs_baseline_pct": (latest or {}).get("vs_baseline_pct"),
             "streak": conclusion.no_improvement_streak,
             "bottleneck_switched": conclusion.skip_pending,
             "promoted_to_best": conclusion.promote,
             "confirmation": conclusion.confirmation,
+            "this_attempt_failed": bool(recovery and recovery.get("this_attempt_failed")),
         },
     }
 
@@ -209,6 +226,8 @@ def _apply_conclusion(
         "last_skipped_hypothesis_id": "",
         "remeasure_count": remasure_count,
         "best_summary": new_best,
+        # Consumed this cycle; the auditable copy lives on the trajectory step.
+        "last_recovery": None,
     }
     # Stale ⑤ decisions must not outlive this candidate. Keep only while remasuring.
     if conclusion.next_action == "remeasure" and hyp:

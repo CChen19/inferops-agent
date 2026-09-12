@@ -25,6 +25,7 @@ from rich.table import Table
 
 from inferops.agent.executor import executor_node
 from inferops.agent.planner import planner_node
+from inferops.agent.recovery import reraise_hard_control
 from inferops.agent.reflector import reflector_node, route_after_reflector
 from inferops.agent.state import (
     WORKLOAD_PRIMARY_METRIC,
@@ -88,8 +89,36 @@ def make_llm(backend: str = "openrouter", temperature: float = 0.3):
 # Graph assembly
 # ---------------------------------------------------------------------------
 
-def build_graph(llm) -> Any:
-    """Compile the StateGraph with the given LLM bound into the planner node."""
+def session_thread_id(session_prefix: str) -> str:
+    """Stable LangGraph thread_id derived from the session prefix."""
+    raw = (session_prefix or "").strip()
+    return raw.rstrip("_") or raw or "inferops"
+
+
+def graph_invoke_config(session_prefix: str) -> dict[str, Any]:
+    """RunnableConfig with a stable thread/session identity for checkpoint/resume."""
+    return {"configurable": {"thread_id": session_thread_id(session_prefix)}}
+
+
+def production_checkpointer() -> Any:
+    """In-process MemorySaver. Production resume uses this + session thread_id."""
+    from langgraph.checkpoint.memory import MemorySaver
+
+    return MemorySaver()
+
+
+def build_graph(
+    llm,
+    *,
+    checkpointer: Any = None,
+    interrupt_before: list[str] | None = None,
+) -> Any:
+    """Compile the StateGraph with the given LLM bound into the planner node.
+
+    Production ``run_agent`` passes a MemorySaver checkpointer and a stable
+    ``thread_id``. Eval / unit assembly may omit the checkpointer so
+    ``invoke(state)`` stays config-free.
+    """
     planner_with_llm = partial(planner_node, llm=llm)
 
     g = StateGraph(AgentState)
@@ -106,7 +135,12 @@ def build_graph(llm) -> Any:
         {"planner": "planner", "executor": "executor", "__end__": END},
     )
 
-    return g.compile()
+    compile_kwargs: dict[str, Any] = {}
+    if checkpointer is not None:
+        compile_kwargs["checkpointer"] = checkpointer
+    if interrupt_before:
+        compile_kwargs["interrupt_before"] = list(interrupt_before)
+    return g.compile(**compile_kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -156,8 +190,8 @@ def _run_baseline(workload_name: str, session_prefix: str) -> tuple[ExperimentSu
     try:
         ba = analyze_bottleneck(AnalyzeBottleneckInput(experiment_id=eid))
         bottleneck = ba.bottleneck
-    except Exception:
-        pass
+    except Exception as exc:
+        reraise_hard_control(exc)
 
     summary = summary_from_result(
         result,
@@ -212,6 +246,7 @@ def run_agent(
     llm,
     max_experiments: int = 8,
     session_prefix: str | None = None,
+    interrupt_before: list[str] | None = None,
 ) -> AgentState:
     """
     Run the optimizer agent on a workload.
@@ -228,9 +263,13 @@ def run_agent(
     # 1. Baseline + initial state. Baseline uses one experiment slot.
     state = prepare_initial_state(workload_name, prefix, max_experiments=max_experiments)
 
-    # 2. Run graph
-    graph = build_graph(llm)
-    final_state = graph.invoke(state)
+    # 2. Run graph — production checkpoint + stable thread/session identity.
+    graph = build_graph(
+        llm,
+        checkpointer=production_checkpointer(),
+        interrupt_before=interrupt_before,
+    )
+    final_state = graph.invoke(state, graph_invoke_config(prefix))
 
     # 3. Print summary
     _print_run_summary(final_state)

@@ -57,8 +57,9 @@ def test_run_agent_initializes_state_and_invokes_graph():
     captured = {}
 
     class FakeGraph:
-        def invoke(self, state):
+        def invoke(self, state, config=None):
             captured["state"] = state
+            captured["config"] = config
             state["should_stop"] = True
             state["stop_reason"] = "unit_test"
             return state
@@ -76,6 +77,7 @@ def test_run_agent_initializes_state_and_invokes_graph():
 
     assert captured["state"]["experiments_remaining"] == 4
     assert captured["state"]["baseline_summary"] == baseline
+    assert captured["config"]["configurable"]["thread_id"] == "sess"
     assert final_state["stop_reason"] == "unit_test"
 
 

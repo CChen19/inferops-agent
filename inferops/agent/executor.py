@@ -32,6 +32,19 @@ from inferops.agent.confirm_campaign import (
     run_confirmation_campaign,
     search_winner_state_pack,
 )
+from inferops.agent.recovery import (
+    STAGE_ANALYZE,
+    STAGE_BENCHMARK,
+    STAGE_COMPARE,
+    STAGE_CONFIRM_CAMPAIGN,
+    STAGE_CONFIRM_SLOT,
+    STAGE_PROPOSE,
+    clear_stale_attempt_fields,
+    recovery_event,
+    reraise_hard_control,
+    tool_unavailable,
+)
+from inferops.agent.reflect_constraints import MAX_REMEASURES
 from inferops.agent.state import (
     WORKLOAD_PRIMARY_METRIC,
     AgentState,
@@ -144,6 +157,7 @@ def executor_node(state: AgentState) -> dict:
             "last_skip_reason": "duplicate_candidate",
             "last_skipped_hypothesis_id": hyp["id"],
             "last_result": None,
+            "last_recovery": None,
             "trajectory": state["trajectory"] + [traj_step],
             **stale_clear,
         }
@@ -176,8 +190,21 @@ def executor_node(state: AgentState) -> dict:
             ))
         except ValueError as exc:
             console.print(f"  [red]executor: propose rejected ({exc})[/red]")
-            updated_hyps = _set_status(state["hypotheses"], hyp["id"], "failed", eid)
-            return {"hypotheses": updated_hyps}
+            return _attempt_failure_patch(
+                state,
+                hyp,
+                experiment_id=eid,
+                stage=STAGE_PROPOSE,
+                reason=str(exc),
+                code="propose_rejected",
+                result_persisted=False,
+                budget_consumed=False,
+                retryable=False,
+                next_action="rollback",
+                persist_result=None,
+                primary_metric=primary_metric,
+                extra_clear=stale_clear,
+            )
 
         # --- run_benchmark (production or eval stub at tool boundary) ---
         console.print(f"  executor: running {eid} ({hyp['param']}={hyp['value']}) …")
@@ -193,74 +220,57 @@ def executor_node(state: AgentState) -> dict:
         except BenchmarkError as exc:
             # P2-5: failed contract row already built/persisted — surface it in
             # experiment_summaries + trajectory so final_report can show the attempt.
+            # Generic exceptions must not forge that row.
             console.print(f"  [red]executor: benchmark failed ({exc})[/red]")
-            updated_hyps = _set_status(state["hypotheses"], hyp["id"], "failed", eid)
-            patch: dict[str, Any] = {
-                "hypotheses": updated_hyps,
-                "tried_experiment_ids": state["tried_experiment_ids"] + [eid],
-                "experiments_remaining": state["experiments_remaining"] - 1,
-            }
-            if exc.result is not None:
-                baseline_primary = (
-                    state["baseline_summary"][primary_metric]
-                    if state["baseline_summary"] else 0.0
-                )
-                failed_summary = summary_from_result(
-                    exc.result,
-                    param_changed=hyp["param"],
-                    value_changed=hyp["value"],
-                    baseline_primary=baseline_primary,
-                    primary_metric=primary_metric,
-                    bottleneck="unknown",
-                )
-                # Prefer explicit exception message if notes empty
-                if not failed_summary.get("failure_reason"):
-                    failed_summary["failure_reason"] = str(exc)
-                traj_step = {
-                    "step": len(state["trajectory"]) + 1,
-                    "node": "executor",
-                    "workload": state["workload_name"],
-                    "action": f"run_benchmark({hyp['param']}={hyp['value']})",
-                    "experiment_id": eid,
-                    "run_id": failed_summary.get("run_id"),
-                    "validity_status": failed_summary.get("validity_status"),
-                    "mlflow_run_id": failed_summary.get("mlflow_run_id"),
-                    "reasoning": hyp["rationale"],
-                    "result": {
-                        "status": "failed",
-                        "failure_reason": failed_summary.get("failure_reason", ""),
-                        "promoted_to_best": False,
-                    },
-                }
-                patch["experiment_summaries"] = (
-                    state["experiment_summaries"] + [failed_summary]
-                )
-                patch["trajectory"] = state["trajectory"] + [traj_step]
-                # best_summary unchanged — failed rows are never promotable
-                patch["best_summary"] = state["best_summary"]
-                patch["last_result"] = exc.result
-            return patch
+            return _attempt_failure_patch(
+                state,
+                hyp,
+                experiment_id=eid,
+                stage=STAGE_BENCHMARK,
+                reason=str(exc),
+                code="benchmark_error",
+                result_persisted=exc.result is not None,
+                budget_consumed=True,
+                retryable=False,
+                next_action="rollback",
+                persist_result=exc.result,
+                primary_metric=primary_metric,
+                extra_clear=stale_clear,
+            )
         except Exception as exc:
+            reraise_hard_control(exc)
             console.print(f"  [red]executor: benchmark failed ({exc})[/red]")
-            updated_hyps = _set_status(state["hypotheses"], hyp["id"], "failed", eid)
-            return {
-                "hypotheses": updated_hyps,
-                "tried_experiment_ids": state["tried_experiment_ids"] + [eid],
-                "experiments_remaining": state["experiments_remaining"] - 1,
-            }
+            return _attempt_failure_patch(
+                state,
+                hyp,
+                experiment_id=eid,
+                stage=STAGE_BENCHMARK,
+                reason=str(exc),
+                code="tool_exception",
+                result_persisted=False,
+                budget_consumed=True,
+                retryable=False,
+                next_action="rollback",
+                persist_result=None,
+                primary_metric=primary_metric,
+                extra_clear=stale_clear,
+            )
         bench_dict = bench_out.model_dump() if hasattr(bench_out, "model_dump") else {}
         result = _experiment_result_from_tool(eid, bench_out)
 
-    # --- analyze_bottleneck ---
+    # --- analyze_bottleneck (may degrade; never silent 0 / promotion change) ---
     bottleneck = "unknown"
+    tool_status: dict[str, Any] = {}
     try:
         ba = analyze_bottleneck(AnalyzeBottleneckInput(experiment_id=eid))
         bottleneck = ba.bottleneck
-    except Exception:
-        pass
+        tool_status[STAGE_ANALYZE] = "ok"
+    except Exception as exc:
+        reraise_hard_control(exc)
+        tool_status[STAGE_ANALYZE] = tool_unavailable(exc)
 
     # --- compare_experiments vs baseline ---
-    vs_baseline_pct = 0.0
+    vs_from_compare: float | None = None
     if state["baseline_summary"] is not None:
         try:
             cmp = compare_experiments(CompareExperimentsInput(
@@ -270,9 +280,11 @@ def executor_node(state: AgentState) -> dict:
                 n_bootstrap=1000,
             ))
             # For "max" metrics: positive delta_pct = b is better
-            vs_baseline_pct = cmp.delta_pct
-        except Exception:
-            pass
+            vs_from_compare = cmp.delta_pct
+            tool_status[STAGE_COMPARE] = "ok"
+        except Exception as exc:
+            reraise_hard_control(exc)
+            tool_status[STAGE_COMPARE] = tool_unavailable(exc)
 
     # --- Build ExperimentSummary (contract fields from result when present) ---
     baseline_primary = (
@@ -288,8 +300,9 @@ def executor_node(state: AgentState) -> dict:
             primary_metric=primary_metric,
             bottleneck=bottleneck,
         )
-        # Prefer bootstrap comparison when available
-        summary["vs_baseline_pct"] = round(vs_baseline_pct, 2)
+        # Prefer bootstrap comparison when available — never overwrite with silent 0.
+        if vs_from_compare is not None:
+            summary["vs_baseline_pct"] = round(vs_from_compare, 2)
     else:
         summary = ExperimentSummary(
             experiment_id=eid,
@@ -301,7 +314,7 @@ def executor_node(state: AgentState) -> dict:
             ttft_p99_ms=bench_dict.get("ttft_p99_ms", 0.0),
             e2e_p50_ms=bench_dict.get("e2e_p50_ms", 0.0),
             bottleneck=bottleneck,
-            vs_baseline_pct=round(vs_baseline_pct, 2),
+            vs_baseline_pct=round(vs_from_compare, 2) if vs_from_compare is not None else None,
             run_id=bench_dict.get("run_id") or "",
             validity_status=bench_dict.get("status") or "insufficient_evidence",
             mlflow_run_id=bench_dict.get("mlflow_run_id"),
@@ -331,7 +344,11 @@ def executor_node(state: AgentState) -> dict:
         )
 
     # --- Mark hypothesis done ---
-    status = "success" if vs_baseline_pct >= 0 else "failed"
+    # Compare unavailable is not an exec fail; None vs must not look like 0-gain fail.
+    if vs_from_compare is None:
+        status = "success"
+    else:
+        status = "success" if vs_from_compare >= 0 else "failed"
     updated_hyps = _set_status(state["hypotheses"], hyp["id"], status, eid)
 
     # --- Trajectory ---
@@ -344,18 +361,25 @@ def executor_node(state: AgentState) -> dict:
         "run_id": summary.get("run_id"),
         "validity_status": summary.get("validity_status"),
         "reasoning": hyp["rationale"],
+        "tools": tool_status,
         "result": {
             primary_metric: current_primary,
             "ttft_p99_ms": summary["ttft_p99_ms"],
             "bottleneck": bottleneck,
-            "vs_baseline_pct": vs_baseline_pct,
+            "vs_baseline_pct": summary.get("vs_baseline_pct"),
             "promoted_to_best": False,
+            "tools": tool_status,
         },
     }
 
+    vs_log = summary.get("vs_baseline_pct")
+    vs_txt = f"{vs_log:+.1f}%" if vs_log is not None else "unavailable"
+    primary_txt = (
+        f"{current_primary:.3f}" if current_primary is not None else "n/a"
+    )
     console.print(
-        f"  executor: done — {primary_metric}={current_primary:.3f}  "
-        f"bottleneck={bottleneck}  vs_baseline={vs_baseline_pct:+.1f}%  "
+        f"  executor: done — {primary_metric}={primary_txt}  "
+        f"bottleneck={bottleneck}  vs_baseline={vs_txt}  "
         f"status={summary.get('validity_status')}"
     )
 
@@ -373,6 +397,8 @@ def executor_node(state: AgentState) -> dict:
         "experiments_remaining": state["experiments_remaining"] - 1,
         "last_result":           result,
         "last_skip_reason":      "",
+        "last_recovery":         None,
+        "confirmation_blocked":  False,
         "trajectory":            state["trajectory"] + [traj_step],
         **stale_clear,
         **search_pack,
@@ -382,6 +408,113 @@ def executor_node(state: AgentState) -> dict:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _attempt_failure_patch(
+    state: AgentState,
+    hyp: Hypothesis,
+    *,
+    experiment_id: str,
+    stage: str,
+    reason: str,
+    code: str,
+    result_persisted: bool,
+    budget_consumed: bool,
+    retryable: bool,
+    next_action: str,
+    persist_result: Any,
+    primary_metric: str,
+    extra_clear: dict[str, Any] | None = None,
+    cited_run_ids: list[str] | None = None,
+) -> dict[str, Any]:
+    """This-attempt failure: emit recovery fact, never forge a success row.
+
+    ``BenchmarkError`` with a persisted contract row keeps that row.
+    Generic tool exceptions do not invent run_id / perf / GPU / ledger.
+    Stale ``last_result`` / ⑤ bind fields are cleared so Reflect cannot
+    treat a prior success as the current attempt.
+    """
+    event = recovery_event(
+        experiment_id=experiment_id,
+        hypothesis=hyp,
+        stage=stage,
+        reason=reason,
+        code=code,
+        result_persisted=result_persisted,
+        budget_consumed=budget_consumed,
+        retryable=retryable,
+        next_action=next_action,
+        cited_run_ids=cited_run_ids,
+    )
+    updated_hyps = _set_status(state["hypotheses"], hyp["id"], "failed", experiment_id)
+    patch: dict[str, Any] = {
+        "hypotheses": updated_hyps,
+        "last_recovery": event,
+        "last_skip_reason": "",
+        "best_summary": state.get("best_summary"),
+        **clear_stale_attempt_fields(),
+        **(extra_clear or {}),
+    }
+    if budget_consumed:
+        patch["tried_experiment_ids"] = list(state["tried_experiment_ids"]) + [experiment_id]
+        patch["experiments_remaining"] = int(state["experiments_remaining"]) - 1
+
+    failed_summary = None
+    if persist_result is not None:
+        baseline_primary = (
+            state["baseline_summary"][primary_metric]
+            if state.get("baseline_summary") else 0.0
+        )
+        failed_summary = summary_from_result(
+            persist_result,
+            param_changed=hyp["param"],
+            value_changed=hyp["value"],
+            baseline_primary=baseline_primary,
+            primary_metric=primary_metric,
+            bottleneck="unknown",
+        )
+        if not failed_summary.get("failure_reason"):
+            failed_summary["failure_reason"] = reason
+        patch["experiment_summaries"] = list(state["experiment_summaries"]) + [failed_summary]
+        patch["last_result"] = persist_result
+        event["cited_run_ids"] = [
+            rid for rid in (
+                list(cited_run_ids or []) + [str(failed_summary.get("run_id") or "")]
+            ) if rid
+        ]
+        patch["last_recovery"] = event
+    else:
+        # Do not append a forged summary / run_id / perf / GPU / ledger.
+        patch["last_result"] = None
+
+    traj_step = {
+        "step": len(state["trajectory"]) + 1,
+        "node": "executor",
+        "workload": state["workload_name"],
+        "action": f"{stage}({hyp['param']}={hyp['value']})",
+        "experiment_id": experiment_id,
+        "run_id": (failed_summary or {}).get("run_id") if failed_summary else None,
+        "validity_status": (failed_summary or {}).get("validity_status") or "failed",
+        "mlflow_run_id": (failed_summary or {}).get("mlflow_run_id") if failed_summary else None,
+        "reasoning": hyp["rationale"],
+        "recovery": event,
+        "hypothesis": {
+            "id": hyp["id"],
+            "param": hyp["param"],
+            "value": hyp["value"],
+            "text": hyp.get("rationale") or "",
+        },
+        "result": {
+            "status": "failed",
+            "failure_reason": reason,
+            "code": code,
+            "result_persisted": result_persisted,
+            "promoted_to_best": False,
+            "this_attempt_failed": True,
+        },
+    }
+    patch["trajectory"] = list(state["trajectory"]) + [traj_step]
+    return patch
+
 
 def _experiment_result_from_tool(experiment_id: str, bench_out: Any) -> Any:
     """Prefer the persisted row; accept an ExperimentResult returned at the tool edge."""
@@ -457,10 +590,24 @@ def _execute_confirmation_campaign(
         expected = rl["baseline"][0].conditions
 
     target = candidate_fingerprint(hyp["param"], hyp["value"])
+    completed_run_ids: list[str] = []
+    failed_stage = STAGE_CONFIRM_CAMPAIGN
 
+    def _collecting_run_arm(arm, slot):
+        nonlocal failed_stage
+        failed_stage = STAGE_CONFIRM_SLOT
+        ledger = run_arm(arm, slot)
+        rid = getattr(ledger, "run_id", None)
+        if rid:
+            completed_run_ids.append(str(rid))
+        return ledger
+
+    remasure_n = int(state.get("remeasure_count") or 0)
+    budget_left = int(state.get("experiments_remaining") or 0)
+    retryable = remasure_n < MAX_REMEASURES and budget_left > 1
     try:
         campaign, decision = run_confirmation_campaign(
-            run_arm,
+            _collecting_run_arm,
             # Confirmation always uses the ⑤ default pair floor — do not inherit
             # a search-phase min_pairs=1 from the queued search winner.
             n_pairs=DEFAULT_MIN_PAIRS,
@@ -469,7 +616,30 @@ def _execute_confirmation_campaign(
             expected_conditions=expected,
         )
     except Exception as exc:
+        reraise_hard_control(exc)
         console.print(f"  [red]executor: confirmation campaign failed ({exc})[/red]")
+        next_action = "remeasure" if retryable else "rollback"
+        code = (
+            "confirmation_slot_failed"
+            if failed_stage == STAGE_CONFIRM_SLOT
+            else "confirmation_campaign_failed"
+        )
+        event = recovery_event(
+            experiment_id=str(hyp.get("experiment_id") or ""),
+            attempt_id=(
+                f"{state['session_prefix']}confirm_{hyp['param']}_"
+                f"{hyp['value']}_r{remasure_n}"
+            ),
+            hypothesis=hyp,
+            stage=failed_stage,
+            reason=str(exc),
+            code=code,
+            result_persisted=False,
+            budget_consumed=True,
+            retryable=retryable,
+            next_action=next_action,
+            cited_run_ids=list(completed_run_ids),
+        )
         updated_hyps = _set_status(
             state["hypotheses"], hyp["id"], "failed", hyp.get("experiment_id")
         )
@@ -484,23 +654,29 @@ def _execute_confirmation_campaign(
                 "value": hyp["value"],
                 "text": hyp.get("rationale") or "",
             },
-            "cited_run_ids": [],
+            "cited_run_ids": list(completed_run_ids),
+            "recovery": event,
             "result": {
                 "status": "failed",
-                "reason": "confirmation_campaign_failed",
+                "reason": code,
+                "stage": failed_stage,
                 "promoted_to_best": False,
+                "this_attempt_failed": True,
             },
         }
         return {
             "hypotheses": updated_hyps,
-            "next_action": "remeasure",
-            "confirmation_target": target,
+            "next_action": next_action,
+            "confirmation_target": target if retryable else None,
             "confirmation_decision": None,
             "repeat_ledgers": None,
             "confirmation_bound_run_ids": None,
             "confirmation_blocked": True,
             "last_result": None,
+            "last_recovery": event,
             "last_skip_reason": "",
+            "best_summary": state.get("best_summary"),
+            "experiments_remaining": max(0, budget_left - 1),
             "trajectory": state["trajectory"] + [traj_step],
         }
 
@@ -578,6 +754,7 @@ def _execute_confirmation_campaign(
         "confirmation_bound_run_ids": bound_ids,
         "confirmation_blocked": False,
         "last_result": last_result,
+        "last_recovery": None,
         "experiment_summaries": summaries,
         "last_skip_reason": "",
         "best_summary": state.get("best_summary"),
