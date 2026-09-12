@@ -45,40 +45,6 @@ def reflector_node(state: AgentState) -> dict:
         # No experiments yet — nothing to reflect on
         return {}
 
-    traj = state.get("trajectory") or []
-    # Avoid infinite replan loops: planner produced zero new hypotheses → no progress.
-    if traj and traj[-1].get("node") == "planner":
-        generated = traj[-1].get("hypotheses") or []
-        if not generated:
-            new_streak = state["no_improvement_streak"] + 1
-            traj_step = {
-                "step": len(traj) + 1,
-                "node": "reflector",
-                "workload": state["workload_name"],
-                "action": "reflect",
-                "reasoning": (
-                    f"planner produced 0 hypotheses; streak={new_streak}"
-                ),
-                "result": {
-                    "vs_baseline_pct": 0.0,
-                    "streak": new_streak,
-                    "bottleneck_switched": False,
-                    "empty_plan": True,
-                },
-            }
-            if new_streak >= _MAX_STREAK:
-                return {
-                    "no_improvement_streak": new_streak,
-                    "should_stop": True,
-                    "stop_reason": f"no_improvement_{_MAX_STREAK}_consecutive",
-                    "trajectory": traj + [traj_step],
-                }
-            return {
-                "no_improvement_streak": new_streak,
-                "should_stop": False,
-                "trajectory": traj + [traj_step],
-            }
-
     latest = summaries[-1]
     primary_metric = WORKLOAD_PRIMARY_METRIC[state["workload_name"]]
     improvement = latest.get("vs_baseline_pct", 0.0)

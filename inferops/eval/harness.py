@@ -152,6 +152,8 @@ def render_markdown_report(report: dict[str, Any]) -> str:
         extra += f"\n- LLM boundary: `{report['llm_boundary']}`"
     if report.get("tool_boundary"):
         extra += f"\n- Tool boundary: `{report['tool_boundary']}`"
+    if report.get("eval_db_path"):
+        extra += f"\n- Eval DB: `{report['eval_db_path']}`"
     lines = [
         f"# InferOps Eval Report: `{report['commit_sha']}`",
         "",

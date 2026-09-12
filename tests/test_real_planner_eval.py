@@ -191,6 +191,7 @@ def test_unevidenced_high_score_not_promoted_to_best(tmp_path):
     baseline = run["baseline_summary"]
     assert is_promotable_summary(baseline) is True
     assert best["experiment_id"] == baseline["experiment_id"]
+    assert stub.calls, "expected at least one stubbed experiment so the gate is exercised"
     # Non-baseline summaries in history must not be promotable
     for summary in run["final_state"]["experiment_summaries"]:
         if summary["experiment_id"] != baseline["experiment_id"]:
@@ -235,6 +236,52 @@ def test_real_graph_offline_report_labels(tmp_path):
     assert report["llm_boundary"] == "fake_scripted"
     assert report["tool_boundary"] == "stubbed_benchmark"
     assert "real_planner" in report["strategies"]
+    assert report["eval_db_path"].endswith("label.db")
+
+
+def test_llm_boundary_label_keys_off_actual_llm_not_mode_alone():
+    """Scripted LLM kept fake_scripted even if mode string says real_graph_llm."""
+    from inferops.eval.real_graph import _llm_boundary_label
+
+    fake = ScriptedBottleneckLLM()
+    assert _llm_boundary_label(fake, MODE_REAL_GRAPH_LLM) == "fake_scripted"
+    assert _llm_boundary_label(fake, MODE_REAL_GRAPH_OFFLINE) == "fake_scripted"
+
+    class Liveish:
+        pass
+
+    assert _llm_boundary_label(Liveish(), MODE_REAL_GRAPH_LLM) == "live"
+    assert _llm_boundary_label(Liveish(), MODE_REAL_GRAPH_OFFLINE) == "injected"
+
+
+def test_real_graph_defaults_to_temp_eval_db_not_production_memory(tmp_path):
+    """Forged rows must not land in inferops_memory.db by default."""
+    prod = Path("inferops_memory.db")
+    before = prod.read_bytes() if prod.exists() else None
+    run = run_real_planner_on_workload(
+        workload_name="chat_short",
+        llm=ScriptedBottleneckLLM(),
+        budget=2,
+        # db_path omitted → temp eval DB
+    )
+    assert run["eval_db_path"]
+    assert Path(run["eval_db_path"]).name == "eval_memory.db"
+    assert "inferops_memory.db" not in run["eval_db_path"]
+    assert Path(run["eval_db_path"]).exists()
+    after = prod.read_bytes() if prod.exists() else None
+    assert after == before
+
+
+def test_production_reflector_has_no_empty_plan_heuristic():
+    """P0-③ must not alter production Reflect heuristics."""
+    import inspect
+
+    from inferops.agent import reflector as refl
+
+    src = inspect.getsource(refl.reflector_node)
+    assert "empty_plan" not in src
+    assert "eval_empty_plan" not in src
+    assert "planner produced 0" not in src
 
 
 # ---------------------------------------------------------------------------

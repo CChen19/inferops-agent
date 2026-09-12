@@ -12,17 +12,20 @@ from __future__ import annotations
 import json
 import os
 import re
+import tempfile
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
+from unittest.mock import patch
 
 from langchain_core.messages import AIMessage
 
 from inferops.agent.executor import tool_boundary_overrides
 from inferops.agent.graph import build_graph
+from inferops.agent.reflector import reflector_node
 from inferops.agent.state import (
     AGENT_SEARCH_SPACE,
     WORKLOAD_PRIMARY_METRIC,
@@ -68,6 +71,22 @@ _LEGAL_BENCHMARK_KEYS = frozenset(AGENT_SEARCH_SPACE.keys()) | {
 MODE_REAL_GRAPH_OFFLINE = "real_graph_offline"
 MODE_REAL_GRAPH_LLM = "real_graph_llm"
 STRATEGY_REAL_PLANNER = "real_planner"
+
+# Dedicated eval SQLite — never the production default `inferops_memory.db`.
+DEFAULT_EVAL_DB_DIRNAME = "inferops_real_graph_eval"
+
+
+def default_eval_db_path() -> Path:
+    """Temp SQLite path for offline/live real-graph eval (isolates forged rows)."""
+    root = Path(tempfile.mkdtemp(prefix=f"{DEFAULT_EVAL_DB_DIRNAME}_"))
+    return root / "eval_memory.db"
+
+
+def resolve_eval_db_path(db_path: Path | str | None) -> Path:
+    """Use an explicit path, else a fresh temporary eval DB."""
+    if db_path is None:
+        return default_eval_db_path()
+    return Path(db_path)
 
 
 @contextmanager
@@ -118,11 +137,22 @@ def _scoped_memory_db(db_path: Path | None) -> Iterator[None]:
 # Scripted / fake LLM (offline deterministic)
 # ---------------------------------------------------------------------------
 
+def _hyp_json(analysis: str, hyps: list[dict[str, Any]]) -> str:
+    return json.dumps({"analysis": analysis, "hypotheses": hyps})
+
+
 class ScriptedBottleneckLLM:
     """Deterministic LLM stand-in: hypothesis choice follows CURRENT BOTTLENECK.
 
     Only the invoke boundary is faked — production planner_node still runs.
+
+    Emits a **queue** of distinct legal hypotheses per bottleneck so the
+    production Reflect loop can terminate via budget / streak without any
+    production Reflect heuristic changes. After the queue is exhausted,
+    returns empty hypothesis lists (eval-scoped stop wiring then ends the run).
     """
+
+    eval_llm_boundary = "fake_scripted"
 
     def __init__(
         self,
@@ -133,51 +163,83 @@ class ScriptedBottleneckLLM:
         self.default_bottleneck = default_bottleneck
         self.inject_illegal = inject_illegal
         self.call_count = 0
-        self.responses_by_bottleneck: dict[str, str] = {
-            "compute-bound": json.dumps({
-                "analysis": "rps=15.0 with compute-bound bottleneck; raise batch tokens.",
-                "hypotheses": [{
-                    "param": "max_num_batched_tokens",
-                    "value": 4096,
-                    "rationale": (
-                        "rps=15.0 is below ceiling under compute-bound; "
-                        "larger batches saturate GPU [source: vllm_scheduler]"
-                    ),
-                }],
-            }),
-            "scheduling-bound": json.dumps({
-                "analysis": "TTFT p99=210ms under scheduling-bound; enable chunked prefill.",
-                "hypotheses": [{
-                    "param": "enable_chunked_prefill",
-                    "value": True,
-                    "rationale": (
-                        "TTFT p99=210ms variance indicates scheduling-bound; "
-                        "chunked prefill interleaves decode [source: chunked_prefill]"
-                    ),
-                }],
-            }),
-            "memory-bound": json.dumps({
-                "analysis": "memory-bound; reduce concurrent sequences.",
-                "hypotheses": [{
-                    "param": "max_num_seqs",
-                    "value": 64,
-                    "rationale": (
-                        "rps=12.0 with memory-bound pressure; "
-                        "fewer seqs reduces KV [source: paged_attention]"
-                    ),
-                }],
-            }),
-            "kv-bound": json.dumps({
-                "analysis": "kv-bound; try prefix caching.",
-                "hypotheses": [{
-                    "param": "enable_prefix_caching",
-                    "value": True,
-                    "rationale": (
-                        "e2e_p50=1200ms under kv-bound; "
-                        "prefix caching reuses KV [source: prefix_caching]"
-                    ),
-                }],
-            }),
+        # Queues of one-hyp responses; popped per invoke so duplicates don't
+        # replan forever under production Reflect (gain resets streak).
+        self._queues: dict[str, list[str]] = {
+            "compute-bound": [
+                _hyp_json(
+                    "rps=15.0 with compute-bound bottleneck; raise batch tokens.",
+                    [{
+                        "param": "max_num_batched_tokens",
+                        "value": 4096,
+                        "rationale": (
+                            "rps=15.0 is below ceiling under compute-bound; "
+                            "larger batches saturate GPU [source: vllm_scheduler]"
+                        ),
+                    }],
+                ),
+                _hyp_json(
+                    "rps still compute-bound; try higher seq concurrency.",
+                    [{
+                        "param": "max_num_seqs",
+                        "value": 256,
+                        "rationale": (
+                            "rps=15.0 with concurrency headroom; "
+                            "more seqs [source: vllm_scheduler]"
+                        ),
+                    }],
+                ),
+            ],
+            "scheduling-bound": [
+                _hyp_json(
+                    "TTFT p99=210ms under scheduling-bound; enable chunked prefill.",
+                    [{
+                        "param": "enable_chunked_prefill",
+                        "value": True,
+                        "rationale": (
+                            "TTFT p99=210ms variance indicates scheduling-bound; "
+                            "chunked prefill interleaves decode [source: chunked_prefill]"
+                        ),
+                    }],
+                ),
+                _hyp_json(
+                    "still scheduling-bound; try prefix caching.",
+                    [{
+                        "param": "enable_prefix_caching",
+                        "value": True,
+                        "rationale": (
+                            "TTFT p99=210ms; prefix reuse helps queueing "
+                            "[source: prefix_caching]"
+                        ),
+                    }],
+                ),
+            ],
+            "memory-bound": [
+                _hyp_json(
+                    "memory-bound; reduce concurrent sequences.",
+                    [{
+                        "param": "max_num_seqs",
+                        "value": 64,
+                        "rationale": (
+                            "rps=12.0 with memory-bound pressure; "
+                            "fewer seqs reduces KV [source: paged_attention]"
+                        ),
+                    }],
+                ),
+            ],
+            "kv-bound": [
+                _hyp_json(
+                    "kv-bound; try prefix caching.",
+                    [{
+                        "param": "enable_prefix_caching",
+                        "value": True,
+                        "rationale": (
+                            "e2e_p50=1200ms under kv-bound; "
+                            "prefix caching reuses KV [source: prefix_caching]"
+                        ),
+                    }],
+                ),
+            ],
         }
 
     def invoke(self, messages: list[Any], **kwargs: Any) -> AIMessage:
@@ -206,11 +268,54 @@ class ScriptedBottleneckLLM:
                 }],
             })
         else:
-            content = self.responses_by_bottleneck.get(
-                bottleneck,
-                self.responses_by_bottleneck[self.default_bottleneck],
-            )
+            queue = self._queues.get(bottleneck) or self._queues[self.default_bottleneck]
+            if queue:
+                content = queue.pop(0)
+            else:
+                content = _hyp_json(
+                    f"no remaining distinct hypotheses for {bottleneck}",
+                    [],
+                )
         return AIMessage(content=content)
+
+
+def _eval_scoped_reflector(state: dict) -> dict:
+    """Eval-only wrapper: production Reflect unchanged; empty-plan → stop.
+
+    When the scripted (or live) planner emits zero new hypotheses, production
+    Reflect can replan forever if the latest experiment was a gain (streak
+    reset). This wrapper is patched into ``build_graph`` only during eval.
+    """
+    traj = state.get("trajectory") or []
+    if traj and traj[-1].get("node") == "planner":
+        generated = traj[-1].get("hypotheses") or []
+        if not generated:
+            step = {
+                "step": len(traj) + 1,
+                "node": "reflector",
+                "workload": state["workload_name"],
+                "action": "reflect",
+                "reasoning": "eval_scoped_stop: planner produced 0 hypotheses",
+                "result": {"empty_plan": True, "eval_scoped_stop": True},
+            }
+            return {
+                "should_stop": True,
+                "stop_reason": "eval_empty_plan",
+                "trajectory": traj + [step],
+            }
+    return reflector_node(state)
+
+
+def _llm_boundary_label(llm: Any, mode: str) -> str:
+    """Label from the actual LLM object when possible, not mode alone."""
+    marked = getattr(llm, "eval_llm_boundary", None)
+    if marked:
+        return str(marked)
+    if isinstance(llm, ScriptedBottleneckLLM):
+        return "fake_scripted"
+    if mode == MODE_REAL_GRAPH_LLM:
+        return "live"
+    return "injected"
 
 
 # ---------------------------------------------------------------------------
@@ -482,10 +587,13 @@ def run_real_planner_on_workload(
     baseline_rps: float = 15.0,
     db_path: Path | None = None,
 ) -> dict[str, Any]:
-    """Invoke production build_graph(llm) with stubbed tool edges only."""
-    with _scoped_memory_db(db_path):
-        if db_path is None:
-            init_db()
+    """Invoke production build_graph(llm) with stubbed tool edges only.
+
+    Defaults to a temporary eval SQLite DB so forged rows never land in the
+    production ``inferops_memory.db``.
+    """
+    resolved_db = resolve_eval_db_path(db_path)
+    with _scoped_memory_db(resolved_db):
         prefix = session_prefix or f"rgeval_{workload_name}_{uuid.uuid4().hex[:6]}_"
         recorder = stub or StubBenchmarkRecorder(baseline_rps=baseline_rps)
         recorder.baseline_rps = baseline_rps
@@ -504,12 +612,15 @@ def run_real_planner_on_workload(
         state["current_bottleneck"] = bottleneck
         state["experiments_remaining"] = max(0, budget - 1)
 
-        graph = build_graph(llm)
-        with tool_boundary_overrides(
-            run_benchmark_fn=recorder,
-            propose_config_fn=_guarding_propose,
-        ):
-            final_state = graph.invoke(state)
+        # Eval-scoped Reflect wrapper only — production reflector_node heuristics
+        # stay untouched on master.
+        with patch("inferops.agent.graph.reflector_node", _eval_scoped_reflector):
+            graph = build_graph(llm)
+            with tool_boundary_overrides(
+                run_benchmark_fn=recorder,
+                propose_config_fn=_guarding_propose,
+            ):
+                final_state = graph.invoke(state)
 
         return {
             "workload_name": workload_name,
@@ -522,6 +633,7 @@ def run_real_planner_on_workload(
             "hypotheses": list(final_state.get("hypotheses") or []),
             "benchmark_calls": list(recorder.calls),
             "llm_call_count": getattr(llm, "call_count", None),
+            "eval_db_path": str(resolved_db),
         }
 
 
@@ -585,7 +697,12 @@ def run_real_graph_eval(
     force_unevidenced: bool = False,
     db_path: Path | None = None,
 ) -> dict[str, Any]:
-    """Commit-level report using production graph + stubbed tool/LLM edges."""
+    """Commit-level report using production graph + stubbed tool/LLM edges.
+
+    Uses a temporary/dedicated eval DB by default (never ``inferops_memory.db``).
+    """
+    resolved_db = resolve_eval_db_path(db_path)
+
     if mode == MODE_REAL_GRAPH_LLM:
         require_llm_credentials(llm_backend)
         if llm is None:
@@ -616,14 +733,21 @@ def run_real_graph_eval(
             force_unevidenced=force_unevidenced,
             baseline_rps=stub.baseline_rps,
         )
+        # Fresh scripted LLM per workload so queues don't share across WLs
+        wl_llm = llm
+        if mode == MODE_REAL_GRAPH_OFFLINE and isinstance(llm, ScriptedBottleneckLLM):
+            wl_llm = ScriptedBottleneckLLM(
+                default_bottleneck=bottleneck,
+                inject_illegal=inject_illegal,
+            )
         gt = load_ground_truth(wl_name, ground_truth_dir)
         run = run_real_planner_on_workload(
             workload_name=wl_name,
-            llm=llm,
+            llm=wl_llm,
             budget=budget,
             bottleneck=bottleneck,
             stub=wl_stub,
-            db_path=db_path,
+            db_path=resolved_db,
         )
         rows.append(_score_real_run(gt, run))
 
@@ -649,8 +773,9 @@ def run_real_graph_eval(
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "mode": mode,
         "budget": budget,
-        "llm_boundary": "live" if mode == MODE_REAL_GRAPH_LLM else "fake_scripted",
+        "llm_boundary": _llm_boundary_label(llm, mode),
         "tool_boundary": "stubbed_benchmark",
+        "eval_db_path": str(resolved_db),
         "strategies": {STRATEGY_REAL_PLANNER: rows},
         "aggregates": {STRATEGY_REAL_PLANNER: aggregate_scores(scores)},
     }

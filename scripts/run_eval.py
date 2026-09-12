@@ -85,7 +85,9 @@ def main() -> None:
         action="store_true",
         help=(
             "Offline real-graph eval: production planner→executor→reflector with "
-            "fake/scripted LLM and stubbed run_benchmark (CI-safe)."
+            "fake/scripted LLM and stubbed run_benchmark (CI-safe). "
+            "Writes forged rows only to a temp/dedicated eval DB "
+            "(never inferops_memory.db); override with --eval-db."
         ),
     )
     parser.add_argument(
@@ -93,7 +95,17 @@ def main() -> None:
         action="store_true",
         help=(
             "Live-LLM real-graph eval (separately labeled). Requires API credentials; "
-            "missing creds fail loudly. Caps to ≤1 workload / small budget."
+            "missing creds fail loudly. Caps to ≤1 workload / small budget. "
+            "Also uses a temp/dedicated eval DB by default (--eval-db to override)."
+        ),
+    )
+    parser.add_argument(
+        "--eval-db",
+        default=None,
+        help=(
+            "SQLite path for --real-graph / --real-llm forged experiment rows. "
+            "Default: a fresh temporary eval_memory.db under a temp dir "
+            "(does not pollute inferops_memory.db)."
         ),
     )
     parser.add_argument(
@@ -147,7 +159,9 @@ def main() -> None:
             budget=min(args.budget, 4),
             mode=MODE_REAL_GRAPH_OFFLINE,
             bottleneck=args.bottleneck,
+            db_path=Path(args.eval_db) if args.eval_db else None,
         )
+        console.print(f"[dim]Eval DB:[/] {report.get('eval_db_path', '')}")
     elif args.real_llm:
         output_dir = args.output_dir or DEFAULT_REAL_LLM_OUT
         try:
@@ -159,10 +173,12 @@ def main() -> None:
                 mode=MODE_REAL_GRAPH_LLM,
                 llm_backend=args.llm_backend,
                 bottleneck=args.bottleneck,
+                db_path=Path(args.eval_db) if args.eval_db else None,
             )
         except RuntimeError as exc:
             console.print(f"[red]{exc}[/]")
             sys.exit(1)
+        console.print(f"[dim]Eval DB:[/] {report.get('eval_db_path', '')}")
     else:
         output_dir = args.output_dir or DEFAULT_MOCK_OUT
         report = run_session_eval(

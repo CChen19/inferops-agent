@@ -15,6 +15,33 @@ unchanged — no second contract.
 
 Exactly one mode flag is required.
 
+### Eval DB (real-graph / real-llm)
+
+Forged stub rows are **never** written to the production default
+`inferops_memory.db`. Default DB path is a fresh temporary directory:
+
+`{tempdir}/inferops_real_graph_eval_*/eval_memory.db`
+
+Override with `--eval-db PATH` (also exposed as report field `eval_db_path`).
+
+## Termination without production Reflect changes
+
+Production `reflector_node` heuristics are **unchanged** (identical to master).
+Eval termination uses:
+
+1. **Scripted LLM queues** — distinct legal hypotheses per bottleneck so budget /
+   streak can fire under stock Reflect.
+2. **Eval-scoped Reflect wrapper** (`_eval_scoped_reflector`) patched into
+   `build_graph` **only during eval** — if the planner emits zero new
+   hypotheses, stop with `stop_reason=eval_empty_plan`. This is harness wiring,
+   not a production Reflect rewrite.
+
+## LLM boundary labeling
+
+`llm_boundary` is derived from the actual LLM object (`eval_llm_boundary` /
+`ScriptedBottleneckLLM` → `fake_scripted`; otherwise `live` when mode is
+`real_graph_llm`, else `injected`) — not mode string alone.
+
 ## CI wiring
 
 `.github/workflows/eval-mock.yml`:
@@ -35,16 +62,16 @@ Live `--real-llm` is **not** required in CI.
 | 4 | Illegal params never reach benchmark | `test_illegal_params_never_reach_benchmark` — scripted illegal `tensor_parallel_size` filtered; stub call log empty |
 | 5 | No-gain does not promote best | `test_no_gain_does_not_promote_best` — best stays baseline experiment_id |
 | 6 | Budget exhaustion `stop_reason` | `test_budget_exhaustion_sets_stop_reason` → `budget_exhausted` |
-| 7 | ① regression: unverified ≠ best | `test_unevidenced_high_score_not_promoted_to_best` — uses `is_promotable` / `is_promotable_summary`; high unevidenced score stays off `best_summary` |
-| 8 | Real LLM labeled; missing creds ≠ silent pass | `test_require_llm_credentials_fails_loudly`, `test_real_llm_mode_fails_without_credentials`, `test_run_eval_real_llm_missing_creds_exits_nonzero` |
-| 9 | `pytest -q` green; mock still works; separate dirs | Full suite green; `test_run_eval_real_graph_writes_separate_dir`; mock help/disclaimer updated |
+| 7 | ① regression: unverified ≠ best | `test_unevidenced_high_score_not_promoted_to_best` — uses `is_promotable` / `is_promotable_summary`; asserts `stub.calls` nonempty |
+| 8 | Real LLM labeled; missing creds ≠ silent pass | `test_require_llm_credentials_fails_loudly`, `test_real_llm_mode_fails_without_credentials`, `test_run_eval_real_llm_missing_creds_exits_nonzero`, `test_llm_boundary_label_keys_off_actual_llm_not_mode_alone` |
+| 9 | `pytest -q` green; mock still works; separate dirs; clean eval DB | Full suite; `test_run_eval_real_graph_writes_separate_dir`; `test_real_graph_defaults_to_temp_eval_db_not_production_memory`; `test_production_reflector_has_no_empty_plan_heuristic` |
 
 ## Implementation notes
 
 - **Stub surface:** `inferops.agent.executor.tool_boundary_overrides` — only `run_benchmark` / `propose_config` callables. Nodes remain production `planner_node` / `executor_node` / `reflector_node`.
 - **Fake LLM:** `ScriptedBottleneckLLM` implements `.invoke()` only; bound through real `build_graph(llm)`.
-- **Reflector:** empty-plan detection increments no-improvement streak so scripted / exhausted hypothesis spaces cannot spin past LangGraph recursion limits.
-- **Contract:** best selection still gated by ① `is_promotable` / `is_promotable_summary` (executor + eval scoring).
+- **Reflect:** production file matches master; empty-plan stop lives only in eval wrapper.
+- **Contract:** best selection still gated by ① `is_promotable` / `is_promotable_summary`.
 
 ## Commands
 
@@ -53,9 +80,13 @@ Live `--real-llm` is **not** required in CI.
 python scripts/run_eval.py --mock --ground-truth tests/fixtures/ground_truth \
   --output-dir eval_reports --workloads chat_short --budget 2
 
-# Offline real graph (fake LLM)
+# Offline real graph (fake LLM; temp eval DB by default)
 python scripts/run_eval.py --real-graph --ground-truth tests/fixtures/ground_truth \
   --output-dir eval_reports/real_graph --workloads chat_short --budget 3
+
+# Optional dedicated eval DB
+python scripts/run_eval.py --real-graph --eval-db /tmp/my_eval.db \
+  --ground-truth tests/fixtures/ground_truth --workloads chat_short --budget 3
 
 # Live LLM (fails without OPENROUTER_API_KEY)
 python scripts/run_eval.py --real-llm --ground-truth tests/fixtures/ground_truth \
