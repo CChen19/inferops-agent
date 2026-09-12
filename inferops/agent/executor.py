@@ -205,6 +205,24 @@ def executor_node(state: AgentState) -> dict:
                 primary_metric=primary_metric,
                 extra_clear=stale_clear,
             )
+        except Exception as exc:
+            reraise_hard_control(exc)
+            console.print(f"  [red]executor: propose failed ({exc})[/red]")
+            return _attempt_failure_patch(
+                state,
+                hyp,
+                experiment_id=eid,
+                stage=STAGE_PROPOSE,
+                reason=str(exc),
+                code="propose_tool_error",
+                result_persisted=False,
+                budget_consumed=False,
+                retryable=False,
+                next_action="rollback",
+                persist_result=None,
+                primary_metric=primary_metric,
+                extra_clear=stale_clear,
+            )
 
         # --- run_benchmark (production or eval stub at tool boundary) ---
         console.print(f"  executor: running {eid} ({hyp['param']}={hyp['value']}) …")
@@ -548,9 +566,18 @@ def _search_winner_pack_if_ledgers(
 
 
 def _production_confirm_run_arm(state: AgentState, hyp: Hypothesis):
-    """Per-slot runner: ``run_benchmark`` (or tool-boundary stub) → ④ ledger."""
+    """Per-slot runner: ``run_benchmark`` (or tool-boundary stub) → ④ ledger.
+
+    Slot ids include remasure/attempt identity. An already-persisted slot
+    row is reused — no second benchmark for that id.
+    """
+    remasure_n = int(state.get("remeasure_count") or 0)
 
     def _run_slot(eid: str, config: dict[str, Any]) -> Any:
+        existing = get_result_by_id(eid)
+        if existing is not None:
+            console.print(f"  [dim]executor: confirmation slot reused: {eid}[/dim]")
+            return existing
         bench_fn = _run_benchmark_override or run_benchmark
         out = bench_fn(RunBenchmarkInput(
             experiment_id=eid,
@@ -569,6 +596,7 @@ def _production_confirm_run_arm(state: AgentState, hyp: Hypothesis):
     return production_slot_run_arm(
         hypothesis=hyp,
         session_prefix=state["session_prefix"],
+        remasure_count=remasure_n,
         run_slot=_run_slot,
     )
 
@@ -759,6 +787,8 @@ def _execute_confirmation_campaign(
         "last_skip_reason": "",
         "best_summary": state.get("best_summary"),
         "tried_experiment_ids": tried,
+        # Same attempt accounting as the confirmation-failure path.
+        "experiments_remaining": max(0, budget_left - 1),
         "trajectory": state["trajectory"] + [traj_step],
     }
 

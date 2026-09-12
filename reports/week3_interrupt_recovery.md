@@ -31,7 +31,7 @@ No parallel metrics schema. Generic exceptions do **not** invent
 
 | Incoming | Executor write | Reflect `latest` | Promote? |
 |---|---|---|---|
-| Propose `ValueError` | `last_recovery` + trajectory; **no** budget; `last_result` / ⑤ bind **cleared**; no forged summary | Prior `experiment_summaries[-1]` is **not** current | No |
+| Propose `ValueError` / generic propose exception | `last_recovery` + trajectory; **no** budget; `last_result` / ⑤ bind **cleared**; no forged summary | Prior `experiment_summaries[-1]` is **not** current | No |
 | Generic tool exception (no result) | Budget −1; recovery fact; **no** forged row; stale bind cleared | Prior success ignored | No |
 | `BenchmarkError` + `exc.result` | Keep that persisted failed contract row as `last_result` + summary | That failed row **is** current | No (`is_promotable` fail-closed) |
 | Confirmation mid-slot fail | Stage + completed `cited_run_ids`; `confirmation_decision=None`; budget −1 | Prior search success ignored | No confirm / no promote |
@@ -56,6 +56,7 @@ START → planner → │ executor │ → reflector ⇄ planner | executor | EN
 |---|---|---|
 | `interrupt_before=["executor"]` | Planner patch + checkpoint | Executor runs **once**; tool not called during the interrupt |
 | Tool persist, node not returned | SQLite/store row exists; LangGraph state still pre-executor | `get_result_by_id` reuses the row; **no second benchmark** |
+| Confirm slot persist, campaign not committed | Slot rows at `{prefix}confirm_{param}_{value}_r{N}_{b\|c}{i}` | Resume reuses those slot ids; remaining slots run; budget −1 once on commit |
 | Executor / Reflect return | Budget, trajectory, `last_result` / recovery | Same attempt is not double-counted |
 
 Eval / `build_graph(llm)` without a checkpointer stays config-free
@@ -65,9 +66,9 @@ Eval / `build_graph(llm)` without a checkpointer stays config-free
 
 | Path | Budget | Remeasure | Cap |
 |---|---|---|---|
-| Propose reject | Not consumed | No (`retryable=False`) | n/a |
+| Propose reject / generic propose error | Not consumed | No (`retryable=False`) | n/a |
 | Generic exception / `BenchmarkError` | −1 | No | Budget / streak |
-| Confirmation slot fail | −1 | Yes only if `remeasure_count < MAX_REMEASURES` **and** budget remains | `MAX_REMEASURES` (= ⑤ `DEFAULT_MIN_PAIRS`) and budget — **no infinite loop** |
+| Confirmation campaign (success **or** fail) | −1 once per attempt | Fail: remasure only if `remeasure_count < MAX_REMEASURES` **and** budget remains | `MAX_REMEASURES` (= ⑤ `DEFAULT_MIN_PAIRS`) and budget — **no infinite loop**; last-slot confirm can still promote then stop |
 
 Reflect re-validates `retryable`. Leaving remasure still clears ⑤ bind
 (`clear_confirmation_fields`). Cross-candidate confirmation cannot
@@ -88,6 +89,12 @@ survive a failure or a new hyp.
 - `test_uninterrupted_vs_interrupted_resumed_terminal_equivalence`
 - `test_no_confirmed_promotion_on_fail_or_resume_paths`
 - `test_keyboardinterrupt_and_systemexit_are_not_swallowed_as_success`
+- `test_confirmation_slot_ids_include_remeasure_identity`
+- `test_confirm_persist_then_crash_reuses_slots_budget_once`
+- `test_successful_confirm_promotes_and_consumes_budget_once`
+- `test_successful_confirm_on_last_budget_slot_still_promotes`
+- `test_generic_propose_tool_error_emits_recovery_no_forge`
+- `test_graphinterrupt_is_reraised_not_swallowed`
 
 ## Evidence
 
@@ -96,7 +103,7 @@ pytest -q
 ```
 
 ```text
-342 passed in 13.53s
+348 passed in 13.38s
 ```
 
 Fixture / CPU only. GPU was not run in this environment — **GPU-not-run ≠ pass**.

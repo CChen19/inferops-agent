@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from inferops.agent.confirm_campaign import confirmation_slot_experiment_id
 from inferops.agent.executor import (
     confirmation_run_arm_override,
     executor_node,
@@ -27,7 +28,7 @@ from inferops.agent.recovery import (
     recovery_event,
 )
 from inferops.agent.reflect_constraints import MAX_REMEASURES
-from inferops.metrics import RepeatArm, RepeatPhase, is_confirmed_promotable
+from inferops.metrics import DEFAULT_MIN_PAIRS, RepeatArm, RepeatPhase, is_confirmed_promotable
 from inferops.agent.reflector import reflector_node
 from inferops.agent.state import initial_state
 from inferops.bench_runner import BenchmarkError, OOMError
@@ -36,8 +37,10 @@ from inferops.tools.run_benchmark import RunBenchmarkInput, RunBenchmarkOutput
 from tests.test_constrained_reflect import (
     _ledger_backed_result,
     _pending_search_state,
+    _run_search_remeasure_confirm,
     _state_with_candidate,
     _summary,
+    _tool_boundary_store,
 )
 from tests.test_repeat_confirmation import CONDITIONS, make_rps_ledger
 
@@ -627,3 +630,181 @@ def test_no_confirmed_promotion_on_fail_or_resume_paths(result_b):
     assert is_confirmed_promotable(result_b, None) is False
     assert refl["best_summary"]["experiment_id"] == "sess_baseline"
     assert refl["trajectory"][-1]["result"]["promoted_to_best"] is False
+
+
+# ---------------------------------------------------------------------------
+# P1: confirm persist-resume + successful-confirm budget-once
+# ---------------------------------------------------------------------------
+
+def _remeasure_state(*, remaining: int = 2, remasure_count: int = 1):
+    state = _pending_search_state()
+    state["next_action"] = "remeasure"
+    state["remeasure_count"] = remasure_count
+    state["confirmation_target"] = {
+        "param": "max_num_batched_tokens",
+        "value": "4096",
+    }
+    state["hypotheses"][0]["status"] = "pending"
+    state["experiments_remaining"] = remaining
+    return state
+
+
+def test_confirmation_slot_ids_include_remeasure_identity():
+    hyp = {"param": "max_num_batched_tokens", "value": 4096}
+    eid = confirmation_slot_experiment_id(
+        session_prefix="sess_",
+        hypothesis=hyp,
+        arm=RepeatArm.CANDIDATE,
+        pair_index=1,
+        remasure_count=2,
+    )
+    assert eid == "sess_confirm_max_num_batched_tokens_4096_r2_c1"
+    other = confirmation_slot_experiment_id(
+        session_prefix="sess_",
+        hypothesis=hyp,
+        arm=RepeatArm.BASELINE,
+        pair_index=0,
+        remasure_count=1,
+    )
+    assert "_r1_b0" in other
+    assert other != eid
+
+
+def test_confirm_persist_then_crash_reuses_slots_budget_once(result_b):
+    """Mid-confirm crash: resume reuses persisted slots, budget charged once."""
+    store, inner = _tool_boundary_store(result_b, confirm_cand_rps=2.4)
+    calls: list[str] = []
+    crash_after = 2
+
+    def bench(inp: RunBenchmarkInput):
+        calls.append(inp.experiment_id)
+        out = inner(inp)
+        if len(calls) == crash_after:
+            raise KeyboardInterrupt("mid-confirm persist")
+        return out
+
+    state = _remeasure_state(remaining=2, remasure_count=1)
+    pre_budget = state["experiments_remaining"]
+
+    with tool_boundary_overrides(
+        run_benchmark_fn=bench,
+        propose_config_fn=lambda _inp: None,
+    ), patch(
+        "inferops.agent.executor.get_result_by_id",
+        side_effect=lambda e: store.get(e),
+    ):
+        with pytest.raises(KeyboardInterrupt):
+            executor_node(state)
+        first = list(calls)
+        assert len(first) == crash_after
+        assert all("_r1_" in eid for eid in first)
+        for eid in first:
+            assert eid in store
+        # Same incoming state — campaign never committed.
+        resume = executor_node(state)
+
+    assert calls[:crash_after] == first
+    expected_slots = DEFAULT_MIN_PAIRS * 2
+    assert len(calls) == expected_slots
+    assert len(set(calls)) == expected_slots
+    assert all("_r1_" in eid for eid in calls)
+    assert resume["experiments_remaining"] == pre_budget - 1
+    assert resume["last_recovery"] is None
+    assert resume["confirmation_decision"] is not None
+    assert resume["trajectory"][-1]["result"]["promoted_to_best"] is False
+
+
+def test_successful_confirm_promotes_and_consumes_budget_once(result_b):
+    """Promote path decrements budget exactly once — never remaining-still-1."""
+    search_exec, _search_refl, confirm_exec, final_refl, _after = (
+        _run_search_remeasure_confirm(result_b, confirm_cand_rps=2.4)
+    )
+    pre_confirm = search_exec["experiments_remaining"]
+    assert confirm_exec["experiments_remaining"] == pre_confirm - 1
+    assert final_refl["best_summary"].get("confirmed_promotable") is True
+    assert confirm_exec["experiments_remaining"] != pre_confirm
+
+
+def test_successful_confirm_on_last_budget_slot_still_promotes(result_b):
+    """Last budget slot: consume to 0, still promote (no leftover remaining=1)."""
+    store, bench = _tool_boundary_store(result_b, confirm_cand_rps=2.4)
+    state = _remeasure_state(remaining=1, remasure_count=1)
+
+    with tool_boundary_overrides(
+        run_benchmark_fn=bench,
+        propose_config_fn=lambda _inp: None,
+    ), patch(
+        "inferops.agent.executor.get_result_by_id",
+        side_effect=lambda e: store.get(e),
+    ):
+        confirm_exec = executor_node(state)
+
+    assert confirm_exec["experiments_remaining"] == 0
+    merged = _merge(state, confirm_exec)
+    assert merged["experiments_remaining"] == 0
+    refl = reflector_node(merged)
+    assert refl["best_summary"].get("confirmed_promotable") is True
+    assert refl["trajectory"][-1]["result"]["promoted_to_best"] is True
+    assert refl["best_summary"].get("experiment_id") != "sess_baseline"
+
+
+# ---------------------------------------------------------------------------
+# P2: generic propose error + GraphInterrupt not swallowed
+# ---------------------------------------------------------------------------
+
+def test_generic_propose_tool_error_emits_recovery_no_forge():
+    state = _pending_search_state()
+    with patch("inferops.agent.executor.get_result_by_id", return_value=None), patch(
+        "inferops.tools.propose_config.propose_config_patch",
+        side_effect=RuntimeError("propose backend down"),
+    ):
+        exec_patch = executor_node(state)
+
+    event = exec_patch["last_recovery"]
+    _assert_recovery_contract(event)
+    assert event["code"] == "propose_tool_error"
+    assert event["stage"] == "propose_config"
+    assert event["result_persisted"] is False
+    assert event["budget_consumed"] is False
+    assert "experiments_remaining" not in exec_patch
+    assert exec_patch["last_result"] is None
+    assert "experiment_summaries" not in exec_patch
+    refl = reflector_node(_merge(state, exec_patch))
+    assert refl["next_action"] == "rollback"
+    assert refl["best_summary"]["experiment_id"] == "sess_baseline"
+    assert refl["trajectory"][-1]["result"]["promoted_to_best"] is False
+
+
+def test_graphinterrupt_is_reraised_not_swallowed():
+    from langgraph.errors import GraphInterrupt
+
+    state = _pending_search_state()
+    with patch("inferops.agent.executor.get_result_by_id", return_value=None), patch(
+        "inferops.tools.propose_config.propose_config_patch"
+    ), patch(
+        "inferops.agent.executor.run_benchmark",
+        side_effect=GraphInterrupt(),
+    ):
+        with pytest.raises(GraphInterrupt):
+            executor_node(state)
+
+    remasure = _remeasure_state()
+
+    class _Arm:
+        last_candidate_result = None
+
+        def __call__(self, arm, slot):
+            raise GraphInterrupt()
+
+    with confirmation_run_arm_override(_Arm()):
+        with pytest.raises(GraphInterrupt):
+            executor_node(remasure)
+
+    with patch("inferops.agent.executor.get_result_by_id", return_value=None), patch(
+        "inferops.tools.propose_config.propose_config_patch",
+        side_effect=GraphInterrupt(),
+    ):
+        with pytest.raises(GraphInterrupt):
+            executor_node(state)
+
+    assert is_hard_control_exception(GraphInterrupt()) is True

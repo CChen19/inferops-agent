@@ -172,17 +172,43 @@ def search_winner_state_pack(
     }
 
 
+def confirmation_slot_experiment_id(
+    *,
+    session_prefix: str,
+    hypothesis: dict[str, Any],
+    arm: RepeatArm,
+    pair_index: int,
+    remasure_count: int,
+) -> str:
+    """Stable per-slot id. Includes remasure/attempt so resume can reuse rows."""
+    if arm == RepeatArm.BASELINE:
+        tag = "b"
+    elif arm == RepeatArm.CANDIDATE:
+        tag = "c"
+    else:
+        raise ValueError(f"unknown confirmation arm {arm!r}")
+    return (
+        f"{session_prefix}confirm_{hypothesis['param']}_"
+        f"{hypothesis['value']}_r{int(remasure_count)}_{tag}{int(pair_index)}"
+    )
+
+
 def production_slot_run_arm(
     *,
     hypothesis: dict[str, Any],
     session_prefix: str,
     run_slot: Callable[[str, dict[str, Any]], Any],
+    remasure_count: int = 0,
 ) -> Callable[[RepeatArm, RepeatSlot], Any]:
     """Per-slot ``run_arm`` that calls the benchmark tool boundary.
 
     ``run_slot(experiment_id, config_patch)`` must return an
     ``ExperimentResult`` with a ④ ``request_ledger``. Baseline slots apply
     no candidate override; candidate slots apply ``{param: value}``.
+
+    Slot ids include ``remeasure_count`` so persist-then-crash resume of the
+    same attempt reuses the same rows. ``run_slot`` is expected to look up
+    an already-persisted result before starting a second benchmark.
 
     The last candidate result is stored as ``.last_candidate_result`` so the
     executor can bind ``last_result`` / ``experiment_summaries`` to a run_id
@@ -195,15 +221,16 @@ def production_slot_run_arm(
         def __call__(self, arm: RepeatArm, slot: RepeatSlot) -> Any:
             if arm == RepeatArm.BASELINE:
                 config: dict[str, Any] = {}
-                tag = "b"
             elif arm == RepeatArm.CANDIDATE:
                 config = {hypothesis["param"]: hypothesis["value"]}
-                tag = "c"
             else:
                 raise ValueError(f"unknown confirmation arm {arm!r}")
-            eid = (
-                f"{session_prefix}confirm_{hypothesis['param']}_"
-                f"{hypothesis['value']}_{tag}{slot.pair_index}"
+            eid = confirmation_slot_experiment_id(
+                session_prefix=session_prefix,
+                hypothesis=hypothesis,
+                arm=arm,
+                pair_index=slot.pair_index,
+                remasure_count=remasure_count,
             )
             result = run_slot(eid, config)
             ledger = ledger_from_result(result)

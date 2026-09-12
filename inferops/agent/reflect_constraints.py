@@ -373,8 +373,18 @@ def conclude_experiment(
             cited_run_ids=run_ids,
         )
 
-    # 1. Budget
+    # 1. Budget. A confirmation that already ran on the last slot may still
+    # promote — consuming budget must not hide a completed confirm.
     if budget <= 0:
+        if would_promote:
+            return _done(
+                "stop",
+                stop=True,
+                stop_reason="budget_exhausted",
+                streak=0,
+                promote=True,
+                reason="confirmed_promotable",
+            )
         return _done(
             "stop",
             stop=True,
