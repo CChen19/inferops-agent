@@ -19,7 +19,7 @@ jobs:
           uv venv --python 3.11 .venv
           uv pip install -e ".[dev]"
 
-      - name: Run unit tests
+      - name: Run unit tests (includes deterministic real-graph / fake-LLM)
         run: .venv/bin/python -m pytest -q
 
       - name: Run mock eval harness + regression gate
@@ -34,6 +34,16 @@ jobs:
             --seed 7 \
             --baseline-report tests/fixtures/ci_baseline.json \
             --gate-strategy greedy_agent
+
+      - name: Run offline real-graph eval (fake LLM — no live OpenRouter)
+        run: |
+          .venv/bin/python scripts/run_eval.py \
+            --real-graph \
+            --commit-sha "${{ github.sha }}" \
+            --ground-truth tests/fixtures/ground_truth \
+            --output-dir eval_reports/real_graph \
+            --workloads chat_short \
+            --budget 3
 
       - name: Upload eval report
         if: always()

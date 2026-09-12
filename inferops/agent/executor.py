@@ -8,11 +8,15 @@ Tool call chain per hypothesis:
   2. run_benchmark         — starts vLLM, runs load, persists result to DB
   3. analyze_bottleneck    — classifies bottleneck from the stored result
   4. compare_experiments   — bootstrap CI vs baseline
+
+Offline / real-graph eval may inject stubs ONLY at tool boundaries via
+`tool_boundary_overrides` — production planner/executor/reflector nodes stay.
 """
 
 from __future__ import annotations
 
-from typing import Any
+from contextlib import contextmanager
+from typing import Any, Callable, Iterator
 
 from rich.console import Console
 
@@ -34,6 +38,30 @@ from inferops.tools.compare_experiments import CompareExperimentsInput, compare_
 from inferops.tools.run_benchmark import RunBenchmarkInput, run_benchmark
 
 console = Console()
+
+# Optional eval stubs (tool edges only). None → production callables.
+_run_benchmark_override: Callable[[RunBenchmarkInput], Any] | None = None
+_propose_config_override: Callable[..., Any] | None = None
+
+
+@contextmanager
+def tool_boundary_overrides(
+    *,
+    run_benchmark_fn: Callable[[RunBenchmarkInput], Any] | None = None,
+    propose_config_fn: Callable[..., Any] | None = None,
+) -> Iterator[None]:
+    """Temporarily replace benchmark / propose callables at the tool boundary."""
+    global _run_benchmark_override, _propose_config_override
+    prev_bench, prev_propose = _run_benchmark_override, _propose_config_override
+    if run_benchmark_fn is not None:
+        _run_benchmark_override = run_benchmark_fn
+    if propose_config_fn is not None:
+        _propose_config_override = propose_config_fn
+    try:
+        yield
+    finally:
+        _run_benchmark_override = prev_bench
+        _propose_config_override = prev_propose
 
 
 def executor_node(state: AgentState) -> dict:
@@ -71,7 +99,8 @@ def executor_node(state: AgentState) -> dict:
         try:
             from inferops.tools.propose_config import ProposeConfigInput, propose_config_patch
             base_eid = state["baseline_summary"]["experiment_id"] if state["baseline_summary"] else ""
-            propose_config_patch(ProposeConfigInput(
+            propose_fn = _propose_config_override or propose_config_patch
+            propose_fn(ProposeConfigInput(
                 base_experiment_id=base_eid,
                 param=hyp["param"],
                 value=hyp["value"],
@@ -83,10 +112,11 @@ def executor_node(state: AgentState) -> dict:
             updated_hyps = _set_status(state["hypotheses"], hyp["id"], "failed", eid)
             return {"hypotheses": updated_hyps}
 
-        # --- run_benchmark ---
+        # --- run_benchmark (production or eval stub at tool boundary) ---
         console.print(f"  executor: running {eid} ({hyp['param']}={hyp['value']}) …")
         try:
-            bench_out = run_benchmark(RunBenchmarkInput(
+            bench_fn = _run_benchmark_override or run_benchmark
+            bench_out = bench_fn(RunBenchmarkInput(
                 experiment_id=eid,
                 config_patch={hyp["param"]: hyp["value"]},
                 workload_name=state["workload_name"],
