@@ -38,6 +38,7 @@ class ExperimentSummary(TypedDict):
     has_config_evidence: bool
     # Single full-gate result — MUST be set via is_promotable(result), never guessed
     promotable: bool
+    failure_reason: str  # notes / error from failed contract rows ("" if none)
 
 
 # ---------------------------------------------------------------------------
@@ -180,6 +181,9 @@ def summary_from_result(
         ),
         # ONE full gate — identical criterion as executor / eval / DB / report
         promotable=is_promotable(result),
+        failure_reason=(getattr(result, "notes", None) or "") if (
+            status_value == "failed"
+        ) else "",
     )
 
 

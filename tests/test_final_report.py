@@ -22,6 +22,7 @@ _BASELINE = {
     "mlflow_run_id": "mlflow-baseline",
     "has_config_evidence": True,
     "promotable": True,
+        "failure_reason": "",
 }
 
 _BEST = {
@@ -40,6 +41,7 @@ _BEST = {
     "mlflow_run_id": "mlflow-best",
     "has_config_evidence": True,
     "promotable": True,
+        "failure_reason": "",
 }
 
 

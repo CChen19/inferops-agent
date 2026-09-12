@@ -26,6 +26,7 @@ from inferops.agent.state import (
     pending_hypotheses,
     summary_from_result,
 )
+from inferops.bench_runner import BenchmarkError
 from inferops.memory.db import get_result_by_id
 from inferops.schemas import is_promotable
 from inferops.tools.analyze_bottleneck import AnalyzeBottleneckInput, analyze_bottleneck
@@ -92,6 +93,55 @@ def executor_node(state: AgentState) -> dict:
                 persist=True,
                 session_id=state["session_prefix"],
             ))
+        except BenchmarkError as exc:
+            # P2-5: failed contract row already built/persisted — surface it in
+            # experiment_summaries + trajectory so final_report can show the attempt.
+            console.print(f"  [red]executor: benchmark failed ({exc})[/red]")
+            updated_hyps = _set_status(state["hypotheses"], hyp["id"], "failed", eid)
+            patch: dict[str, Any] = {
+                "hypotheses": updated_hyps,
+                "tried_experiment_ids": state["tried_experiment_ids"] + [eid],
+                "experiments_remaining": state["experiments_remaining"] - 1,
+            }
+            if exc.result is not None:
+                baseline_primary = (
+                    state["baseline_summary"][primary_metric]
+                    if state["baseline_summary"] else 0.0
+                )
+                failed_summary = summary_from_result(
+                    exc.result,
+                    param_changed=hyp["param"],
+                    value_changed=hyp["value"],
+                    baseline_primary=baseline_primary,
+                    primary_metric=primary_metric,
+                    bottleneck="unknown",
+                )
+                # Prefer explicit exception message if notes empty
+                if not failed_summary.get("failure_reason"):
+                    failed_summary["failure_reason"] = str(exc)
+                traj_step = {
+                    "step": len(state["trajectory"]) + 1,
+                    "node": "executor",
+                    "workload": state["workload_name"],
+                    "action": f"run_benchmark({hyp['param']}={hyp['value']})",
+                    "experiment_id": eid,
+                    "run_id": failed_summary.get("run_id"),
+                    "validity_status": failed_summary.get("validity_status"),
+                    "mlflow_run_id": failed_summary.get("mlflow_run_id"),
+                    "reasoning": hyp["rationale"],
+                    "result": {
+                        "status": "failed",
+                        "failure_reason": failed_summary.get("failure_reason", ""),
+                        "promoted_to_best": False,
+                    },
+                }
+                patch["experiment_summaries"] = (
+                    state["experiment_summaries"] + [failed_summary]
+                )
+                patch["trajectory"] = state["trajectory"] + [traj_step]
+                # best_summary unchanged — failed rows are never promotable
+                patch["best_summary"] = state["best_summary"]
+            return patch
         except Exception as exc:
             console.print(f"  [red]executor: benchmark failed ({exc})[/red]")
             updated_hyps = _set_status(state["hypotheses"], hyp["id"], "failed", eid)
@@ -159,6 +209,7 @@ def executor_node(state: AgentState) -> dict:
             mlflow_run_id=bench_dict.get("mlflow_run_id"),
             has_config_evidence=False,
             promotable=False,
+            failure_reason="",
         )
 
     # --- Update best (gated on contract validity + critical evidence) ---

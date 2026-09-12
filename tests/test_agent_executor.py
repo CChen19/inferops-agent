@@ -16,6 +16,7 @@ def _contract_fields(**overrides):
         "mlflow_run_id": "mlflow-baseline",
         "has_config_evidence": True,
         "promotable": True,
+        "failure_reason": "",
     }
     base.update(overrides)
     return base

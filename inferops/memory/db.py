@@ -42,6 +42,40 @@ def _migrate_contract_columns(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE experiments ADD COLUMN {col} {typedef}")
 
 
+def _backfill_promotable(conn: sqlite3.Connection) -> None:
+    """Recompute `promotable` from result_json for rows missing the flag.
+
+    Covers pre-existing rows that had status='valid' before the denormalized
+    column existed (or were left NULL after ALTER TABLE).
+    """
+    rows = conn.execute(
+        """
+        SELECT experiment_id, result_json, promotable
+        FROM experiments
+        WHERE promotable IS NULL
+           OR (status = 'valid' AND promotable = 0)
+        """
+    ).fetchall()
+    for row in rows:
+        try:
+            result = ExperimentResult.model_validate_json(row["result_json"])
+        except Exception:
+            continue
+        flag = 1 if is_promotable(result) else 0
+        # Only write when the full gate disagrees with the stored flag (or NULL)
+        if row["promotable"] is None or int(row["promotable"] or 0) != flag:
+            conn.execute(
+                "UPDATE experiments SET promotable = ?, run_id = COALESCE(run_id, ?), "
+                "status = COALESCE(status, ?) WHERE experiment_id = ?",
+                (
+                    flag,
+                    result.run_id,
+                    result.status.value if hasattr(result.status, "value") else str(result.status),
+                    row["experiment_id"],
+                ),
+            )
+
+
 def init_db(db_path: Path = _DEFAULT_DB) -> None:
     """Create tables if they don't exist and migrate contract columns."""
     with _connect(db_path) as conn:
@@ -71,6 +105,7 @@ def init_db(db_path: Path = _DEFAULT_DB) -> None:
             )
         """)
         _migrate_contract_columns(conn)
+        _backfill_promotable(conn)
         conn.commit()
 
 

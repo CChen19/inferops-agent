@@ -113,22 +113,40 @@ def write_final_report(inp: FinalReportInput) -> FinalReportOutput:
             lines += [
                 "## Experiment Log",
                 "",
-                "| # | experiment_id | run_id | status | param | value | rps | ttft_p99 (ms) | bottleneck | vs baseline |",
+                "| # | experiment_id | run_id | mlflow | status | param | value | rps | vs baseline | failure_reason |",
                 "|---|---|---|---|---|---|---|---|---|---|",
             ]
             for i, s in enumerate(inp.experiment_summaries, 1):
+                reason = (s.get("failure_reason") or "").replace("|", "/")
+                if len(reason) > 60:
+                    reason = reason[:57] + "..."
                 lines.append(
                     f"| {i} | `{s['experiment_id']}` "
                     f"| `{s.get('run_id', '')}` "
+                    f"| `{s.get('mlflow_run_id') or ''}` "
                     f"| `{s.get('validity_status', 'insufficient_evidence')}` "
                     f"| {s.get('param_changed') or '—'} "
                     f"| {s.get('value_changed', '')} "
                     f"| {s['throughput_rps']:.3f} "
-                    f"| {s['ttft_p99_ms']:.1f} "
-                    f"| {s.get('bottleneck', 'unknown')} "
-                    f"| {s['vs_baseline_pct']:+.1f}% |"
+                    f"| {s['vs_baseline_pct']:+.1f}% "
+                    f"| {reason or '—'} |"
                 )
             lines.append("")
+            # Explicit failed-attempt section for report consumers
+            failed = [
+                s for s in inp.experiment_summaries
+                if s.get("validity_status") == "failed"
+            ]
+            if failed:
+                lines += ["### Failed attempts", ""]
+                for s in failed:
+                    lines.append(
+                        f"- `{s['experiment_id']}`  run_id=`{s.get('run_id', '')}`  "
+                        f"mlflow=`{s.get('mlflow_run_id') or ''}`  "
+                        f"status=`failed`  "
+                        f"reason: {s.get('failure_reason') or '(none)'}"
+                    )
+                lines.append("")
             sections += 1
 
         # Knowledge citations

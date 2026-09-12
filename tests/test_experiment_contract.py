@@ -93,6 +93,7 @@ def _executor_state():
         "mlflow_run_id": "mlflow-baseline",
         "has_config_evidence": True,
         "promotable": True,
+        "failure_reason": "",
     }
     state["baseline_summary"] = baseline
     state["best_summary"] = baseline
@@ -379,7 +380,12 @@ def test_unified_gate_rejects_valid_looking_partial_everywhere(config, result_b,
     assert all(r["experiment_id"] != hot.experiment_id for r in prom)
 
     # --- final report ---
-    fake_best = {**summary, "experiment_id": hot.experiment_id, "promotable": False}
+    fake_best = {
+        **summary,
+        "experiment_id": hot.experiment_id,
+        "promotable": False,
+        "failure_reason": "",
+    }
     out_path = tmp_path / "r.md"
     write_final_report(FinalReportInput(
         workload_name="chat_short",
@@ -626,6 +632,7 @@ def test_final_report_withholds_deploy_without_evidence(tmp_path):
         "mlflow_run_id": "m0",
         "has_config_evidence": True,
         "promotable": True,
+        "failure_reason": "",
     }
     hot = {
         **baseline,
@@ -637,6 +644,7 @@ def test_final_report_withholds_deploy_without_evidence(tmp_path):
         "has_config_evidence": False,
         "mlflow_run_id": "m1",
         "promotable": False,
+        "failure_reason": "",
     }
     out = tmp_path / "report.md"
     write_final_report(
@@ -671,6 +679,7 @@ def test_final_report_deploys_only_when_promotable(tmp_path):
         "mlflow_run_id": "m2",
         "has_config_evidence": True,
         "promotable": True,
+        "failure_reason": "",
     }
     out = tmp_path / "ok.md"
     write_final_report(
@@ -703,7 +712,8 @@ def test_final_report_rejects_valid_without_promotable_flag(tmp_path):
         "validity_status": "valid",
         "mlflow_run_id": "m3",
         "has_config_evidence": True,
-        "promotable": False,  # full gate says no
+        "promotable": False,
+        "failure_reason": ""
     }
     out = tmp_path / "spoof.md"
     write_final_report(FinalReportInput(
@@ -748,3 +758,206 @@ def test_summary_from_result_sets_promotable(result_b):
     assert summary["promotable"] is True
     assert summary["validity_status"] == "valid"
     assert is_promotable_summary(summary) is True
+
+
+# ---------------------------------------------------------------------------
+# P2-5 correction round 2: executor surfaces failed contract rows in report
+# ---------------------------------------------------------------------------
+
+def test_executor_benchmark_error_appends_failed_summary_and_trajectory(config):
+    """BenchmarkError(exc.result) → failed summary + trajectory (not silent drop)."""
+    from inferops.bench_runner import OOMError
+
+    failed = _make_failed_load_result(
+        config.model_copy(update={"experiment_id": "sess_max_num_batched_tokens_4096"}),
+        notes="vLLM OOM during startup — config: sess_max_num_batched_tokens_4096",
+        mlflow_run_id="mlf-oom-exec",
+        run_id="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    )
+    state = _executor_state()
+
+    with patch(
+        "inferops.agent.executor.get_result_by_id", return_value=None
+    ), patch("inferops.tools.propose_config.propose_config_patch"), patch(
+        "inferops.agent.executor.run_benchmark",
+        side_effect=OOMError("vLLM OOM during startup", result=failed),
+    ):
+        out = executor_node(state)
+
+    assert out["hypotheses"][0]["status"] == "failed"
+    assert out["experiments_remaining"] == 3
+    assert len(out["experiment_summaries"]) == len(state["experiment_summaries"]) + 1
+    summary = out["experiment_summaries"][-1]
+    assert summary["experiment_id"] == "sess_max_num_batched_tokens_4096"
+    assert summary["validity_status"] == "failed"
+    assert summary["run_id"] == "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    assert summary["mlflow_run_id"] == "mlf-oom-exec"
+    assert "OOM" in summary["failure_reason"]
+    assert summary["promotable"] is False
+    # best unchanged
+    assert out["best_summary"]["experiment_id"] == "sess_baseline"
+    traj = out["trajectory"][-1]
+    assert traj["validity_status"] == "failed"
+    assert traj["run_id"] == summary["run_id"]
+    assert traj["result"]["failure_reason"]
+    assert traj["result"]["promoted_to_best"] is False
+
+
+def test_oom_run_benchmark_executor_final_report_e2e(config, tmp_path, tmp_db, monkeypatch):
+    """OOM → run_benchmark persists → executor summary → final_report shows fields."""
+    from inferops.bench_runner import OOMError
+
+    eid = "sess_max_num_batched_tokens_4096"
+    failed = _make_failed_load_result(
+        config.model_copy(update={"experiment_id": eid}),
+        notes="vLLM OOM during startup — config: " + eid,
+        mlflow_run_id="mlf-oom-e2e",
+        run_id="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    )
+
+    def boom(*args, **kwargs):
+        raise OOMError("vLLM OOM during startup", result=failed)
+
+    monkeypatch.setattr("inferops.tools.run_benchmark.run_experiment", boom)
+    monkeypatch.setattr(
+        "inferops.tools.run_benchmark.save_result",
+        lambda r: save_result(r, db_path=tmp_db),
+    )
+    monkeypatch.setattr(
+        "inferops.tools.run_benchmark.get_prompts", lambda w: ["p"] * 3
+    )
+
+    state = _executor_state()
+    # Use real run_benchmark (which persists then re-raises) via executor
+    with patch("inferops.agent.executor.get_result_by_id", return_value=None), \
+         patch("inferops.tools.propose_config.propose_config_patch"):
+        # Don't mock run_benchmark — let it call our boom via run_experiment
+        out = executor_node(state)
+
+    stored = get_result_by_id(eid, db_path=tmp_db)
+    assert stored is not None
+    assert stored.status == ExperimentValidityStatus.FAILED
+    assert stored.run_id == failed.run_id
+    assert stored.mlflow_run_id == "mlf-oom-e2e"
+
+    summary = out["experiment_summaries"][-1]
+    assert summary["validity_status"] == "failed"
+    assert summary["run_id"] == failed.run_id
+    assert summary["mlflow_run_id"] == "mlf-oom-e2e"
+    assert "OOM" in summary["failure_reason"]
+
+    report_path = tmp_path / "final.md"
+    write_final_report(FinalReportInput(
+        workload_name="chat_short",
+        session_prefix="sess_",
+        experiment_summaries=out["experiment_summaries"],
+        baseline_summary=state["baseline_summary"],
+        best_summary=out.get("best_summary"),
+        output_path=str(report_path),
+    ))
+    text = report_path.read_text()
+    assert "Failed attempts" in text
+    assert eid in text
+    assert failed.run_id in text
+    assert "mlf-oom-e2e" in text
+    assert "failed" in text
+    assert "OOM" in text
+
+
+def test_run_experiment_zero_success_not_promotable(config):
+    """Nice-to-have: successful=0 after load → failed / not promotable."""
+    from types import SimpleNamespace
+
+    load = SimpleNamespace(
+        total_requests=10,
+        successful=0,
+        total_time_s=1.0,
+        throughput_rps=0.0,
+        tokens_per_second=0.0,
+        ttft_ms=[],
+        e2e_ms=[],
+    )
+    gpu_summary = SimpleNamespace(max_mem_used_gb=1.0, avg_util_pct=10.0)
+    fake_run = MagicMock()
+    fake_run.info.run_id = "mlf-zero-success"
+
+    class FakeProc:
+        log_path = None
+        _proc = MagicMock(pid=7)
+
+        def start(self):
+            return None
+
+        def wait_ready_verbose(self, log):
+            return True
+
+        def stop(self):
+            return None
+
+    class FakeGPU:
+        def start(self):
+            return None
+
+        def stop(self):
+            return gpu_summary
+
+    req = config_knobs(config)
+    # Full actual so the only failure mode is zero successes
+    with patch("inferops.bench_runner.init_mlflow"), \
+         patch("inferops.bench_runner.mlflow_run") as mock_mlf, \
+         patch("inferops.bench_runner.log_experiment_result"), \
+         patch("inferops.bench_runner.VLLMProcess", return_value=FakeProc()), \
+         patch("inferops.bench_runner.GPUMonitor", return_value=FakeGPU()), \
+         patch("inferops.bench_runner._run_load_with_cleanup_workaround", return_value=load), \
+         patch("inferops.bench_runner.extract_percentiles", return_value={
+             "p50": 0.0, "p90": 0.0, "p95": 0.0, "p99": 0.0
+         }), \
+         patch("httpx.get", side_effect=Exception("down")), \
+         patch("inferops.bench_runner.managed_cli_actual_config", return_value=dict(req)), \
+         patch("inferops.bench_runner.config_knobs", return_value=dict(req)):
+        mock_mlf.return_value.__enter__.return_value = fake_run
+        mock_mlf.return_value.__exit__.return_value = None
+        result = run_experiment(config, ["p"])
+
+    assert result.successful_requests == 0
+    assert result.status == ExperimentValidityStatus.FAILED
+    assert result.mlflow_run_id == "mlf-zero-success"
+    assert is_promotable(result) is False
+
+
+def test_promotable_column_backfill_for_preexisting_valid_rows(result_b, tmp_db):
+    """Nice-to-have: NULL promotable on legacy valid rows is recomputed on init_db."""
+    from inferops.memory.db import init_db, _connect
+
+    # Insert a fully promotable result_json but leave promotable NULL (pre-column)
+    init_db(tmp_db)
+    with _connect(tmp_db) as conn:
+        conn.execute(
+            """
+            INSERT INTO experiments
+                (experiment_id, workload_name, config_hash, config_json, result_json,
+                 throughput_rps, status, promotable)
+            VALUES (?,?,?,?,?,?,?,NULL)
+            """,
+            (
+                result_b.experiment_id,
+                result_b.config.workload.name,
+                "hash",
+                result_b.config.model_dump_json(),
+                result_b.model_dump_json(),
+                result_b.throughput_rps,
+                "valid",
+            ),
+        )
+        conn.commit()
+
+    # Re-init triggers backfill
+    init_db(tmp_db)
+    rows = query_results(top_k=10, db_path=tmp_db, promotable_only=True)
+    assert any(r["experiment_id"] == result_b.experiment_id for r in rows)
+    with _connect(tmp_db) as conn:
+        row = conn.execute(
+            "SELECT promotable FROM experiments WHERE experiment_id = ?",
+            (result_b.experiment_id,),
+        ).fetchone()
+    assert row["promotable"] == 1
