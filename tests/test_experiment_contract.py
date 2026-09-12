@@ -884,9 +884,32 @@ def test_run_experiment_zero_success_not_promotable(config):
     """Nice-to-have: successful=0 after load → failed / not promotable."""
     from types import SimpleNamespace
 
+    from inferops.metrics.ledger import (
+        RequestLedger,
+        RequestOutcome,
+        RequestRecord,
+        TerminationReason,
+    )
+    from inferops.tools.traffic import LoadResult
     from inferops.tools.vllm_process import InstanceIdentity, LiveProbe
 
-    load = SimpleNamespace(
+    run_id = "zero_success_run_id_000000000001"
+    ledger = RequestLedger(run_id=run_id, window_start_s=100.0, window_end_s=101.0)
+    for i in range(10):
+        ledger.add(
+            RequestRecord(
+                run_id=run_id,
+                request_id=f"req-{i:04d}",
+                t_start_s=100.0 + i * 0.01,
+                t_end_s=100.5 + i * 0.01,
+                e2e_ms=500.0,
+                output_tokens=0,
+                outcome=RequestOutcome.FAIL,
+                termination_reason=TerminationReason.ERROR,
+                error="synthetic",
+            )
+        )
+    load = LoadResult(
         total_requests=10,
         successful=0,
         total_time_s=1.0,
@@ -894,8 +917,11 @@ def test_run_experiment_zero_success_not_promotable(config):
         tokens_per_second=0.0,
         ttft_ms=[],
         e2e_ms=[],
+        error_rate=1.0,
+        ledger=ledger,
     )
-    gpu_summary = SimpleNamespace(max_mem_used_gb=1.0, avg_util_pct=10.0)
+    # samples>0 so GPU is recorded; zero successes still fail the gate
+    gpu_summary = SimpleNamespace(max_mem_used_gb=1.0, avg_util_pct=10.0, samples=2)
     fake_run = MagicMock()
     fake_run.info.run_id = "mlf-zero-success"
 
@@ -925,7 +951,6 @@ def test_run_experiment_zero_success_not_promotable(config):
             )
 
         def evidenced_actual_config(self):
-            # Full actual so the only failure mode is zero successes
             return dict(req)
 
         def oom_in_log(self):
@@ -947,20 +972,23 @@ def test_run_experiment_zero_success_not_promotable(config):
          patch("inferops.bench_runner.VLLMProcess", return_value=FakeProc()), \
          patch("inferops.bench_runner.GPUMonitor", return_value=FakeGPU()), \
          patch("inferops.bench_runner._run_load_with_cleanup_workaround", return_value=load), \
-         patch("inferops.bench_runner.extract_percentiles", return_value={
-             "p50": 0.0, "p90": 0.0, "p95": 0.0, "p99": 0.0
-         }), \
          patch("inferops.bench_runner.probe_live_instance", return_value=LiveProbe(healthy=False)), \
          patch("inferops.bench_runner.assert_listener_bound_to_child", return_value=7), \
-         patch("inferops.bench_runner.config_knobs", return_value=dict(req)):
+         patch("inferops.bench_runner.config_knobs", return_value=dict(req)), \
+         patch("inferops.bench_runner.persist_ledger"):
         mock_mlf.return_value.__enter__.return_value = fake_run
         mock_mlf.return_value.__exit__.return_value = None
-        result = run_experiment(config, ["p"])
+        with patch("inferops.bench_runner.uuid.uuid4") as mock_uuid:
+            mock_uuid.return_value.hex = run_id
+            result = run_experiment(config, ["p"])
 
     assert result.successful_requests == 0
     assert result.status == ExperimentValidityStatus.FAILED
     assert result.mlflow_run_id == "mlf-zero-success"
     assert is_promotable(result) is False
+    assert result.error_rate == 1.0
+    assert result.ttft.p50 is None  # no inventing zeros
+    assert result.tpot.p50 is None
 
 
 def test_promotable_column_backfill_for_preexisting_valid_rows(result_b, tmp_db):

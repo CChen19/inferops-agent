@@ -19,10 +19,10 @@ class GPUSample:
 
 @dataclass
 class GPUSummary:
-    avg_util_pct: float
-    max_util_pct: float
-    avg_mem_used_gb: float
-    max_mem_used_gb: float
+    avg_util_pct: float | None
+    max_util_pct: float | None
+    avg_mem_used_gb: float | None
+    max_mem_used_gb: float | None
     samples: int
 
 
@@ -49,7 +49,10 @@ class GPUMonitor:
         self._stop.set()
         if self._thread:
             self._thread.join(timeout=5)
-        pynvml.nvmlShutdown()
+        try:
+            pynvml.nvmlShutdown()
+        except Exception:
+            pass
         return self._summarize()
 
     def _loop(self) -> None:
@@ -68,8 +71,9 @@ class GPUMonitor:
             self._stop.wait(self.interval_s)
 
     def _summarize(self) -> GPUSummary:
+        # No samples → None (never invent 0% util / 0 GB as a measurement).
         if not self._samples:
-            return GPUSummary(0, 0, 0, 0, 0)
+            return GPUSummary(None, None, None, None, 0)
         utils = [s.util_pct for s in self._samples]
         mems = [s.mem_used_mb / 1024 for s in self._samples]
         return GPUSummary(

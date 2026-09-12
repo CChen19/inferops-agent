@@ -11,6 +11,13 @@ from inferops.observability import span
 from inferops.agent.state import is_promotable_summary
 
 
+def _fmt_metric(v: Any, spec: str) -> str:
+    """Format a summary metric. Missing stays n/a — never 0.0."""
+    if v is None:
+        return "n/a"
+    return format(float(v), spec)
+
+
 def _is_deployable_best(best: dict[str, Any] | None) -> bool:
     """Deploy recommendations use the SAME full gate as executor/eval/DB."""
     return is_promotable_summary(best)
@@ -43,7 +50,7 @@ class FinalReportInput(BaseModel):
 class FinalReportOutput(BaseModel):
     output_path: str
     sections_written: int
-    improvement_pct: float
+    improvement_pct: float | None = None
 
 
 def write_final_report(inp: FinalReportInput) -> FinalReportOutput:
@@ -70,24 +77,26 @@ def write_final_report(inp: FinalReportInput) -> FinalReportOutput:
         ]
 
         # Executive summary
-        improvement = 0.0
+        improvement: float | None = None
         deployable = _is_deployable_best(inp.best_summary)
         if inp.baseline_summary and inp.best_summary:
-            improvement = inp.best_summary.get("vs_baseline_pct", 0.0)
-            icon = "🟢" if improvement > 5 else "🟡" if improvement > 0 else "🔴"
+            raw_imp = inp.best_summary.get("vs_baseline_pct")
+            improvement = float(raw_imp) if raw_imp is not None else None
+            icon = "🟢" if raw_imp is not None and improvement > 5 else "🟡" if raw_imp is not None and improvement > 0 else "🔴"
             status = inp.best_summary.get("validity_status", "insufficient_evidence")
             lines += [
                 "## Executive Summary",
                 "",
-                f"{icon} Best configuration achieved **{improvement:+.1f}%** "
+                f"{icon} Best configuration achieved "
+                f"**{f'{raw_imp:+.1f}%' if raw_imp is not None else 'n/a'}** "
                 f"vs baseline on primary metric "
                 f"(validity=`{status}`).",
                 "",
                 f"- **Baseline:** `{inp.baseline_summary['experiment_id']}`  "
-                f"rps={inp.baseline_summary['throughput_rps']:.3f}  "
+                f"rps={_fmt_metric(inp.baseline_summary.get('throughput_rps'), '.3f')}  "
                 f"status=`{inp.baseline_summary.get('validity_status', 'unknown')}`",
                 f"- **Best found:** `{inp.best_summary['experiment_id']}`  "
-                f"rps={inp.best_summary['throughput_rps']:.3f}  "
+                f"rps={_fmt_metric(inp.best_summary.get('throughput_rps'), '.3f')}  "
                 f"run_id=`{inp.best_summary.get('run_id', '')}`  "
                 f"mlflow=`{inp.best_summary.get('mlflow_run_id') or ''}`",
                 f"- **Bottleneck at best:** `{inp.best_summary.get('bottleneck', 'unknown')}`",
@@ -102,7 +111,7 @@ def write_final_report(inp: FinalReportInput) -> FinalReportOutput:
                 "High scores without actual-config evidence are not deployable.",
                 "",
                 f"- **Baseline:** `{inp.baseline_summary['experiment_id']}`  "
-                f"rps={inp.baseline_summary['throughput_rps']:.3f}  "
+                f"rps={_fmt_metric(inp.baseline_summary.get('throughput_rps'), '.3f')}  "
                 f"status=`{inp.baseline_summary.get('validity_status', 'unknown')}`",
                 "",
             ]
@@ -127,8 +136,9 @@ def write_final_report(inp: FinalReportInput) -> FinalReportOutput:
                     f"| `{s.get('validity_status', 'insufficient_evidence')}` "
                     f"| {s.get('param_changed') or '—'} "
                     f"| {s.get('value_changed', '')} "
-                    f"| {s['throughput_rps']:.3f} "
-                    f"| {s['vs_baseline_pct']:+.1f}% "
+                    f"| {_fmt_metric(s.get('throughput_rps'), '.3f')} "
+                    f"| {_fmt_metric(s.get('vs_baseline_pct'), '+.1f')}"
+                    f"{'%' if s.get('vs_baseline_pct') is not None else ''} "
                     f"| {reason or '—'} |"
                 )
             lines.append("")

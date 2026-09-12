@@ -64,6 +64,25 @@ def test_write_final_report_creates_file(tmp_path):
     assert result.improvement_pct == pytest.approx(14.7)
 
 
+def test_write_final_report_improvement_none_when_vs_baseline_missing(tmp_path):
+    """P0-B: missing vs_baseline_pct → improvement_pct is None, not 0.0."""
+    best_missing = {**_BEST, "vs_baseline_pct": None}
+    out_path = tmp_path / "none.md"
+    result = write_final_report(
+        FinalReportInput(
+            workload_name="chat_short",
+            session_prefix="sess_",
+            experiment_summaries=[_BASELINE, best_missing],
+            baseline_summary=_BASELINE,
+            best_summary=best_missing,
+            output_path=str(out_path),
+        )
+    )
+    assert result.improvement_pct is None
+    text = out_path.read_text()
+    assert "n/a" in text
+
+
 def test_write_final_report_includes_experiment_table(tmp_path):
     out_path = tmp_path / "r.md"
     inp = FinalReportInput(

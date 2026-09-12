@@ -11,8 +11,8 @@ def test_gpu_monitor_summarize_empty_samples():
     summary = monitor._summarize()
 
     assert summary.samples == 0
-    assert summary.avg_util_pct == 0
-    assert summary.max_mem_used_gb == 0
+    assert summary.avg_util_pct is None
+    assert summary.max_mem_used_gb is None
 
 
 def test_gpu_monitor_summarize_samples():

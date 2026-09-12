@@ -139,17 +139,47 @@ def log_experiment_result(result: Any) -> None:
             "config_evidence_kind": (
                 result.config_evidence.kind if result.config_evidence else ""
             ),
+            "ledger_path": result.ledger_path or "",
+            "ttft_sample_scope": result.ttft.sample_scope or "",
+            "tpot_sample_scope": result.tpot.sample_scope or "",
         }
     )
-    mlflow.log_metrics(
-        {
-            "throughput_rps": result.throughput_rps,
-            "tokens_per_second": result.tokens_per_second,
-            "ttft_p50_ms": result.ttft.p50,
-            "ttft_p99_ms": result.ttft.p99,
-            "e2e_p50_ms": result.e2e_latency.p50,
-            "e2e_p99_ms": result.e2e_latency.p99,
-        }
-    )
+    # Only log metrics that were actually measured (None → skip, never invent 0).
+    metrics: dict[str, float] = {}
+    if result.throughput_rps is not None:
+        metrics["throughput_rps"] = result.throughput_rps
+    if result.tokens_per_second is not None:
+        metrics["tokens_per_second"] = result.tokens_per_second
+    if result.error_rate is not None:
+        metrics["error_rate"] = result.error_rate
+    if result.ttft.p50 is not None:
+        metrics["ttft_p50_ms"] = result.ttft.p50
+    if result.ttft.p99 is not None:
+        metrics["ttft_p99_ms"] = result.ttft.p99
+    if result.tpot.p50 is not None:
+        metrics["tpot_p50_ms"] = result.tpot.p50
+    if result.tpot.p99 is not None:
+        metrics["tpot_p99_ms"] = result.tpot.p99
+    if result.e2e_latency.p50 is not None:
+        metrics["e2e_p50_ms"] = result.e2e_latency.p50
+    if result.e2e_latency.p99 is not None:
+        metrics["e2e_p99_ms"] = result.e2e_latency.p99
     if result.gpu_memory_used_gb is not None:
-        mlflow.log_metric("gpu_memory_used_gb", result.gpu_memory_used_gb)
+        metrics["gpu_memory_used_gb"] = result.gpu_memory_used_gb
+    if result.gpu_utilization_pct is not None:
+        metrics["gpu_utilization_pct"] = result.gpu_utilization_pct
+    if result.cost_usd is not None:
+        metrics["cost_usd"] = result.cost_usd
+    if metrics:
+        mlflow.log_metrics(metrics)
+    # Align ledger artifact with the same run_id when present on disk.
+    if result.ledger_path:
+        try:
+            from pathlib import Path
+
+            p = Path(result.ledger_path)
+            if p.is_file():
+                mlflow.log_artifact(str(p), artifact_path="ledger")
+        except Exception:
+            pass
+

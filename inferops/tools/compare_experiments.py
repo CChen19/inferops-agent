@@ -72,13 +72,23 @@ def compare_experiments(inp: CompareExperimentsInput) -> ComparisonResult:
 
     def _get_samples(res, metric: str) -> list[float]:
         if metric in ("ttft_p50_ms", "ttft_p99_ms"):
-            return res.raw_ttft_ms or _percentile_to_samples(res.ttft.p50, res.ttft.p99, res.successful_requests)
+            if res.raw_ttft_ms:
+                return list(res.raw_ttft_ms)
+            return _percentile_to_samples(
+                res.ttft.p50, res.ttft.p99, res.successful_requests
+            )
         if metric in ("e2e_p50_ms", "e2e_p99_ms"):
-            return res.raw_e2e_ms or _percentile_to_samples(res.e2e_latency.p50, res.e2e_latency.p99, res.successful_requests)
+            if res.raw_e2e_ms:
+                return list(res.raw_e2e_ms)
+            return _percentile_to_samples(
+                res.e2e_latency.p50, res.e2e_latency.p99, res.successful_requests
+            )
         # Throughput: scalar — bootstrap by resampling request-level contribution
         val = getattr(res, metric, None)
         if val is None:
-            raise ValueError(f"Metric '{metric}' not available")
+            raise ValueError(f"Metric '{metric}' not available (missing / n/a)")
+        if res.successful_requests <= 0:
+            raise ValueError(f"Metric '{metric}' has no successful-request samples")
         # Synthesize samples around the scalar (small jitter for bootstrap)
         return [val * random.gauss(1.0, 0.02) for _ in range(res.successful_requests)]
 
@@ -93,6 +103,10 @@ def compare_experiments(inp: CompareExperimentsInput) -> ComparisonResult:
 
     samples_a = _get_samples(res_a, inp.metric)
     samples_b = _get_samples(res_b, inp.metric)
+    if not samples_a or not samples_b:
+        raise ValueError(
+            f"Metric '{inp.metric}' has no samples (missing / n/a) — cannot compare"
+        )
 
     val_a = _stat(samples_a, inp.metric)
     val_b = _stat(samples_b, inp.metric)
@@ -160,12 +174,19 @@ def compare_experiments(inp: CompareExperimentsInput) -> ComparisonResult:
     )
 
 
-def _percentile_to_samples(p50: float, p99: float, n: int) -> list[float]:
-    """Approximate raw samples from p50/p99 using a log-normal distribution."""
+def _percentile_to_samples(
+    p50: float | None, p99: float | None, n: int
+) -> list[float]:
+    """Approximate raw samples from p50/p99 using a log-normal distribution.
+
+    Missing percentiles → empty list (never invent 0-ms latency samples).
+    """
     import math
+
+    if n <= 0 or p50 is None or p99 is None:
+        return []
     if p50 <= 0:
         return [p99] * n
-    # Fit log-normal: mu and sigma from p50 and p99
     mu = math.log(p50)
     sigma = (math.log(p99) - mu) / 2.326  # z=2.326 for p99
     rng = random.Random(0)

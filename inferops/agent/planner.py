@@ -99,14 +99,24 @@ Respond with:
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _fmt_num(v: float | None, spec: str) -> str:
+    if v is None:
+        return "n/a"
+    return format(v, spec)
+
+
 def _fmt_summary(s: dict | None) -> str:
     if s is None:
         return "(none yet)"
+    vs = s.get("vs_baseline_pct")
+    vs_s = f"{vs:+.1f}%" if vs is not None else "n/a"
     return (
         f"experiment_id={s['experiment_id']}  "
-        f"rps={s['throughput_rps']}  ttft_p99={s['ttft_p99_ms']}ms  "
-        f"e2e_p50={s['e2e_p50_ms']}ms  bottleneck={s['bottleneck']}  "
-        f"vs_baseline={s['vs_baseline_pct']:+.1f}%"
+        f"rps={_fmt_num(s.get('throughput_rps'), '')}  "
+        f"ttft_p99={_fmt_num(s.get('ttft_p99_ms'), '')}ms  "
+        f"e2e_p50={_fmt_num(s.get('e2e_p50_ms'), '')}ms  "
+        f"bottleneck={s['bottleneck']}  "
+        f"vs_baseline={vs_s}"
     )
 
 
@@ -115,14 +125,16 @@ def _build_history_table(summaries: list[dict]) -> str:
         return "  (no experiments yet)"
     lines = ["  param_changed          value   rps     ttft_p99  e2e_p50  bottleneck      vs_baseline"]
     for s in reversed(summaries[-8:]):   # last 8, most recent first
+        vs = s.get("vs_baseline_pct")
+        vs_s = f"{vs:+.1f}%" if vs is not None else "n/a"
         lines.append(
             f"  {str(s.get('param_changed') or 'baseline'):<22} "
             f"{str(s.get('value_changed', '')):<7} "
-            f"{s['throughput_rps']:<7.3f} "
-            f"{s['ttft_p99_ms']:<9.1f} "
-            f"{s['e2e_p50_ms']:<8.1f} "
+            f"{_fmt_num(s.get('throughput_rps'), '.3f'):<7} "
+            f"{_fmt_num(s.get('ttft_p99_ms'), '.1f'):<9} "
+            f"{_fmt_num(s.get('e2e_p50_ms'), '.1f'):<8} "
             f"{s['bottleneck']:<15} "
-            f"{s['vs_baseline_pct']:+.1f}%"
+            f"{vs_s}"
         )
     return "\n".join(lines)
 

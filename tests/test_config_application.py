@@ -46,7 +46,7 @@ class _FakeGPU:
         return None
 
     def stop(self):
-        return SimpleNamespace(max_mem_used_gb=1.0, avg_util_pct=50.0)
+        return SimpleNamespace(max_mem_used_gb=1.0, avg_util_pct=50.0, samples=2)
 
 
 def _patch_common(monkeypatch):
@@ -213,6 +213,28 @@ def test_healthy_but_different_must_restart(monkeypatch, config):
     assert result.status == ExperimentValidityStatus.INSUFFICIENT_EVIDENCE
     assert is_promotable(result) is False
     assert result.run_id
+    assert result.request_ledger == {}
+    assert result.ledger_path is None
+    assert result.tpot.p50 is None
+    assert result.tpot.p99 is None
+
+
+def test_legacy_load_does_not_forge_canonical_ledger(monkeypatch, config):
+    """P0: LoadResult without a ledger must not persist invented rows."""
+    _patch_common(monkeypatch)
+    monkeypatch.setenv("INFEROPS_EXTERNAL_VLLM", "1")
+    monkeypatch.setattr(
+        bench_runner,
+        "probe_live_instance",
+        lambda *a, **k: LiveProbe(healthy=True, identity=None, observed_knobs=None),
+    )
+    result = bench_runner.run_experiment(config, ["p"])
+    assert result.request_ledger == {}
+    assert result.ledger_path is None
+    assert result.tpot.p50 is None
+    assert result.tpot.sample_n == 0
+    # FakeLoad still has raw ttft lists — those are measurements, not forged tokens
+    assert result.ttft.p50 is not None
 
 
 def test_external_health_only_insufficient_evidence(monkeypatch, config):
