@@ -96,7 +96,7 @@ pytest -q
 ```
 
 ```text
-(pending — filled after suite run)
+301 passed in 15.58s
 ```
 
 No real vLLM / GPU numbers are claimed in this environment.
