@@ -46,7 +46,7 @@ class _FakeGPU:
         return None
 
     def stop(self):
-        return SimpleNamespace(max_mem_used_gb=1.0, avg_util_pct=50.0)
+        return SimpleNamespace(max_mem_used_gb=1.0, avg_util_pct=50.0, samples=2)
 
 
 def _patch_common(monkeypatch):

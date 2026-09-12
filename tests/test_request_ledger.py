@@ -264,7 +264,8 @@ def test_single_output_token_excluded_from_tpot_aggregate():
     )
     agg = recalculate_from_ledger(ledger)
     assert agg.tpot.sample_n == 1
-    assert agg.tpot.p50 == pytest.approx(37.5)
+    # e2e=(0.35-0.1)*1000=250, ttft=50, n=5 → (250-50)/4 = 50
+    assert agg.tpot.p50 == pytest.approx(50.0)
 
 
 def test_zero_output_not_latency_success():

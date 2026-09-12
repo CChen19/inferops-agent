@@ -32,7 +32,14 @@ from rich.console import Console
 from rich.table import Table
 
 from inferops.metrics.aggregate import format_aggregate_report, recalculate_from_ledger
-from inferops.metrics.ledger import persist_ledger
+from inferops.metrics.ledger import (
+    RequestLedger,
+    RequestOutcome,
+    RequestRecord,
+    RunConditions,
+    TerminationReason,
+    persist_ledger,
+)
 from inferops.observability import init_mlflow, log_experiment_result, mlflow_run
 from inferops.schemas import (
     ExperimentConfig,
@@ -405,6 +412,62 @@ def _ensure_managed_vllm(
         raise  # pragma: no cover
 
 
+def _ledger_from_legacy_load(load, *, run_id: str, workload) -> RequestLedger:
+    """Synthesize a ledger when a LoadResult-like object has no `.ledger`.
+
+    Used by older test doubles. Incomplete rows are marked incomplete — never
+    success — when counts do not match sample lists.
+    """
+    window_s = float(getattr(load, "total_time_s", 0.0) or 0.0)
+    t0 = 0.0
+    ledger = RequestLedger(
+        run_id=run_id,
+        conditions=RunConditions(
+            workload_name=getattr(workload, "name", ""),
+            num_requests=getattr(workload, "num_requests", None),
+            concurrency=getattr(workload, "concurrency", None),
+        ),
+        window_start_s=t0,
+        window_end_s=t0 + window_s,
+    )
+    ttfts = list(getattr(load, "ttft_ms", []) or [])
+    e2es = list(getattr(load, "e2e_ms", []) or [])
+    successful = int(getattr(load, "successful", 0) or 0)
+    total = int(getattr(load, "total_requests", 0) or 0)
+    n_ok = max(successful, len(ttfts), len(e2es))
+    for i in range(n_ok):
+        ttft = ttfts[i] if i < len(ttfts) else None
+        e2e = e2es[i] if i < len(e2es) else (ttft or 0.0)
+        ledger.add(
+            RequestRecord(
+                run_id=run_id,
+                request_id=f"legacy-{i:04d}",
+                t_start_s=t0,
+                t_first_token_s=(t0 + ttft / 1000.0) if ttft is not None else None,
+                t_end_s=t0 + (e2e or 0.0) / 1000.0,
+                ttft_ms=ttft,
+                e2e_ms=e2e,
+                output_tokens=2,  # enough for TPOT eligibility if durations exist
+                outcome=RequestOutcome.SUCCESS,
+                termination_reason=TerminationReason.STOP,
+            )
+        )
+    for i in range(max(0, total - n_ok)):
+        ledger.add(
+            RequestRecord(
+                run_id=run_id,
+                request_id=f"legacy-fail-{i:04d}",
+                t_start_s=t0,
+                t_end_s=t0,
+                output_tokens=0,
+                outcome=RequestOutcome.FAIL,
+                termination_reason=TerminationReason.ERROR,
+                error="legacy load without per-request row",
+            )
+        )
+    return ledger
+
+
 def run_experiment(
     cfg: ExperimentConfig,
     prompts: list[str],
@@ -582,21 +645,24 @@ def run_experiment(
                 proc.stop()
 
         assert load is not None
-        assert load.ledger is not None
+        ledger = getattr(load, "ledger", None)
+        if ledger is None:
+            ledger = _ledger_from_legacy_load(load, run_id=run_id, workload=cfg.workload)
 
         # Persist ledger under logs/ for independent recalculation.
         ledger_path = Path("logs") / f"ledger_{run_id}.json"
-        persist_ledger(load.ledger, ledger_path)
+        persist_ledger(ledger, ledger_path)
 
         # GPU only if sampled (samples > 0). Never invent 0 util as a measurement.
         gpu_util = None
         gpu_mem = None
-        if gpu_summary is not None and gpu_summary.samples > 0:
+        gpu_samples = getattr(gpu_summary, "samples", 0) if gpu_summary is not None else 0
+        if gpu_summary is not None and gpu_samples > 0:
             gpu_util = gpu_summary.avg_util_pct
             gpu_mem = gpu_summary.max_mem_used_gb
 
         agg = recalculate_from_ledger(
-            load.ledger,
+            ledger,
             gpu_utilization_pct=gpu_util,
             gpu_memory_used_gb=gpu_mem,
         )
@@ -634,7 +700,7 @@ def run_experiment(
             gpu_utilization_pct=gpu_util,
             raw_ttft_ms=load.ttft_ms,
             raw_e2e_ms=load.e2e_ms,
-            request_ledger=load.ledger.model_dump(mode="json"),
+            request_ledger=ledger.model_dump(mode="json"),
             ledger_path=str(ledger_path),
             run_id=run_id,
             schema_version="1",
