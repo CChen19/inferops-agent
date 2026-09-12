@@ -44,7 +44,8 @@ def test_run_eval_without_mock_or_prefix_exits_with_error(tmp_path):
     proc = subprocess.run(cmd, text=True, capture_output=True, check=False)
 
     assert proc.returncode == 2
-    assert "Provide --mock" in proc.stdout
+    assert "--mock" in proc.stdout
+    assert "--real-graph" in proc.stdout
 
 
 def test_run_eval_real_mode_requires_matching_session(tmp_path):

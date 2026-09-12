@@ -1,4 +1,13 @@
-"""Commit-level eval harness and Markdown dashboard generation."""
+"""Commit-level eval harness and Markdown dashboard generation.
+
+Modes:
+  - mock              Preset strategy simulation (random/greedy over ground-truth).
+                      Does NOT invoke production build_graph / planner_node.
+  - session           Score a persisted agent session by experiment-id prefix.
+  - real_graph_offline  Production LangGraph planner path with fake LLM + stubbed
+                      benchmark tool edge (CI-safe).
+  - real_graph_llm      Same graph path with a live LLM; fails loudly without creds.
+"""
 
 from __future__ import annotations
 
@@ -15,7 +24,22 @@ from inferops.eval.metrics import (
     compute_efficiency,
     compute_outcome,
 )
+from inferops.eval.real_graph import (
+    MODE_REAL_GRAPH_LLM,
+    MODE_REAL_GRAPH_OFFLINE,
+    run_real_graph_eval,
+)
 from inferops.eval.runner import ALL_WORKLOAD_NAMES, evaluate, load_ground_truth
+
+__all__ = [
+    "run_mock_eval",
+    "run_session_eval",
+    "run_real_graph_eval",
+    "write_eval_outputs",
+    "render_markdown_report",
+    "MODE_REAL_GRAPH_OFFLINE",
+    "MODE_REAL_GRAPH_LLM",
+]
 
 
 def run_mock_eval(
@@ -25,7 +49,12 @@ def run_mock_eval(
     budget: int = 6,
     seed: int = 42,
 ) -> dict[str, Any]:
-    """Run deterministic eval using ground-truth rows and simulated baseline agents."""
+    """Preset strategy simulation over ground-truth rows (NOT production planner).
+
+    Uses ``run_random_agent`` / ``run_greedy_agent`` only. Trajectory ``node``
+    fields are baseline names — never planner / executor / reflector. Does not
+    call ``build_graph`` or ``planner_node``.
+    """
     names = workloads or ALL_WORKLOAD_NAMES
     strategies: dict[str, list[dict[str, Any]]] = {
         "random_agent": [],
@@ -48,6 +77,7 @@ def run_mock_eval(
         "commit_sha": commit_sha,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "mode": "mock",
+        "mode_label": "preset_strategy_simulation",
         "budget": budget,
         "strategies": strategies,
         "aggregates": aggregates,
@@ -98,16 +128,37 @@ def render_markdown_report(report: dict[str, Any]) -> str:
     disclaimer = ""
     if mode == "mock":
         disclaimer = (
-            "\n> **Mock eval only.** These figures are simulated from ground-truth "
-            "rows for CI/regression — they are **not** real measured performance "
-            "claims.\n"
+            "\n> **Mock eval only (preset strategy simulation).** "
+            "random_agent / greedy_agent over ground-truth rows — "
+            "**does not** invoke production `build_graph` / `planner_node`. "
+            "Figures are **not** real measured performance claims.\n"
         )
+    elif mode == MODE_REAL_GRAPH_OFFLINE:
+        disclaimer = (
+            "\n> **Real-graph offline eval.** Production LangGraph "
+            "`planner → executor → reflector` with a **fake/scripted LLM** and "
+            "**stubbed** `run_benchmark` tool edge. Not live OpenRouter / vLLM.\n"
+        )
+    elif mode == MODE_REAL_GRAPH_LLM:
+        disclaimer = (
+            "\n> **Real-graph live-LLM eval (separately labeled).** Production "
+            "graph with a live ChatModel; tool/benchmark edge may still be stubbed. "
+            "Missing API credentials must fail loudly (never silent pass).\n"
+        )
+    extra = ""
+    if report.get("mode_label"):
+        extra += f"\n- Mode label: `{report['mode_label']}`"
+    if report.get("llm_boundary"):
+        extra += f"\n- LLM boundary: `{report['llm_boundary']}`"
+    if report.get("tool_boundary"):
+        extra += f"\n- Tool boundary: `{report['tool_boundary']}`"
     lines = [
         f"# InferOps Eval Report: `{report['commit_sha']}`",
         "",
         f"- Mode: `{mode}`",
         f"- Generated: `{report.get('generated_at', '')}`",
         f"- Budget: `{report.get('budget', '')}` experiments per strategy",
+        extra,
         disclaimer,
         "## Summary",
         "",
