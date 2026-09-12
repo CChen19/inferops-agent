@@ -21,9 +21,11 @@ promotable) until they can be verified.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import time
 import uuid
+from pathlib import Path
 from typing import Callable
 
 from rich.console import Console
@@ -58,6 +60,37 @@ console = Console()
 
 VLLM_HOST = os.getenv("VLLM_HOST", "127.0.0.1")
 VLLM_PORT = int(os.getenv("VLLM_PORT", "8000"))
+
+
+def _write_live_identity_probe(
+    *,
+    experiment_id: str,
+    listener_pid: int,
+    child_pid: int,
+    start_token: str | None,
+    instance_id: str,
+) -> Path:
+    """Write PID equality evidence while the managed child is still alive.
+
+    Captured *before* load/teardown so Chris can assert listener==child without
+    relying on post-hoc `ss` after `run_benchmark` has stopped the process.
+    """
+    log_dir = Path("logs")
+    log_dir.mkdir(exist_ok=True)
+    path = log_dir / f"live_identity_{experiment_id}.json"
+    payload = {
+        "experiment_id": experiment_id,
+        "listener_pid": listener_pid,
+        "child_pid": child_pid,
+        "pids_equal": listener_pid == child_pid,
+        "start_token": start_token,
+        "instance_id": instance_id,
+        "host": VLLM_HOST,
+        "port": VLLM_PORT,
+        "captured": "while_managed_child_alive_before_teardown",
+    }
+    path.write_text(json.dumps(payload, indent=2) + "\n")
+    return path
 
 
 def external_vllm_mode() -> bool:
@@ -222,6 +255,21 @@ def _ensure_managed_vllm(
             log(f"  vLLM log → {proc.log_path}")
 
         ready = proc.wait_ready_verbose(log)
+        # Deterministic startup-failure injection (GPU checklist) — after spawn,
+        # before identity bind. Child is always stopped via _abort.
+        sim_fail = os.getenv("INFEROPS_SIMULATE_STARTUP_FAILURE", "").strip().lower()
+        if sim_fail == "oom":
+            if on_progress:
+                on_progress("status:failed:startup:simulated_oom")
+            _abort(OOMError(f"INFEROPS_SIMULATE_STARTUP_FAILURE=oom — config: {cfg.experiment_id}"))
+        if sim_fail == "timeout":
+            if on_progress:
+                on_progress("status:failed:startup:simulated_timeout")
+            _abort(
+                StartupTimeoutError(
+                    "INFEROPS_SIMULATE_STARTUP_FAILURE=timeout — refusing ready"
+                )
+            )
         if not ready:
             if on_progress:
                 on_progress("status:failed:startup")
@@ -253,6 +301,17 @@ def _ensure_managed_vllm(
                 on_progress("status:failed:identity_bind")
             _abort(BenchmarkError(str(exc)))
 
+        # Optional deterministic identity-failure injection (GPU checklist).
+        if os.getenv("INFEROPS_SIMULATE_STARTUP_FAILURE", "").strip().lower() == "identity":
+            if on_progress:
+                on_progress("status:failed:identity_bind:simulated")
+            _abort(
+                BenchmarkError(
+                    "INFEROPS_SIMULATE_STARTUP_FAILURE=identity — "
+                    "forced listener/child mismatch path"
+                )
+            )
+
         final_identity = proc.identity()
         if final_identity.pid is None or not final_identity.start_token:
             _abort(
@@ -267,6 +326,25 @@ def _ensure_managed_vllm(
                     f"Identity PID {final_identity.pid} != bound listener {bound_pid}"
                 )
             )
+
+        # Emit / persist PID equality WHILE the managed child is still alive
+        # (before load/teardown). Post-hoc `ss` after run_benchmark returns is useless.
+        equality_msg = (
+            f"status:pid_equality:listener={bound_pid}:child={final_identity.pid}"
+        )
+        log(equality_msg)  # also forwards to on_progress
+        _write_live_identity_probe(
+            experiment_id=cfg.experiment_id,
+            listener_pid=bound_pid,
+            child_pid=final_identity.pid,
+            start_token=final_identity.start_token,
+            instance_id=final_identity.instance_id,
+        )
+        # Optional hold so an operator can run `ss` in another shell before load.
+        hold_s = float(os.getenv("INFEROPS_PID_PROBE_HOLD_S", "0") or "0")
+        if hold_s > 0:
+            log(f"INFEROPS_PID_PROBE_HOLD_S={hold_s}: holding before load (child still up)")
+            time.sleep(hold_s)
 
         if previous_identity is not None and previous_identity.pid is not None:
             if final_identity.pid == previous_identity.pid:
