@@ -12,8 +12,8 @@
   "follow_ups": [
     {
       "id": "tune_8_incomplete_receipt_lost",
-      "status": "not_frozen",
-      "note": "Tune ⑧ recovery fields on master (attempt_id, experiment_id, hypothesis, stage/tool, reason/code, result_persisted, budget_consumed, retryable, next_action) do not yet include incomplete/receipt-lost. Matching recovery goldens wait for Tune freeze. Do not invent schema."
+      "status": "frozen_as_ack_lost",
+      "note": "Freeze #13 fcb0f48 → master a0c7061: RECOVERY_FIELDS += validity_status, retry_count; codes += ack_lost; unconfirmable → insufficient_evidence; TRAJECTORY_AUDIT_FIELDS = retry_count, budget_consumed, next_action, stop_reason. Do not invent receipt_lost / incomplete_receipt as recovery fields."
     }
   ],
   "cases": [
@@ -134,6 +134,30 @@
       "source": "recovery_goldens",
       "expected_behavior": "Uninterrupted vs interrupted+resumed match the full comparable end-state.",
       "judge_rule": "recovery.resume_equivalence",
+      "reviewer": "eval",
+      "holdout": true
+    },
+    {
+      "id": "ack_lost_unconfirmable",
+      "source": "recovery_goldens",
+      "expected_behavior": "Startup-ok + ack_lost + lookup miss persists Week-1 insufficient_evidence. code=ack_lost. No promote. Resume does not re-bench.",
+      "judge_rule": "recovery.ack_lost_insufficient_evidence",
+      "reviewer": "eval",
+      "holdout": false
+    },
+    {
+      "id": "ack_lost_save_failure",
+      "source": "recovery_goldens",
+      "expected_behavior": "Ack-lost + save fail: result_persisted=false, validity_status=insufficient_evidence, no forged row, no promote.",
+      "judge_rule": "recovery.ack_lost_save_honest",
+      "reviewer": "eval",
+      "holdout": false
+    },
+    {
+      "id": "trajectory_audit_executor_reflect",
+      "source": "recovery_goldens",
+      "expected_behavior": "Executor and Reflect steps carry retry_count, budget_consumed, next_action, stop_reason. Planner must not.",
+      "judge_rule": "recovery.trajectory_audit_fields",
       "reviewer": "eval",
       "holdout": true
     },

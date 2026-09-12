@@ -51,8 +51,8 @@ ALLOWED_SOURCES = frozenset(
     {"measurement_goldens", "recovery_goldens", "error_memory_goldens"}
 )
 
-# Tune ⑧ has not frozen incomplete / receipt-lost fields. Claiming them
-# here would invent schema.
+# #13 freeze uses code=ack_lost and Week-1 insufficient_evidence.
+# These names are still not recovery schema fields — claiming them invents.
 UNFROZEN_TUNE8_FIELDS = (
     "receipt_lost",
     "receipt_lost_at",
@@ -287,8 +287,8 @@ def _validate_cases(manifest: dict[str, Any]) -> tuple[list[str], list[str], lis
     invented = _invented_tune8_fields(manifest)
     if invented:
         failures.append(
-            "Tune ⑧ incomplete/receipt-lost fields are not frozen; "
-            f"do not invent schema: {invented}"
+            "Tune ⑧ freeze uses ack_lost + insufficient_evidence; "
+            f"do not invent receipt_lost/incomplete_receipt fields: {invented}"
         )
     follow = manifest.get("follow_ups") or []
     if not any(
@@ -296,7 +296,7 @@ def _validate_cases(manifest: dict[str, Any]) -> tuple[list[str], list[str], lis
         for item in follow
     ):
         warnings.append(
-            "note follow-up: Tune ⑧ incomplete/receipt-lost fields are not frozen"
+            "note follow-up: receipt_lost/incomplete_receipt are not recovery fields"
         )
     return failures, warnings, ids
 

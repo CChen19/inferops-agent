@@ -7,14 +7,14 @@ semantics). Does **not** invent a second recovery schema, loosen Week-1
 
 ## Freeze status
 
-**Unblocked.** Tune ⑧ is on **master**. Consumes the merged #11 contract
-(not a second schema; not the pre-review `4f02584`):
+**Unblocked.** Tune ⑧ residual is on **master**. Consumes #13 freeze
+`fcb0f48` → merge `a0c7061` (not a second schema; not `b109ee6`):
 
 | Surface | Value |
 |---|---|
-| Master merge | `45d2d4ed5253fa29ae98cd25826b894597c16288` (`#11`) |
-| Tune tip | `d1e5e8259601ec3eca69e5852cdb3774dfd9881d` |
-| PR | https://github.com/CChen19/inferops-agent/pull/11 |
+| Master merge | `a0c7061ef82fc32b68ae78f3ad504ac33eda191d` (`#13`) |
+| Tune tip | `fcb0f48a5252c8e8c6b265a19579cc2c37b048e6` |
+| PR | https://github.com/CChen19/inferops-agent/pull/13 |
 | Report | `reports/week3_interrupt_recovery.md` |
 
 Codex P1s on that tip (consumed, not reimplemented): confirm persist-resume
@@ -66,8 +66,13 @@ schema. Planner, executor, and reflector stay production.
 
 `attempt_id`, `experiment_id`, `hypothesis`, `stage`/`tool`,
 `reason`/`code`, `result_persisted`, `budget_consumed`, `retryable`,
-`next_action`. Codes used by goldens: `propose_tool_error`,
-`benchmark_error`, `tool_exception`, `confirmation_slot_failed`.
+`next_action`, **`validity_status`**, **`retry_count`**.
+Codes used by goldens: `propose_tool_error`, `benchmark_error`,
+`tool_exception`, `confirmation_slot_failed`, **`ack_lost`**.
+Unconfirmable persist uses Week-1 **`insufficient_evidence`** (not a
+new enum). Executor + Reflect carry `TRAJECTORY_AUDIT_FIELDS`
+(`retry_count`, `budget_consumed`, `next_action`, `stop_reason`).
+Do not invent `receipt_lost` / `incomplete_receipt` as recovery fields.
 
 ### Checkpoint / resume
 
@@ -133,6 +138,9 @@ This thin set does **not** claim `confirmed_promotable=true`.
 | `post_persist_pre_commit_interrupt` | search persist reused; confirm slots reuse `_rN_` ids; campaign budget −1 once |
 | `idempotent_re_resume` | second resume matches budget / tried ids / run_ids; no duplicate attempt |
 | `resume_equivalence` | U vs R match the full comparable end-state (`next_action`, best run/promotable, summary/last-result ids, confirmation/bindings/Reflect refs, full trajectory identity) |
+| `ack_lost_unconfirmable` | `code=ack_lost`; persist ① `insufficient_evidence`; no promote; resume does not re-bench |
+| `ack_lost_save_failure` | `code=ack_lost`; `result_persisted=false`; `validity_status=insufficient_evidence`; no forged row |
+| `trajectory_audit_executor_reflect` | Executor + Reflect have `retry_count`, `budget_consumed`, `next_action`, `stop_reason`; planner must not |
 
 ## Fixtures + runner
 

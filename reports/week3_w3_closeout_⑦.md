@@ -4,7 +4,7 @@ Eval owns this residual. Thin W2 ⑦ (6 measurement-trust cases) did **not**
 meet original ⑦ 验收. This closeout expands it without loosening
 thresholds, rewriting Tune Reflect, or starting ⑨.
 
-Baseline: `origin/master` @ `04cce27`.
+Baseline: `origin/master` @ `a0c7061` (Tune ⑧ residual freeze `fcb0f48`).
 
 ## Consume existing stacks (do not redefine)
 
@@ -27,13 +27,13 @@ inferops/eval/unified_goldens.py
 scripts/run_unified_goldens.py
 ```
 
-24 cases (inside 20–30). Each records `source`, `expected_behavior`,
+27 cases (inside 20–30). Each records `source`, `expected_behavior`,
 `judge_rule`, `reviewer`, `holdout`.
 
 | Source | Count | Holdout |
 |---|---:|---:|
 | measurement_goldens (W2 ⑦ floor) | 6 | `tpot_na`, `no_reliable_improvement` |
-| recovery_goldens (W3 ⑧) | 9 | `idempotent_re_resume`, `resume_equivalence` |
+| recovery_goldens (W3 ⑧ + #13 freeze) | 12 | `idempotent_re_resume`, `resume_equivalence`, `trajectory_audit_executor_reflect` |
 | error_memory_goldens (this closeout) | 9 | `unevidenced_high_score_not_promotable`, `promotable_only_excludes_errors` |
 
 Holdout cases are unused for prompt tuning. The gate fails if those ids
@@ -68,15 +68,17 @@ environment — no `OPENROUTER_API_KEY`). A live-boundary report with empty
 rows, zero quality, or `eval_empty_plan` is **not** accepted and cannot
 inflate `pass_rate` to 3/3.
 
-## Tune ⑧ incomplete / receipt-lost
+## Tune ⑧ freeze (`fcb0f48` → `a0c7061`)
 
-**Not frozen.** Tune recovery fields on master are still
-`attempt_id`, `experiment_id`, `hypothesis`, `stage`/`tool`, `reason`/`code`,
-`result_persisted`, `budget_consumed`, `retryable`, `next_action`.
+Matching recovery goldens consume only this surface:
 
-Follow-up (do not invent schema): add matching recovery golden(s) only
-after Tune freezes incomplete / receipt-lost fields. The unified gate
-fails if a case claims those fields today.
+- `RECOVERY_FIELDS += validity_status, retry_count`
+- `codes += ack_lost`
+- unconfirmable → Week-1 `insufficient_evidence`
+- `TRAJECTORY_AUDIT_FIELDS = retry_count, budget_consumed, next_action, stop_reason` (executor + Reflect)
+
+Do **not** invent `receipt_lost` / `incomplete_receipt` as recovery fields.
+The unified gate still fails if a case claims those names.
 
 ## CI
 
