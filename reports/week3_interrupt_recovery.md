@@ -48,10 +48,12 @@ Week-1 status for unconfirmable incomplete = insufficient_evidence
 |---|---|---|---|
 | Propose `ValueError` / generic propose exception | `last_recovery` + trajectory; **no** budget; `last_result` / ⑤ bind **cleared**; no forged summary | Prior `experiment_summaries[-1]` is **not** current | No |
 | Generic tool exception (no result) | Budget −1; recovery fact; **no** forged row; stale bind cleared | Prior success ignored | No |
-| Startup-ok + receipt/ack lost, **row already persisted** | Fact-check `get_result_by_id(attempt_id)`; reuse; **no second bench** | Reused row is current | No (⑥ still owns promote) |
-| Startup-ok + ack lost, **lookup miss** | Persist ① row via `derive_status` → `insufficient_evidence` (`code=ack_lost`, `incomplete=true`); not only `result_persisted=false` | That insuff. row **is** current | No (`is_promotable` fail-closed) |
-| `BenchmarkError` + `exc.result` | Keep that persisted failed contract row as `last_result` + summary | That failed row **is** current | No (`is_promotable` fail-closed) |
-| Confirmation mid-slot fail | Stage + completed `cited_run_ids`; `confirmation_decision=None`; budget −1 | Prior search success ignored | No confirm / no promote |
+| Startup-ok + receipt/ack lost, **completed row already persisted** | Fact-check `get_result_by_id(attempt_id)`; reuse; **no second bench** | Reused row is current | No (⑥ still owns promote) |
+| Startup-ok + ack lost, **lookup miss** + save ok | Persist ① row via `derive_status` → `insufficient_evidence` (`code=ack_lost`, `incomplete=true`); `result_persisted=true` | That insuff. row **is** current | No (`is_promotable` fail-closed) |
+| Startup-ok + ack lost, **save fails** | Honest `result_persisted=false`; `validity_status=insufficient_evidence` on the fact; **no** success patch / no re-bench in that invoke | Prior success ignored | No |
+| `BenchmarkError` + persisted `exc.result` (same invoke or resume lookup) | Keep **failed-row / `benchmark_error` recovery** — never a success hyp / cleared `last_recovery` | That failed row **is** current | No (`is_promotable` fail-closed) |
+| Confirm-slot ack-lost **lookup miss** | Same search contract: `code=ack_lost` + ① `insufficient_evidence` row (or honest not-persisted if save fails). Not a bare `confirmation_slot_failed` + `result_persisted=false` | Insuff. row current if persisted | No confirm / no promote |
+| Confirmation mid-slot fail (non-ack-lost) | `confirmation_slot_failed`; completed `cited_run_ids`; `confirmation_decision=None`; budget −1 | Prior search success ignored | No confirm / no promote |
 | `analyze_bottleneck` / `compare_experiments` degrade | Trajectory `tools.*.status=unavailable`; vs from result metrics, **never silent 0** | Unchanged success/fail of the bench itself | No promotion change |
 | `KeyboardInterrupt` / `SystemExit` / `GraphInterrupt` | **Re-raised** — not a success patch | n/a | n/a |
 
@@ -124,6 +126,9 @@ survive a failure or a new hyp.
 - `test_ack_lost_reuses_persisted_row_no_second_benchmark`
 - `test_ack_lost_unconfirmable_persists_insufficient_evidence`
 - `test_confirm_slot_ack_lost_reuses_persisted_no_rebench`
+- `test_ack_lost_save_failure_does_not_claim_persisted_or_rebench`
+- `test_confirm_slot_ack_lost_miss_persists_insufficient_evidence`
+- `test_benchmark_error_persisted_lookup_keeps_failure_not_success`
 - `test_trajectory_records_retry_budget_stop_and_next_action`
 
 ## Evidence
@@ -139,9 +144,14 @@ pytest -q
 Fixture / CPU only. GPU was not run in this environment — **GPU-not-run ≠ pass**.
 No invented vLLM / GPU numbers.
 
-Executor + Reflect trajectory steps now carry `retry_count`,
-`budget_consumed`, `next_action`, and `stop_reason` (Reflect fills
-`stop_reason`; executor failure records the suggested `next_action`).
+`TRAJECTORY_AUDIT_FIELDS` (`retry_count`, `budget_consumed`,
+`next_action`, `stop_reason`) are **executor + Reflect only**. Planner
+steps do not carry them: planner does not consume budget, remasure, or
+decide stop. Reflect fills `stop_reason`; executor failure records the
+suggested `next_action`.
+
+`result_persisted` is true only when `save_result` succeeded. A swallowed
+save is a lie and is not allowed.
 
 ## Out of scope
 

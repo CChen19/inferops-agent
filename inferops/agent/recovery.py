@@ -15,6 +15,7 @@ from typing import Any
 from inferops.schemas import (
     ExperimentConfig,
     ExperimentResult,
+    ExperimentValidityStatus,
     config_knobs,
     derive_status,
     empty_latency,
@@ -27,6 +28,7 @@ _HARD_CONTROL_NAMES = frozenset(
 
 # Receipt / ack loss after vLLM startup succeeded. Recover by id fact-check.
 CODE_ACK_LOST = "ack_lost"
+INCOMPLETE_NOTE_PREFIX = "incomplete:"
 ACK_LOST_TOKENS = (
     "ack lost",
     "receipt lost",
@@ -97,6 +99,19 @@ def hypothesis_fact(hyp: dict[str, Any] | None) -> dict[str, Any] | None:
 class AckLostError(Exception):
     """vLLM/startup succeeded but the completion receipt/ack was lost."""
 
+    def __init__(
+        self,
+        message: str = "",
+        *,
+        experiment_id: str = "",
+        result: Any = None,
+        result_persisted: bool = False,
+    ) -> None:
+        super().__init__(message)
+        self.experiment_id = experiment_id
+        self.result = result
+        self.result_persisted = bool(result_persisted)
+
 
 def is_ack_lost(exc: BaseException) -> bool:
     """True when the tool reports startup-ok + lost receipt/ack."""
@@ -104,6 +119,33 @@ def is_ack_lost(exc: BaseException) -> bool:
         return True
     text = f"{type(exc).__name__} {exc}".lower()
     return any(token in text for token in ACK_LOST_TOKENS)
+
+
+def is_failed_contract_row(result: Any) -> bool:
+    return contract_status_value(result) == ExperimentValidityStatus.FAILED.value
+
+
+def is_unconfirmable_contract_row(result: Any) -> bool:
+    """True for the ① insufficient_evidence row we persist on ack-lost miss."""
+    if contract_status_value(result) != ExperimentValidityStatus.INSUFFICIENT_EVIDENCE.value:
+        return False
+    notes = str(getattr(result, "notes", "") or "")
+    return notes.startswith(INCOMPLETE_NOTE_PREFIX)
+
+
+def keep_failed_recovery_semantics(result: Any, exc: BaseException | None = None) -> bool:
+    """Fact-check reuse must not turn a failed/BenchmarkError row into success."""
+    if result is not None and (
+        is_failed_contract_row(result) or is_unconfirmable_contract_row(result)
+    ):
+        return True
+    if (
+        exc is not None
+        and type(exc).__name__ == "BenchmarkError"
+        and getattr(exc, "result", None) is not None
+    ):
+        return True
+    return False
 
 
 def contract_status_value(result: Any) -> str:
@@ -130,6 +172,7 @@ def unconfirmable_contract_result(
     stay None. No GPU numbers.
     """
     requested = config_knobs(config)
+    notes = reason if reason.startswith(INCOMPLETE_NOTE_PREFIX) else f"{INCOMPLETE_NOTE_PREFIX} {reason}"
     status = derive_status(
         failed=False,
         evidence=None,
@@ -156,7 +199,7 @@ def unconfirmable_contract_result(
         actual_config=None,
         config_evidence=None,
         status=status,
-        notes=reason,
+        notes=notes,
     )
 
 
@@ -168,7 +211,11 @@ def trajectory_audit_fields(
     stop_reason: str = "",
     retry_count: int | None = None,
 ) -> dict[str, Any]:
-    """Auditable retry / budget / stop fields for executor + Reflect steps."""
+    """Auditable retry / budget / stop fields for executor + Reflect steps.
+
+    Planner steps do not carry these fields (planner does not consume budget
+    or decide stop / remasure). See ``reports/week3_interrupt_recovery.md``.
+    """
     if retry_count is None:
         retry_count = int((state or {}).get("remeasure_count") or 0)
     return {
