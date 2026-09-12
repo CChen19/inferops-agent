@@ -272,7 +272,24 @@ def stop_port_occupant(host: str, port: int, timeout_s: float = 15.0) -> StopOcc
 
     Returns whether something is still listening afterward. Callers MUST treat
     `still_listening=True` as stop failure and must not mark the run valid.
+
+    Deterministic injection (GPU checklist): set INFEROPS_SIMULATE_STOP_FAILURE=1
+    to report still_listening without relying on VRAM / permissions tricks.
     """
+    if os.getenv("INFEROPS_SIMULATE_STOP_FAILURE", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        pid = probe_listener_pid(host, port)
+        return StopOccupantResult(
+            previous_pid=pid,
+            stop_attempted=True,
+            still_listening=True,
+            listener_pid_after=pid,
+        )
+
     pid = probe_listener_pid(host, port)
     if pid is None:
         # No PID — if still healthy, treat as unknown occupant (stop failed).

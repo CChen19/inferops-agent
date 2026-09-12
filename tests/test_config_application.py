@@ -670,7 +670,7 @@ def test_managed_start_evidence_includes_generation():
 def test_run_benchmark_persists_failed_row(monkeypatch, config, tmp_db):
     """Failed-row persistence is via run_benchmark (and executor), not raw run_experiment."""
     from inferops.tools import run_benchmark as rb
-    from inferops.schemas import ExperimentResult
+    from inferops.schemas import ExperimentResult, empty_latency
 
     failed = ExperimentResult(
         experiment_id="fail_persist",
@@ -680,9 +680,9 @@ def test_run_benchmark_persists_failed_row(monkeypatch, config, tmp_db):
         total_time_s=0.0,
         throughput_rps=0.0,
         tokens_per_second=0.0,
-        ttft=__import__("inferops.schemas", fromlist=["empty_latency"]).empty_latency(),
-        tpot=__import__("inferops.schemas", fromlist=["empty_latency"]).empty_latency(),
-        e2e_latency=__import__("inferops.schemas", fromlist=["empty_latency"]).empty_latency(),
+        ttft=empty_latency(),
+        tpot=empty_latency(),
+        e2e_latency=empty_latency(),
         run_id="deadbeefdeadbeefdeadbeefdeadbeef",
         status=ExperimentValidityStatus.FAILED,
         notes="oom",
@@ -710,3 +710,187 @@ def test_run_benchmark_persists_failed_row(monkeypatch, config, tmp_db):
         )
     assert saved["result"].run_id == failed.run_id
     assert saved["result"].status == ExperimentValidityStatus.FAILED
+
+
+def test_live_identity_probe_written_while_child_alive(monkeypatch, config, tmp_path):
+    """pid_equality progress + live_identity_*.json emitted before teardown."""
+    _patch_common(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        bench_runner,
+        "probe_live_instance",
+        lambda *a, **k: LiveProbe(healthy=False),
+    )
+    monkeypatch.setattr(bench_runner, "assert_listener_bound_to_child", lambda **k: 77)
+
+    class AliveProc:
+        def __init__(self, cfg, host="127.0.0.1", port=8000):
+            self.cfg = cfg
+            self.host = host
+            self.port = port
+            self.log_path = None
+            self.start_token = "tok"
+            self._pid = 77
+            self.launch_cmd = []
+
+        @property
+        def pid(self):
+            return self._pid
+
+        def identity(self):
+            return InstanceIdentity(
+                host=self.host, port=self.port, pid=self._pid, start_token=self.start_token
+            )
+
+        def start(self):
+            self.launch_cmd = vp._build_cmd(self.cfg, self.host, self.port)
+
+        def wait_ready_verbose(self, log_fn):
+            return True
+
+        def evidenced_actual_config(self):
+            return cli_evidenced_knobs(self.cfg)
+
+        def stop(self):
+            self._pid = None
+
+        def oom_in_log(self):
+            return False
+
+        def is_crashed(self):
+            return False
+
+    monkeypatch.setattr(bench_runner, "VLLMProcess", AliveProc)
+    progress: list[str] = []
+    result = bench_runner.run_experiment(config, ["p"], on_progress=progress.append)
+    eq = [p for p in progress if p.startswith("status:pid_equality:")]
+    assert eq == ["status:pid_equality:listener=77:child=77"]
+    probe = tmp_path / "logs" / f"live_identity_{config.experiment_id}.json"
+    assert probe.exists()
+    import json
+    data = json.loads(probe.read_text())
+    assert data["pids_equal"] is True
+    assert data["listener_pid"] == data["child_pid"] == 77
+    assert result.status == ExperimentValidityStatus.INSUFFICIENT_EVIDENCE
+
+
+def test_simulate_stop_failure_env(monkeypatch, config):
+    _patch_common(monkeypatch)
+    monkeypatch.setenv("INFEROPS_SIMULATE_STOP_FAILURE", "1")
+    old = InstanceIdentity(host="127.0.0.1", port=8000, pid=50, source="proc_probe")
+    monkeypatch.setattr(
+        bench_runner,
+        "probe_live_instance",
+        lambda *a, **k: LiveProbe(
+            healthy=True, identity=old, observed_knobs={"max_num_seqs": 1}
+        ),
+    )
+    # Use real restart_after_stop path with mocked stop_port_occupant via env
+    started = {"n": 0}
+
+    class Proc:
+        def __init__(self, cfg, host="127.0.0.1", port=8000):
+            self.cfg = cfg
+            self.host = host
+            self.port = port
+            self.log_path = None
+            self.start_token = "t"
+            self._pid = None
+            self.last_stop_result = None
+
+        @property
+        def pid(self):
+            return self._pid
+
+        def identity(self):
+            return InstanceIdentity(
+                host=self.host, port=self.port, pid=self._pid, start_token=self.start_token
+            )
+
+        def restart_after_stop(self, **k):
+            # Delegate to real helper semantics: env forces still_listening
+            from inferops.tools.vllm_process import stop_port_occupant
+            result = stop_port_occupant(self.host, self.port)
+            self.last_stop_result = result
+            if not result.still_listening:
+                self.start()
+            return result
+
+        def start(self):
+            started["n"] += 1
+            self._pid = 99
+
+        def stop(self):
+            self._pid = None
+
+        def wait_ready_verbose(self, log_fn):
+            return True
+
+        def evidenced_actual_config(self):
+            return {}
+
+        def oom_in_log(self):
+            return False
+
+        def is_crashed(self):
+            return False
+
+    monkeypatch.setattr(bench_runner, "VLLMProcess", Proc)
+    with pytest.raises(bench_runner.BenchmarkError, match="Failed to stop") as ei:
+        bench_runner.run_experiment(config, ["p"])
+    assert started["n"] == 0
+    assert ei.value.result.status == ExperimentValidityStatus.FAILED
+
+
+def test_simulate_startup_identity_failure(monkeypatch, config):
+    _patch_common(monkeypatch)
+    monkeypatch.setenv("INFEROPS_SIMULATE_STARTUP_FAILURE", "identity")
+    monkeypatch.setattr(
+        bench_runner,
+        "probe_live_instance",
+        lambda *a, **k: LiveProbe(healthy=False),
+    )
+    monkeypatch.setattr(bench_runner, "assert_listener_bound_to_child", lambda **k: 5)
+    stopped = {"n": 0}
+
+    class Proc:
+        def __init__(self, cfg, host="127.0.0.1", port=8000):
+            self.cfg = cfg
+            self.host = host
+            self.port = port
+            self.log_path = None
+            self.start_token = "t"
+            self._pid = 5
+
+        @property
+        def pid(self):
+            return self._pid
+
+        def identity(self):
+            return InstanceIdentity(
+                host=self.host, port=self.port, pid=self._pid, start_token=self.start_token
+            )
+
+        def start(self):
+            return None
+
+        def wait_ready_verbose(self, log_fn):
+            return True
+
+        def stop(self):
+            stopped["n"] += 1
+            self._pid = None
+
+        def evidenced_actual_config(self):
+            return {}
+
+        def oom_in_log(self):
+            return False
+
+        def is_crashed(self):
+            return False
+
+    monkeypatch.setattr(bench_runner, "VLLMProcess", Proc)
+    with pytest.raises(bench_runner.BenchmarkError, match="SIMULATE_STARTUP_FAILURE=identity"):
+        bench_runner.run_experiment(config, ["p"])
+    assert stopped["n"] >= 1
