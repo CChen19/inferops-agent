@@ -41,6 +41,10 @@ No parallel metrics schema. Generic exceptions do **not** invent
 `current_attempt_latest()` only treats `summaries[-1]` as current when
 `result_persisted` and `experiment_id` match this attempt.
 
+Last-slot budget (`experiments_remaining==0`) is judged **after**
+validity / SLO. `would_promote` / `is_confirmed_promotable` alone cannot
+bypass a high or missing `error_rate`.
+
 ## Checkpoint boundaries
 
 Production `run_agent` compiles with `MemorySaver` and a stable
@@ -68,7 +72,7 @@ Eval / `build_graph(llm)` without a checkpointer stays config-free
 |---|---|---|---|
 | Propose reject / generic propose error | Not consumed | No (`retryable=False`) | n/a |
 | Generic exception / `BenchmarkError` | −1 | No | Budget / streak |
-| Confirmation campaign (success **or** fail) | −1 once per attempt | Fail: remasure only if `remeasure_count < MAX_REMEASURES` **and** budget remains | `MAX_REMEASURES` (= ⑤ `DEFAULT_MIN_PAIRS`) and budget — **no infinite loop**; last-slot confirm can still promote then stop |
+| Confirmation campaign (success **or** fail) | −1 once per attempt | Fail: remasure only if `remeasure_count < MAX_REMEASURES` **and** budget remains | `MAX_REMEASURES` (= ⑤ `DEFAULT_MIN_PAIRS`) and budget — **no infinite loop**; last-slot confirm may promote **only after** validity + SLO (high / missing `error_rate` never promotes) |
 
 Reflect re-validates `retryable`. Leaving remasure still clears ⑤ bind
 (`clear_confirmation_fields`). Cross-candidate confirmation cannot
@@ -93,6 +97,8 @@ survive a failure or a new hyp.
 - `test_confirm_persist_then_crash_reuses_slots_budget_once`
 - `test_successful_confirm_promotes_and_consumes_budget_once`
 - `test_successful_confirm_on_last_budget_slot_still_promotes`
+- `test_last_budget_slot_high_error_rate_does_not_promote`
+- `test_last_budget_slot_missing_error_rate_does_not_promote`
 - `test_generic_propose_tool_error_emits_recovery_no_forge`
 - `test_graphinterrupt_is_reraised_not_swallowed`
 
@@ -103,7 +109,7 @@ pytest -q
 ```
 
 ```text
-348 passed in 13.38s
+350 passed in 13.76s
 ```
 
 Fixture / CPU only. GPU was not run in this environment — **GPU-not-run ≠ pass**.

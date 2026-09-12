@@ -373,26 +373,7 @@ def conclude_experiment(
             cited_run_ids=run_ids,
         )
 
-    # 1. Budget. A confirmation that already ran on the last slot may still
-    # promote — consuming budget must not hide a completed confirm.
-    if budget <= 0:
-        if would_promote:
-            return _done(
-                "stop",
-                stop=True,
-                stop_reason="budget_exhausted",
-                streak=0,
-                promote=True,
-                reason="confirmed_promotable",
-            )
-        return _done(
-            "stop",
-            stop=True,
-            stop_reason="budget_exhausted",
-            reason="experiments_remaining<=0",
-        )
-
-    # 2. Duplicate candidate (executor skip or repeated (param, value))
+    # 1. Duplicate candidate (executor skip or repeated (param, value))
     if duplicate:
         return _done(
             "continue",
@@ -400,7 +381,7 @@ def conclude_experiment(
             reason="duplicate_candidate",
         )
 
-    # 2b. This-attempt failure — never read a prior success summary as current.
+    # 2. This-attempt failure — never read a prior success summary as current.
     # Confirmation-slot failures may remasure only while under remasure/budget cap.
     if this_attempt_failed:
         retryable = (
@@ -482,6 +463,25 @@ def conclude_experiment(
             stop=False,
             streak=streak,
             reason="slo_breach",
+        )
+
+    # 4b. Budget — only after fail-closed validity / SLO. A last-slot
+    # confirmation may still promote; SLO / validity cannot be skipped.
+    if budget <= 0:
+        if would_promote:
+            return _done(
+                "stop",
+                stop=True,
+                stop_reason="budget_exhausted",
+                streak=0,
+                promote=True,
+                reason="confirmed_promotable",
+            )
+        return _done(
+            "stop",
+            stop=True,
+            stop_reason="budget_exhausted",
+            reason="experiments_remaining<=0",
         )
 
     # 5. Confirmation (⑤) when a decision exists

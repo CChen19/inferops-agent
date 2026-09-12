@@ -28,7 +28,13 @@ from inferops.agent.recovery import (
     recovery_event,
 )
 from inferops.agent.reflect_constraints import MAX_REMEASURES
-from inferops.metrics import DEFAULT_MIN_PAIRS, RepeatArm, RepeatPhase, is_confirmed_promotable
+from inferops.metrics import (
+    DEFAULT_MIN_PAIRS,
+    RepeatArm,
+    RepeatPhase,
+    is_confirmed_promotable,
+    verdict_from_ledgers,
+)
 from inferops.agent.reflector import reflector_node
 from inferops.agent.state import initial_state
 from inferops.bench_runner import BenchmarkError, OOMError
@@ -42,7 +48,7 @@ from tests.test_constrained_reflect import (
     _summary,
     _tool_boundary_store,
 )
-from tests.test_repeat_confirmation import CONDITIONS, make_rps_ledger
+from tests.test_repeat_confirmation import CONDITIONS, _n_ledgers, make_rps_ledger
 
 
 def _assert_recovery_contract(event: dict) -> None:
@@ -746,6 +752,56 @@ def test_successful_confirm_on_last_budget_slot_still_promotes(result_b):
     assert refl["best_summary"].get("confirmed_promotable") is True
     assert refl["trajectory"][-1]["result"]["promoted_to_best"] is True
     assert refl["best_summary"].get("experiment_id") != "sess_baseline"
+
+
+def _last_slot_confirmed_state(result_b, *, error_rate):
+    """⑤-confirmed, Week-1-promotable candidate on the last budget slot."""
+    cands = _n_ledgers("slo0c", 2.4, 3)
+    bases = _n_ledgers("slo0b", 2.0, 3)
+    decision = verdict_from_ledgers(bases, cands, phase=RepeatPhase.CONFIRMATION)
+    last = result_b.model_copy(update={"run_id": cands[-1].run_id, "error_rate": 0.0})
+    assert is_promotable(last) is True
+    assert is_confirmed_promotable(last, decision) is True
+    state = _state_with_candidate(run_id=last.run_id, error_rate=error_rate)
+    state["experiments_remaining"] = 0
+    state["last_result"] = last
+    state["confirmation_decision"] = decision
+    state["confirmation_bound_run_ids"] = [lg.run_id for lg in cands]
+    state["confirmation_target"] = {
+        "param": "max_num_batched_tokens",
+        "value": "4096",
+    }
+    state["repeat_ledgers"] = {
+        "baseline": bases,
+        "candidate": cands,
+        "phase": RepeatPhase.CONFIRMATION,
+        "metric": "throughput_rps",
+        "min_pairs": 3,
+    }
+    return state
+
+
+def test_last_budget_slot_high_error_rate_does_not_promote(result_b):
+    """remaining==0 + error_rate over SLO must not promote via would_promote."""
+    state = _last_slot_confirmed_state(result_b, error_rate=0.40)
+    refl = reflector_node(state)
+    step = refl["trajectory"][-1]
+    assert step["constraint_checks"]["slo_ok"] is False
+    assert step["result"]["promoted_to_best"] is False
+    assert refl["best_summary"]["experiment_id"] == "sess_baseline"
+    assert refl["best_summary"].get("confirmed_promotable") is not True
+
+
+def test_last_budget_slot_missing_error_rate_does_not_promote(result_b):
+    """remaining==0 + missing error_rate must not promote (fail-closed SLO)."""
+    state = _last_slot_confirmed_state(result_b, error_rate=None)
+    refl = reflector_node(state)
+    step = refl["trajectory"][-1]
+    assert step["constraint_checks"]["slo_ok"] is False
+    assert step["constraint_checks"]["slo"]["reason"] == "error_rate_missing_fail_closed"
+    assert step["result"]["promoted_to_best"] is False
+    assert refl["best_summary"]["experiment_id"] == "sess_baseline"
+    assert refl["best_summary"].get("confirmed_promotable") is not True
 
 
 # ---------------------------------------------------------------------------
