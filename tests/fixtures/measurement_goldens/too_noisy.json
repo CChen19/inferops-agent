@@ -1,0 +1,37 @@
+{
+  "id": "too_noisy",
+  "rule": "pair disagreement is too_noisy, not a confirm",
+  "kind": "confirmation+reflect",
+  "synthetic": true,
+  "gpu_sampled": false,
+  "description": "Interleaved confirmation pairs that disagree stay too_noisy. Reflect remasures under the cap. Not promotable.",
+  "metric": "throughput_rps",
+  "phase": "confirmation",
+  "min_pairs": 3,
+  "pairs": [
+    {
+      "baseline": {"run_id": "tnb_00", "rps": 2.0, "n_success": 10},
+      "candidate": {"run_id": "tnc_00", "rps": 3.0, "n_success": 10}
+    },
+    {
+      "baseline": {"run_id": "tnb_01", "rps": 2.0, "n_success": 10},
+      "candidate": {"run_id": "tnc_01", "rps": 1.2, "n_success": 10}
+    },
+    {
+      "baseline": {"run_id": "tnb_02", "rps": 2.0, "n_success": 10},
+      "candidate": {"run_id": "tnc_02", "rps": 2.6, "n_success": 10}
+    }
+  ],
+  "expect": {
+    "verdict": "too_noisy",
+    "numeric_signal": "too_noisy",
+    "search_winner": false,
+    "reason": "pair_disagreement",
+    "confirmed_promotable": false,
+    "reflect": {
+      "next_action": "remeasure",
+      "stop_reason": "",
+      "promote": false
+    }
+  }
+}

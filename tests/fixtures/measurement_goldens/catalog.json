@@ -1,0 +1,13 @@
+{
+  "schema": "inferops.measurement_goldens.v1",
+  "cpu_only": true,
+  "gpu_queued": false,
+  "required_ids": [
+    "missing_requests",
+    "failures_not_dropped",
+    "tpot_na",
+    "search_win_unconfirmed",
+    "too_noisy",
+    "no_reliable_improvement"
+  ]
+}

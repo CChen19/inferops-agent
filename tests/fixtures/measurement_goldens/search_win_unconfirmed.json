@@ -1,0 +1,29 @@
+{
+  "id": "search_win_unconfirmed",
+  "rule": "search≠confirmed",
+  "kind": "confirmation+reflect",
+  "synthetic": true,
+  "gpu_sampled": false,
+  "description": "A lucky search-phase +50% pair is a search winner only. It cannot mint confirmed_improvement or pass is_confirmed_promotable. Reflect queues remasure.",
+  "metric": "throughput_rps",
+  "phase": "search",
+  "min_pairs": 1,
+  "pairs": [
+    {
+      "baseline": {"run_id": "swb_00", "rps": 2.0, "n_success": 10},
+      "candidate": {"run_id": "swc_00", "rps": 3.0, "n_success": 10}
+    }
+  ],
+  "expect": {
+    "numeric_signal": "improvement",
+    "search_winner": true,
+    "verdict": "no_diff",
+    "reason": "search_phase_unconfirmed",
+    "confirmed_promotable": false,
+    "reflect": {
+      "next_action": "remeasure",
+      "stop_reason": "",
+      "promote": false
+    }
+  }
+}

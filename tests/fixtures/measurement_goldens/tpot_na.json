@@ -1,0 +1,73 @@
+{
+  "id": "tpot_na",
+  "rule": "TPOT N/A for zero/single output token and missing provenance — never 0",
+  "kind": "ledger",
+  "synthetic": true,
+  "gpu_sampled": false,
+  "description": "Zero-token, single-token, and token_count_source=missing rows cannot produce TPOT=0 or tok/s.",
+  "ledgers": [
+    {
+      "role": "tpot_na_rows",
+      "run_id": "tpot_na",
+      "window_start_s": 0.0,
+      "window_end_s": 3.0,
+      "records": [
+        {
+          "request_id": "zero-out",
+          "t_start_s": 0.0,
+          "t_first_token_s": null,
+          "t_end_s": 0.5,
+          "output_tokens": 0,
+          "input_tokens": 8,
+          "token_count_source": "usage",
+          "outcome": "fail",
+          "termination_reason": "zero_output"
+        },
+        {
+          "request_id": "single-out",
+          "t_start_s": 1.0,
+          "t_first_token_s": 1.1,
+          "t_end_s": 1.2,
+          "output_tokens": 1,
+          "input_tokens": 8,
+          "token_count_source": "usage",
+          "outcome": "success",
+          "termination_reason": "stop"
+        },
+        {
+          "request_id": "missing-provenance",
+          "t_start_s": 2.0,
+          "t_first_token_s": 2.1,
+          "t_end_s": 2.5,
+          "output_tokens": 20,
+          "input_tokens": 8,
+          "token_count_source": "missing",
+          "outcome": "success",
+          "termination_reason": "stop"
+        }
+      ]
+    }
+  ],
+  "tpot_checks": [
+    {"e2e_ms": 200.0, "ttft_ms": 100.0, "output_tokens": 0, "token_count_source": "usage", "tpot_ms": null},
+    {"e2e_ms": 200.0, "ttft_ms": 100.0, "output_tokens": 1, "token_count_source": "usage", "tpot_ms": null},
+    {"e2e_ms": 400.0, "ttft_ms": 100.0, "output_tokens": 20, "token_count_source": "missing", "tpot_ms": null}
+  ],
+  "expect": {
+    "aggregates": {
+      "tpot_na_rows": {
+        "total_requests": 3,
+        "successful_requests": 2,
+        "failed_requests": 1,
+        "tpot_p50": null,
+        "tpot_sample_n": 0,
+        "tokens_per_second": null,
+        "total_output_tokens": null,
+        "gpu_utilization_pct": null
+      }
+    },
+    "tpot_never_zero": true,
+    "null_must_not_become_zero": ["tpot_p50", "tokens_per_second"],
+    "confirmed_promotable": false
+  }
+}

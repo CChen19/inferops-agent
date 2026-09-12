@@ -1,0 +1,37 @@
+{
+  "id": "no_reliable_improvement",
+  "rule": "⑤ no_diff is first-class no_reliable_improvement — not a promote",
+  "kind": "confirmation+reflect",
+  "synthetic": true,
+  "gpu_sampled": false,
+  "description": "Confirmation-phase +2% stays no_diff. Reflect consumes ⑥ conclude_experiment and stops with no_reliable_improvement. Does not redefine Reflect.",
+  "metric": "throughput_rps",
+  "phase": "confirmation",
+  "min_pairs": 3,
+  "pairs": [
+    {
+      "baseline": {"run_id": "nrb_00", "rps": 2.0, "n_success": 10},
+      "candidate": {"run_id": "nrc_00", "rps": 2.04, "n_success": 10}
+    },
+    {
+      "baseline": {"run_id": "nrb_01", "rps": 2.0, "n_success": 10},
+      "candidate": {"run_id": "nrc_01", "rps": 2.04, "n_success": 10}
+    },
+    {
+      "baseline": {"run_id": "nrb_02", "rps": 2.0, "n_success": 10},
+      "candidate": {"run_id": "nrc_02", "rps": 2.04, "n_success": 10}
+    }
+  ],
+  "expect": {
+    "verdict": "no_diff",
+    "numeric_signal": "no_diff",
+    "search_winner": false,
+    "reason": "median_within_threshold",
+    "confirmed_promotable": false,
+    "reflect": {
+      "next_action": "stop",
+      "stop_reason": "no_reliable_improvement",
+      "promote": false
+    }
+  }
+}
