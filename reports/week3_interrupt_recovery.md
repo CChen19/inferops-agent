@@ -96,10 +96,11 @@ pytest -q
 ```
 
 ```text
-(pending full suite — fixture/CPU only; GPU-not-run ≠ pass)
+342 passed in 13.53s
 ```
 
-No real vLLM / GPU numbers are claimed in this environment.
+Fixture / CPU only. GPU was not run in this environment — **GPU-not-run ≠ pass**.
+No invented vLLM / GPU numbers.
 
 ## Out of scope
 
