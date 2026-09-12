@@ -2,22 +2,30 @@
 Top-level benchmark orchestrator.
 
 Flow per experiment:
-  1. Start vLLM subprocess with ExperimentConfig params
-  2. Wait for /health (with OOM / crash detection)
-  3. Start GPU monitor
-  4. Run async load (warmup + measure)
-  5. Stop GPU monitor
-  6. Stop vLLM subprocess
-  7. Build ExperimentResult
-  8. Log to MLflow
+  1. Decide managed vs external vLLM lifecycle
+  2. Managed: if live knobs differ / identity unknown → restart with requested CLI
+  3. Wait for /health, then bind readiness to NEW child PID (listener == child)
+  4. Start GPU monitor + load
+  5. Stop GPU monitor / managed process
+  6. Build ExperimentResult with contract evidence
+  7. Log to MLflow
+
+Week-1 item ②: healthy ≠ config applied. Never mark valid from health alone,
+config file alone, or performance delta alone.
+
+Complete-coverage (P0-①): managed `actual_config` is CLI-evidenced keys only;
+non-CLI requested knobs keep status at insufficient_evidence (not valid / not
+promotable) until they can be verified.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import time
 import uuid
+from pathlib import Path
 from typing import Callable
 
 from rich.console import Console
@@ -35,13 +43,18 @@ from inferops.schemas import (
     derive_status,
     empty_latency,
     external_unverified_evidence,
-    managed_cli_actual_config,
     managed_start_evidence,
     resolve_git_sha,
 )
 from inferops.tools.gpu_monitor import GPUMonitor
 from inferops.tools.traffic import extract_percentiles, run_load
-from inferops.tools.vllm_process import VLLMProcess
+from inferops.tools.vllm_process import (
+    VLLMProcess,
+    assert_listener_bound_to_child,
+    cli_evidenced_knobs,
+    knobs_match_requested,
+    probe_live_instance,
+)
 
 console = Console()
 
@@ -49,8 +62,52 @@ VLLM_HOST = os.getenv("VLLM_HOST", "127.0.0.1")
 VLLM_PORT = int(os.getenv("VLLM_PORT", "8000"))
 
 
+def _write_live_identity_probe(
+    *,
+    experiment_id: str,
+    listener_pid: int,
+    child_pid: int,
+    start_token: str | None,
+    instance_id: str,
+) -> Path:
+    """Write PID equality evidence while the managed child is still alive.
+
+    Captured *before* load/teardown so Chris can assert listener==child without
+    relying on post-hoc `ss` after `run_benchmark` has stopped the process.
+    """
+    log_dir = Path("logs")
+    log_dir.mkdir(exist_ok=True)
+    path = log_dir / f"live_identity_{experiment_id}.json"
+    payload = {
+        "experiment_id": experiment_id,
+        "listener_pid": listener_pid,
+        "child_pid": child_pid,
+        "pids_equal": listener_pid == child_pid,
+        "start_token": start_token,
+        "instance_id": instance_id,
+        "host": VLLM_HOST,
+        "port": VLLM_PORT,
+        "captured": "while_managed_child_alive_before_teardown",
+    }
+    path.write_text(json.dumps(payload, indent=2) + "\n")
+    return path
+
+
+def external_vllm_mode() -> bool:
+    """Explicit external / shared server mode (opt-in).
+
+    Health alone never selects this path — set INFEROPS_EXTERNAL_VLLM=1/true/yes.
+    """
+    return os.getenv("INFEROPS_EXTERNAL_VLLM", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
 class BenchmarkError(Exception):
-    """Benchmark failure. May carry a persisted failed ExperimentResult (P2-5)."""
+    """Benchmark failure. May carry a failed ExperimentResult (P2-5)."""
 
     def __init__(self, message: str, result: ExperimentResult | None = None):
         super().__init__(message)
@@ -117,6 +174,226 @@ def _run_load_with_cleanup_workaround(
     return result[0]
 
 
+def _ensure_managed_vllm(
+    cfg: ExperimentConfig,
+    requested_cli: dict,
+    *,
+    log: Callable[[str], None],
+    on_progress: Callable[[str], None] | None,
+) -> tuple[VLLMProcess, dict, object]:
+    """Start/restart managed vLLM and bind health to the new child identity.
+
+    Always terminates the spawned child before raising on failure so callers
+    never orphan a process when assignment has not yet completed.
+
+    Returns (proc, actual_config, evidence).
+    """
+    probe = probe_live_instance(VLLM_HOST, VLLM_PORT)
+    previous_identity = probe.identity if probe.healthy else None
+
+    if not probe.healthy:
+        reason = "fresh_start"
+    elif not knobs_match_requested(probe.observed_knobs, requested_cli):
+        reason = "healthy_knobs_differ_or_unknown"
+    elif previous_identity is None or previous_identity.pid is None:
+        reason = "healthy_identity_unknown"
+    else:
+        reason = "healthy_reapply_for_identity"
+
+    if on_progress:
+        on_progress(f"status:managed_lifecycle:{reason}")
+
+    proc = VLLMProcess(cfg, host=VLLM_HOST, port=VLLM_PORT)
+
+    def _abort(exc: Exception) -> None:
+        """Always kill the child we may have spawned, then re-raise."""
+        try:
+            proc.stop()
+        except Exception:
+            pass
+        raise exc
+
+    try:
+        if probe.healthy:
+            log(
+                f"Managed restart required ({reason}): stopping occupant on "
+                f"{VLLM_HOST}:{VLLM_PORT} and relaunching with requested CLI"
+            )
+            if on_progress:
+                on_progress("status:restarting_managed_vllm")
+            stop_result = proc.restart_after_stop(
+                previous_identity=previous_identity,
+                stop_occupant=True,
+            )
+            if stop_result.still_listening:
+                detail = (
+                    f"listener_pid_after={stop_result.listener_pid_after}"
+                    if stop_result.listener_pid_after is not None
+                    else "listener PID unknown"
+                )
+                _abort(
+                    BenchmarkError(
+                        "Failed to stop prior occupant before managed restart "
+                        f"({detail}) — refusing start; never valid"
+                    )
+                )
+            if proc.pid is None:
+                _abort(
+                    BenchmarkError(
+                        "Managed restart did not spawn a child after stop"
+                    )
+                )
+        else:
+            log(f"Starting vLLM ({cfg.model_name}) …")
+            if on_progress:
+                on_progress("status:starting_managed_vllm")
+            proc.start()
+            if proc.pid is None:
+                _abort(BenchmarkError("Managed start produced no child PID"))
+
+        if proc.log_path:
+            log(f"  vLLM log → {proc.log_path}")
+
+        # Deterministic startup-failure injection (GPU checklist) — BEFORE the
+        # long readiness wait so oom/timeout/identity paths are fast and do not
+        # depend on real /health success. Child is always stopped via _abort.
+        sim_fail = os.getenv("INFEROPS_SIMULATE_STARTUP_FAILURE", "").strip().lower()
+        if sim_fail == "oom":
+            if on_progress:
+                on_progress("status:failed:startup:simulated_oom")
+            _abort(
+                OOMError(
+                    f"INFEROPS_SIMULATE_STARTUP_FAILURE=oom — config: {cfg.experiment_id}"
+                )
+            )
+        if sim_fail == "timeout":
+            if on_progress:
+                on_progress("status:failed:startup:simulated_timeout")
+            _abort(
+                StartupTimeoutError(
+                    "INFEROPS_SIMULATE_STARTUP_FAILURE=timeout — skipping readiness wait"
+                )
+            )
+        if sim_fail == "identity":
+            if on_progress:
+                on_progress("status:failed:identity_bind:simulated")
+            _abort(
+                BenchmarkError(
+                    "INFEROPS_SIMULATE_STARTUP_FAILURE=identity — "
+                    "forced identity failure before readiness wait"
+                )
+            )
+
+        ready = proc.wait_ready_verbose(log)
+        if not ready:
+            if on_progress:
+                on_progress("status:failed:startup")
+            if proc.oom_in_log():
+                _abort(
+                    OOMError(f"vLLM OOM during startup — config: {cfg.experiment_id}")
+                )
+            if proc.is_crashed():
+                _abort(
+                    BenchmarkError(
+                        f"vLLM crashed (exit {proc.exit_code()}) — see {proc.log_path}"
+                    )
+                )
+            _abort(
+                StartupTimeoutError(
+                    f"vLLM not ready after startup timeout — see {proc.log_path}"
+                )
+            )
+
+        # Bind health to the NEW managed child — never trust a stale listener.
+        try:
+            bound_pid = assert_listener_bound_to_child(
+                host=VLLM_HOST,
+                port=VLLM_PORT,
+                child_pid=proc.pid,
+            )
+        except RuntimeError as exc:
+            if on_progress:
+                on_progress("status:failed:identity_bind")
+            _abort(BenchmarkError(str(exc)))
+
+        final_identity = proc.identity()
+        if final_identity.pid is None or not final_identity.start_token:
+            _abort(
+                BenchmarkError(
+                    "Managed start did not yield a verifiable instance identity "
+                    f"({final_identity.instance_id})"
+                )
+            )
+        if final_identity.pid != bound_pid:
+            _abort(
+                BenchmarkError(
+                    f"Identity PID {final_identity.pid} != bound listener {bound_pid}"
+                )
+            )
+
+        # Emit / persist PID equality WHILE the managed child is still alive
+        # (before load/teardown). Post-hoc `ss` after run_benchmark returns is useless.
+        equality_msg = (
+            f"status:pid_equality:listener={bound_pid}:child={final_identity.pid}"
+        )
+        log(equality_msg)  # also forwards to on_progress
+        _write_live_identity_probe(
+            experiment_id=cfg.experiment_id,
+            listener_pid=bound_pid,
+            child_pid=final_identity.pid,
+            start_token=final_identity.start_token,
+            instance_id=final_identity.instance_id,
+        )
+        # Optional hold so an operator can run `ss` in another shell before load.
+        hold_s = float(os.getenv("INFEROPS_PID_PROBE_HOLD_S", "0") or "0")
+        if hold_s > 0:
+            log(f"INFEROPS_PID_PROBE_HOLD_S={hold_s}: holding before load (child still up)")
+            time.sleep(hold_s)
+
+        if previous_identity is not None and previous_identity.pid is not None:
+            if final_identity.pid == previous_identity.pid:
+                _abort(
+                    BenchmarkError(
+                        "Instance identity PID did not change after managed restart "
+                        f"(still pid={final_identity.pid})"
+                    )
+                )
+            log(
+                f"Instance identity changed: "
+                f"{previous_identity.instance_id} → {final_identity.instance_id}"
+            )
+            if on_progress:
+                on_progress("status:identity_verified:changed")
+        elif on_progress:
+            on_progress(f"status:identity_verified:pid={bound_pid}")
+
+        # CLI-evidenced keys only (complete-coverage gate → insuff until non-CLI
+        # requested knobs are also verified).
+        actual = proc.evidenced_actual_config()
+        if not actual:
+            # Fall back to schema helper from requested CLI snapshot.
+            actual = dict(requested_cli)
+
+        evidence = managed_start_evidence(
+            process_pid=final_identity.pid,
+            host=VLLM_HOST,
+            port=VLLM_PORT,
+            observed_params=actual,
+            instance_id=final_identity.instance_id,
+            start_token=final_identity.start_token,
+            notes=(
+                f"Managed vLLM start/restart ({reason}); listener PID bound to "
+                f"child pid={bound_pid}; CLI knobs only in observed_params."
+            ),
+        )
+        return proc, actual, evidence
+    except BenchmarkError:
+        raise
+    except Exception as exc:
+        _abort(BenchmarkError(f"managed lifecycle error: {exc}"))
+        raise  # pragma: no cover
+
+
 def run_experiment(
     cfg: ExperimentConfig,
     prompts: list[str],
@@ -125,17 +402,17 @@ def run_experiment(
     session_id: str | None = None,
 ) -> ExperimentResult:
     """
-    Run one full experiment: start vLLM → benchmark → collect → stop.
+    Run one full experiment: ensure vLLM config applied → benchmark → collect.
 
-    On startup failure, builds a failed ExperimentResult (same run_id / MLflow
-    mapping), logs it, attaches it to the raised BenchmarkError, and re-raises
-    so callers can persist the attempt (P2-5).
+    On startup / identity failure, builds a failed ExperimentResult (same run_id),
+    logs it, attaches it to BenchmarkError, and re-raises so `run_benchmark` /
+    executor can persist the attempt (P2-5).
 
-    Contract status/evidence:
-      - Managed start: actual_config = CLI-evidenced keys only. Non-CLI requested
-        knobs keep status at insufficient_evidence until item ② verifies them.
-      - External healthy server: always insufficient_evidence.
-      - Zero successful requests: status=failed (never promotable).
+    Contract:
+      - Managed: restart when knobs differ / identity unknown; bind health to
+        new child PID; actual_config = CLI-evidenced keys only.
+      - External (INFEROPS_EXTERNAL_VLLM): insufficient_evidence, actual=null.
+      - Zero successful requests: status=failed.
     """
 
     def log(msg: str) -> None:
@@ -145,6 +422,7 @@ def run_experiment(
 
     init_mlflow(mlflow_experiment)
     requested = config_knobs(cfg)
+    requested_cli = cli_evidenced_knobs(cfg)
     code_sha = resolve_git_sha()
     run_id = uuid.uuid4().hex
     sess = session_id or cfg.tags.get("session_id") or cfg.tags.get("session_prefix")
@@ -157,17 +435,6 @@ def run_experiment(
         gpu_name=os.getenv("INFEROPS_GPU_NAME"),
         cuda_version=os.getenv("CUDA_VERSION"),
     )
-
-    # If vLLM is already running externally (e.g. via start_vllm.sh), skip
-    # lifecycle management and send traffic directly. This avoids port conflicts
-    # and removes the 15-second proc.stop() wait on every experiment.
-    _external = False
-    try:
-        import httpx as _httpx
-        _r = _httpx.get(f"http://{VLLM_HOST}:{VLLM_PORT}/health", timeout=2.0)
-        _external = _r.status_code == 200
-    except Exception:
-        pass
 
     tags = {
         **{k: str(v) for k, v in cfg.tags.items()},
@@ -220,8 +487,11 @@ def run_experiment(
         status = ExperimentValidityStatus.INSUFFICIENT_EVIDENCE
         mlflow_id = run.info.run_id
 
-        if _external:
-            log(f"Using external vLLM at {VLLM_HOST}:{VLLM_PORT} (skipping lifecycle)")
+        if external_vllm_mode():
+            log(
+                f"External vLLM mode (INFEROPS_EXTERNAL_VLLM) at "
+                f"{VLLM_HOST}:{VLLM_PORT} — not managing lifecycle"
+            )
             if on_progress:
                 on_progress("status:insufficient_evidence:external_health_only")
             evidence = external_unverified_evidence(host=VLLM_HOST, port=VLLM_PORT)
@@ -232,63 +502,34 @@ def run_experiment(
                 requested_config=requested,
             )
         else:
-            log(f"Starting vLLM ({cfg.model_name}) …")
-            if on_progress:
-                on_progress("status:starting_managed_vllm")
-            proc = VLLMProcess(cfg, host=VLLM_HOST, port=VLLM_PORT)
             try:
-                proc.start()
-            except Exception as exc:
-                if on_progress:
-                    on_progress("status:failed:start_exception")
-                failed = _failed_result(mlflow_id, f"vLLM start exception: {exc}")
-                log_experiment_result(failed)
-                raise BenchmarkError(str(exc), result=failed) from exc
-
-            if proc.log_path:
-                log(f"  vLLM log → {proc.log_path}")
-
-            ready = proc.wait_ready_verbose(log)
-            if not ready:
-                if on_progress:
-                    on_progress("status:failed:startup")
-                if proc.oom_in_log():
-                    reason = f"vLLM OOM during startup — config: {cfg.experiment_id}"
-                    failed = _failed_result(mlflow_id, reason)
-                    log_experiment_result(failed)
-                    proc.stop()
-                    raise OOMError(reason, result=failed)
-                if proc.is_crashed():
-                    reason = (
-                        f"vLLM crashed (exit {proc.exit_code()}) — see {proc.log_path}"
-                    )
-                    failed = _failed_result(mlflow_id, reason)
-                    log_experiment_result(failed)
-                    proc.stop()
-                    raise BenchmarkError(reason, result=failed)
-                reason = (
-                    f"vLLM not ready after startup timeout — see {proc.log_path}"
+                proc, actual, evidence = _ensure_managed_vllm(
+                    cfg,
+                    requested_cli,
+                    log=log,
+                    on_progress=on_progress,
                 )
+            except BenchmarkError as exc:
+                # Child already stopped inside _ensure_managed_vllm.
+                reason = str(exc)
+                if on_progress:
+                    on_progress("status:failed:startup_or_identity")
                 failed = _failed_result(mlflow_id, reason)
-                log_experiment_result(failed)
-                proc.stop()
-                raise StartupTimeoutError(reason, result=failed)
+                try:
+                    log_experiment_result(failed)
+                except Exception:
+                    pass
+                exc.result = failed
+                raise
 
-            pid = proc._proc.pid if proc._proc is not None else None
-            # P1-1: only CLI-evidenced keys — never copy full requested → actual
-            actual = managed_cli_actual_config(requested)
-            evidence = managed_start_evidence(
-                process_pid=pid,
-                host=VLLM_HOST,
-                port=VLLM_PORT,
-                observed_params=actual,
-            )
             status = derive_status(
                 evidence=evidence,
                 actual_config=actual,
                 requested_config=requested,
             )
-            if on_progress:
+            if status == ExperimentValidityStatus.INVALID and on_progress:
+                on_progress("status:invalid:knob_mismatch")
+            elif on_progress:
                 on_progress(f"status:{status.value}:managed_process_start")
 
         log("vLLM ready. Starting GPU monitor + load …")
@@ -315,12 +556,10 @@ def run_experiment(
 
         assert load is not None and gpu_summary is not None
 
-        # Build result
         ttft_p = extract_percentiles(load.ttft_ms)
         e2e_p = extract_percentiles(load.e2e_ms)
         tpot_p = {k: max(0.0, e2e_p[k] - ttft_p[k]) for k in ttft_p}
 
-        # P1-4: re-derive status after workload — zero successes → failed
         status = derive_status(
             evidence=evidence,
             actual_config=actual,
