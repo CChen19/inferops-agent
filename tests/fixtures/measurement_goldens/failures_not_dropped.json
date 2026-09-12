@@ -1,0 +1,97 @@
+{
+  "id": "failures_not_dropped",
+  "rule": "failures stay in the error denominator; incomplete≠success",
+  "kind": "ledger",
+  "synthetic": true,
+  "gpu_sampled": false,
+  "description": "fail / timeout / cancel / incomplete stay in the error numerator and the measured denominator. Incomplete is never packaged as success.",
+  "ledgers": [
+    {
+      "role": "mixed_errors",
+      "run_id": "fail_denom",
+      "window_start_s": 1000.0,
+      "window_end_s": 1010.0,
+      "records": [
+        {
+          "request_id": "req-success",
+          "t_start_s": 1000.0,
+          "t_first_token_s": 1000.1,
+          "t_end_s": 1001.1,
+          "output_tokens": 11,
+          "input_tokens": 10,
+          "token_count_source": "usage",
+          "outcome": "success",
+          "termination_reason": "stop"
+        },
+        {
+          "request_id": "req-fail",
+          "t_start_s": 1001.0,
+          "t_first_token_s": null,
+          "t_end_s": 1001.5,
+          "output_tokens": 0,
+          "input_tokens": 10,
+          "token_count_source": "usage",
+          "outcome": "fail",
+          "termination_reason": "error",
+          "error": "HTTP 500"
+        },
+        {
+          "request_id": "req-timeout",
+          "t_start_s": 1002.0,
+          "t_first_token_s": null,
+          "t_end_s": 1004.0,
+          "output_tokens": 0,
+          "input_tokens": 10,
+          "token_count_source": "usage",
+          "outcome": "timeout",
+          "termination_reason": "timeout",
+          "error": "timeout"
+        },
+        {
+          "request_id": "req-cancel",
+          "t_start_s": 1004.0,
+          "t_first_token_s": null,
+          "t_end_s": 1004.2,
+          "output_tokens": 0,
+          "input_tokens": 10,
+          "token_count_source": "usage",
+          "outcome": "cancel",
+          "termination_reason": "cancel",
+          "error": "cancelled"
+        },
+        {
+          "request_id": "req-incomplete",
+          "t_start_s": 1005.0,
+          "t_first_token_s": null,
+          "t_end_s": 1005.1,
+          "output_tokens": 0,
+          "input_tokens": 10,
+          "token_count_source": "usage",
+          "outcome": "incomplete",
+          "termination_reason": "incomplete",
+          "error": "lost"
+        }
+      ]
+    }
+  ],
+  "expect": {
+    "aggregates": {
+      "mixed_errors": {
+        "total_requests": 5,
+        "successful_requests": 1,
+        "failed_requests": 4,
+        "error_rate": 0.8,
+        "throughput_rps": 0.1,
+        "outcome_counts": {
+          "success": 1,
+          "fail": 1,
+          "timeout": 1,
+          "cancel": 1,
+          "incomplete": 1
+        }
+      }
+    },
+    "incomplete_is_not_success": true,
+    "confirmed_promotable": false
+  }
+}

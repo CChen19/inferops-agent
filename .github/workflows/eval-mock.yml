@@ -22,6 +22,9 @@ jobs:
       - name: Run unit tests (includes deterministic real-graph / fake-LLM)
         run: .venv/bin/python -m pytest -q
 
+      - name: Measurement-trust golden gate (CPU/fixture; GPU-not-run ≠ pass)
+        run: .venv/bin/python scripts/run_measurement_goldens.py
+
       - name: Run mock eval harness + regression gate
         run: |
           .venv/bin/python scripts/run_eval.py \

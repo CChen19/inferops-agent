@@ -1,0 +1,105 @@
+{
+  "id": "missing_requests",
+  "rule": "missing≠0",
+  "kind": "ledger+confirm",
+  "synthetic": true,
+  "gpu_sampled": false,
+  "metric": "throughput_rps",
+  "phase": "confirmation",
+  "min_pairs": 3,
+  "description": "Empty / lost requests stay missing. None is not 0; token_count_source=missing cannot invent tok/s.",
+  "ledgers": [
+    {
+      "role": "empty",
+      "run_id": "miss_empty",
+      "window_start_s": null,
+      "window_end_s": null,
+      "records": []
+    },
+    {
+      "role": "lost_plus_unproven_tokens",
+      "run_id": "miss_lost",
+      "window_start_s": 1000.0,
+      "window_end_s": 1010.0,
+      "records": [
+        {
+          "request_id": "req-0001",
+          "t_start_s": 1000.0,
+          "t_first_token_s": 1000.1,
+          "t_end_s": 1001.1,
+          "output_tokens": 11,
+          "input_tokens": 10,
+          "token_count_source": "usage",
+          "outcome": "success",
+          "termination_reason": "stop"
+        },
+        {
+          "request_id": "req-missing",
+          "t_start_s": 1002.0,
+          "t_first_token_s": null,
+          "t_end_s": 1002.1,
+          "output_tokens": null,
+          "input_tokens": null,
+          "token_count_source": "missing",
+          "outcome": "incomplete",
+          "termination_reason": "incomplete",
+          "error": "lost"
+        },
+        {
+          "request_id": "req-unproven-tokens",
+          "t_start_s": 1003.0,
+          "t_first_token_s": 1003.05,
+          "t_end_s": 1003.25,
+          "output_tokens": 99,
+          "input_tokens": 10,
+          "token_count_source": "missing",
+          "outcome": "success",
+          "termination_reason": "stop"
+        }
+      ]
+    }
+  ],
+  "pairs": [
+    {"baseline": {"rps": null, "run_id": "miss_base_00"}, "candidate": {"rps": null, "run_id": "miss_cand_00"}},
+    {"baseline": {"rps": null, "run_id": "miss_base_01"}, "candidate": {"rps": null, "run_id": "miss_cand_01"}},
+    {"baseline": {"rps": null, "run_id": "miss_base_02"}, "candidate": {"rps": null, "run_id": "miss_cand_02"}}
+  ],
+  "expect": {
+    "aggregates": {
+      "empty": {
+        "total_requests": 0,
+        "successful_requests": 0,
+        "failed_requests": 0,
+        "error_rate": null,
+        "throughput_rps": null,
+        "tokens_per_second": null,
+        "tpot_p50": null,
+        "ttft_p50": null,
+        "gpu_utilization_pct": null,
+        "gpu_memory_used_gb": null,
+        "cost_usd": null
+      },
+      "lost_plus_unproven_tokens": {
+        "total_requests": 3,
+        "successful_requests": 2,
+        "failed_requests": 1,
+        "error_rate": 0.3333333333333333,
+        "tokens_per_second": null,
+        "tpot_sample_n": 1,
+        "gpu_utilization_pct": null
+      }
+    },
+    "null_must_not_become_zero": [
+      "error_rate",
+      "throughput_rps",
+      "tokens_per_second",
+      "tpot_p50",
+      "gpu_utilization_pct"
+    ],
+    "verdict": "too_noisy",
+    "numeric_signal": "too_noisy",
+    "search_winner": false,
+    "reason_contains": "missing_primary_metric",
+    "confirmed_promotable": false
+  }
+}
