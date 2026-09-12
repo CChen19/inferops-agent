@@ -11,9 +11,10 @@ unchanged and still required.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from enum import Enum
 from statistics import median
-from typing import Any, Callable, Literal
+from typing import Any
 
 from pydantic import BaseModel, Field, model_validator
 

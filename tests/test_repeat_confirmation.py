@@ -32,15 +32,14 @@ from inferops.metrics.ledger import (
     RequestOutcome,
     RequestRecord,
     RunConditions,
-    TokenCountSource,
     TerminationReason,
+    TokenCountSource,
 )
 from inferops.schemas import (
     ExperimentValidityStatus,
     derive_status,
     is_promotable,
 )
-
 
 CONDITIONS = RunConditions(
     workload_name="chat_short",
