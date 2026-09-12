@@ -219,10 +219,14 @@ class ConfirmationDecision(BaseModel):
         update: dict[str, Any] | None = None,
         deep: bool = False,
     ) -> ConfirmationDecision:
-        """Re-validate copies. `update` cannot keep `_origin` and forge a confirm."""
+        """Faithful no-update copies keep compute origin. Updates re-validate."""
+        if not update:
+            copied = super().model_copy(deep=deep)
+            object.__setattr__(copied, "_origin", self._origin)
+            object.__setattr__(copied, "_fingerprint", self._fingerprint)
+            return copied
         payload = self.model_dump()
-        if update:
-            payload.update(update)
+        payload.update(update)
         return ConfirmationDecision.model_validate(payload)
 
 
@@ -376,8 +380,12 @@ def interleave_schedule(
     return slots
 
 
+def _slot_key(slot: RepeatSlot) -> tuple[int, int, RepeatArm, RepeatPhase]:
+    return (slot.sequence_index, slot.pair_index, slot.arm, slot.phase)
+
+
 def require_interleaved_schedule(campaign: RepeatCampaign) -> None:
-    """Unique run_ids are not enough — the campaign must be B0 C0 B1 C1 …"""
+    """Unique run_ids are not enough — schedule must be B0 C0 … or C0 B0 …"""
     n_pairs = len(campaign.baseline_ledgers)
     if n_pairs != len(campaign.candidate_ledgers):
         raise ValueError(
@@ -389,27 +397,17 @@ def require_interleaved_schedule(campaign: RepeatCampaign) -> None:
         raise ValueError(
             "campaign.schedule is missing; refuse non-interleaved repeats"
         )
-    expected = interleave_schedule(n_pairs, phase=campaign.phase)
-    if len(campaign.schedule) != len(expected):
-        raise ValueError(
-            "campaign.schedule does not match interleave_schedule; "
-            "refuse non-interleaved repeats"
-        )
-    for slot, exp in zip(campaign.schedule, expected, strict=True):
-        if (
-            slot.sequence_index,
-            slot.pair_index,
-            slot.arm,
-            slot.phase,
-        ) != (
-            exp.sequence_index,
-            exp.pair_index,
-            exp.arm,
-            exp.phase,
-        ):
-            raise ValueError(
-                "campaign.schedule order/pairing does not match interleave_schedule"
-            )
+    legal = [
+        interleave_schedule(n_pairs, phase=campaign.phase, start_arm=arm)
+        for arm in (RepeatArm.BASELINE, RepeatArm.CANDIDATE)
+    ]
+    got = [_slot_key(s) for s in campaign.schedule]
+    if any(got == [_slot_key(s) for s in expected] for expected in legal):
+        return
+    raise ValueError(
+        "campaign.schedule order/pairing does not match interleave_schedule "
+        "(B0 C0 … or C0 B0 …)"
+    )
 
 
 def conditions_fingerprint(conditions: RunConditions) -> dict[str, Any]:

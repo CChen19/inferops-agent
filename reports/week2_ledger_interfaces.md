@@ -48,7 +48,7 @@ parallel metrics schemas.
 | `is_confirmed_promotable` | ⑤: `is_promotable` **and** confirmation-phase improvement |
 | `ConfirmationDecision` / `RepeatPhase` / `RepeatCampaign` | ⑤: search winner ≠ confirmed; hand-built confirm rejected |
 | `require_unique_repeat_identities` | ⑤: unique `run_id`s; same ledger ≠ two pairs |
-| `require_interleaved_schedule` | ⑤: schedule must be B0 C0 B1 C1 … (`interleave_schedule`) |
+| `require_interleaved_schedule` | ⑤: schedule must be B0 C0 … or C0 B0 … (`interleave_schedule`) |
 | `require_positive_bounds` | ⑤: `min_pairs > 0`, finite `min_rel_delta > 0` |
 
 Search-phase wins must not auto-promote. See

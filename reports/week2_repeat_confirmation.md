@@ -34,14 +34,15 @@ success. `token_count_source=missing` cannot drive TPOT or tok/s.
 Independent repeats, interleaved under the same `RunConditions`:
 
 ```text
-B0, C0, B1, C1, B2, C2, …
+B0, C0, B1, C1, B2, C2, …     # start_arm=baseline (default)
+C0, B0, C1, B1, C2, B2, …     # start_arm=candidate
 ```
 
 `interleave_schedule(n_pairs, phase=…)` / `run_interleaved_repeats(run_arm, …)`
 produce that order. A conditions mismatch raises — it is not a silent verdict.
 The same `RequestLedger` / `run_id` cannot count as multiple pairs
 (`require_unique_repeat_identities`). `evaluate_campaign` also requires
-`campaign.schedule` to match `interleave_schedule` (B0 C0 B1 C1 …).
+`campaign.schedule` to match `interleave_schedule` (B0 C0 … or C0 B0 …).
 `min_pairs` must be `> 0`. `min_rel_delta` must be finite and `> 0`.
 `ConfirmationDecision` is frozen; mutating a computed `too_noisy` /
 `no_diff` cannot pass `is_confirmed_promotable`.
@@ -133,7 +134,7 @@ pytest -q
 ```
 
 ```text
-278 passed in 16.42s
+280 passed in 15.79s
 ```
 
 No real vLLM / GPU numbers are claimed in this environment.

@@ -19,6 +19,7 @@ from inferops.metrics.confirm import (
     RepeatCampaign,
     RepeatPair,
     RepeatPhase,
+    RepeatSlot,
     conditions_match,
     evaluate_campaign,
     format_confirmation_report,
@@ -482,9 +483,16 @@ def test_evaluate_campaign_rejects_missing_or_wrong_schedule():
     with pytest.raises(ValueError, match="schedule is missing"):
         evaluate_campaign(missing)
 
-    wrong_slots = interleave_schedule(
-        3, phase=RepeatPhase.CONFIRMATION, start_arm=RepeatArm.CANDIDATE
-    )
+    # Blocked (all baselines then all candidates) — not interleaved.
+    wrong_slots = [
+        RepeatSlot(
+            sequence_index=i,
+            pair_index=i % 3,
+            arm=RepeatArm.BASELINE if i < 3 else RepeatArm.CANDIDATE,
+            phase=RepeatPhase.CONFIRMATION,
+        )
+        for i in range(6)
+    ]
     with pytest.raises(ValidationError, match="interleave|order/pairing"):
         RepeatCampaign(
             phase=RepeatPhase.CONFIRMATION,
@@ -502,6 +510,49 @@ def test_evaluate_campaign_rejects_missing_or_wrong_schedule():
     )
     with pytest.raises(ValueError, match="order/pairing|interleave_schedule"):
         evaluate_campaign(wrong)
+
+
+def test_run_interleaved_repeats_candidate_first_evaluates(result_b):
+    """Public start_arm=CANDIDATE (C0 B0 …) must be a legal interleaved schedule."""
+
+    def run_arm(arm: RepeatArm, slot):
+        rps = 2.0 if arm == RepeatArm.BASELINE else 2.4
+        return make_rps_ledger(f"cfirst-{arm.value}-{slot.pair_index}", rps=rps)
+
+    campaign = run_interleaved_repeats(
+        run_arm,
+        n_pairs=3,
+        phase=RepeatPhase.CONFIRMATION,
+        expected_conditions=CONDITIONS,
+        start_arm=RepeatArm.CANDIDATE,
+    )
+    assert [s.arm for s in campaign.schedule] == [
+        RepeatArm.CANDIDATE,
+        RepeatArm.BASELINE,
+        RepeatArm.CANDIDATE,
+        RepeatArm.BASELINE,
+        RepeatArm.CANDIDATE,
+        RepeatArm.BASELINE,
+    ]
+    decision = evaluate_campaign(campaign, metric="throughput_rps")
+    assert decision.verdict == ConfirmationVerdict.CONFIRMED_IMPROVEMENT
+    assert is_confirmed_promotable(result_b, decision) is True
+
+
+def test_model_copy_of_computed_confirm_still_promotable(result_b):
+    """No-update copy of a legitimate confirm must still pass the gate."""
+    decision = verdict_from_ledgers(
+        _n_ledgers("cpb", 2.0, 3),
+        _n_ledgers("cpc", 2.4, 3),
+        phase=RepeatPhase.CONFIRMATION,
+    )
+    assert decision.verdict == ConfirmationVerdict.CONFIRMED_IMPROVEMENT
+    assert is_confirmed_promotable(result_b, decision) is True
+    copied = decision.model_copy()
+    assert copied is not decision
+    assert copied.verdict == ConfirmationVerdict.CONFIRMED_IMPROVEMENT
+    assert is_confirmed_promotable(result_b, copied) is True
+    assert is_confirmed_promotable(result_b, decision.model_copy(update=None)) is True
 
 
 # ---------------------------------------------------------------------------
