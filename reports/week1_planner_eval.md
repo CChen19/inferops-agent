@@ -38,9 +38,17 @@ Eval termination uses:
 
 ## LLM boundary labeling
 
-`llm_boundary` is derived from the actual LLM object (`eval_llm_boundary` /
-`ScriptedBottleneckLLM` → `fake_scripted`; otherwise `live` when mode is
-`real_graph_llm`, else `injected`) — not mode string alone.
+`llm_boundary` is derived from **trusted markers / known types only** — never
+from the mode string alone:
+
+| Signal | Label |
+|---|---|
+| `ScriptedBottleneckLLM` or `eval_llm_boundary="fake_scripted"` | `fake_scripted` |
+| Trusted live marker (`mark_live_llm` on real `make_llm(...)` → `eval_llm_boundary="live"`) | `live` |
+| Anything else unknown | `injected` |
+
+So an arbitrary injected object under `--real-llm` / `real_graph_llm` is
+`injected`, not `live`.
 
 ## CI wiring
 
@@ -63,7 +71,7 @@ Live `--real-llm` is **not** required in CI.
 | 5 | No-gain does not promote best | `test_no_gain_does_not_promote_best` — best stays baseline experiment_id |
 | 6 | Budget exhaustion `stop_reason` | `test_budget_exhaustion_sets_stop_reason` → `budget_exhausted` |
 | 7 | ① regression: unverified ≠ best | `test_unevidenced_high_score_not_promoted_to_best` — uses `is_promotable` / `is_promotable_summary`; asserts `stub.calls` nonempty |
-| 8 | Real LLM labeled; missing creds ≠ silent pass | `test_require_llm_credentials_fails_loudly`, `test_real_llm_mode_fails_without_credentials`, `test_run_eval_real_llm_missing_creds_exits_nonzero`, `test_llm_boundary_label_keys_off_actual_llm_not_mode_alone` |
+| 8 | Real LLM labeled; missing creds ≠ silent pass | `test_require_llm_credentials_fails_loudly`, `test_real_llm_mode_fails_without_credentials`, `test_run_eval_real_llm_missing_creds_exits_nonzero`, `test_llm_boundary_label_keys_off_actual_llm_not_mode_alone` (unknown→`injected`), `test_llm_boundary_live_requires_trusted_marker_or_make_llm_path` |
 | 9 | `pytest -q` green; mock still works; separate dirs; clean eval DB | Full suite; `test_run_eval_real_graph_writes_separate_dir`; `test_real_graph_defaults_to_temp_eval_db_not_production_memory`; `test_production_reflector_has_no_empty_plan_heuristic` |
 
 ## Implementation notes

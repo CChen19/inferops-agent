@@ -240,18 +240,33 @@ def test_real_graph_offline_report_labels(tmp_path):
 
 
 def test_llm_boundary_label_keys_off_actual_llm_not_mode_alone():
-    """Scripted LLM kept fake_scripted even if mode string says real_graph_llm."""
-    from inferops.eval.real_graph import _llm_boundary_label
+    """Unknown inject is never 'live'; only trusted marker / make_llm path is."""
+    from inferops.eval.real_graph import _llm_boundary_label, mark_live_llm
 
     fake = ScriptedBottleneckLLM()
     assert _llm_boundary_label(fake, MODE_REAL_GRAPH_LLM) == "fake_scripted"
     assert _llm_boundary_label(fake, MODE_REAL_GRAPH_OFFLINE) == "fake_scripted"
 
-    class Liveish:
+    class UnknownInjected:
         pass
 
-    assert _llm_boundary_label(Liveish(), MODE_REAL_GRAPH_LLM) == "live"
-    assert _llm_boundary_label(Liveish(), MODE_REAL_GRAPH_OFFLINE) == "injected"
+    # Mode alone must NOT promote unknowns to live
+    assert _llm_boundary_label(UnknownInjected(), MODE_REAL_GRAPH_LLM) == "injected"
+    assert _llm_boundary_label(UnknownInjected(), MODE_REAL_GRAPH_OFFLINE) == "injected"
+
+
+def test_llm_boundary_live_requires_trusted_marker_or_make_llm_path():
+    from inferops.eval.real_graph import _TrustedLiveLLM, _llm_boundary_label, mark_live_llm
+
+    class Dummy:
+        def invoke(self, messages):
+            return messages
+
+    marked = mark_live_llm(Dummy())
+    assert getattr(marked, "eval_llm_boundary") == "live"
+    assert _llm_boundary_label(marked, MODE_REAL_GRAPH_LLM) == "live"
+    assert _llm_boundary_label(marked, MODE_REAL_GRAPH_OFFLINE) == "live"
+    assert _llm_boundary_label(_TrustedLiveLLM(Dummy()), "") == "live"
 
 
 def test_real_graph_defaults_to_temp_eval_db_not_production_memory(tmp_path):

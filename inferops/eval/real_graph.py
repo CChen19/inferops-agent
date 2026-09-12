@@ -306,14 +306,45 @@ def _eval_scoped_reflector(state: dict) -> dict:
     return reflector_node(state)
 
 
-def _llm_boundary_label(llm: Any, mode: str) -> str:
-    """Label from the actual LLM object when possible, not mode alone."""
+def mark_live_llm(llm: Any) -> Any:
+    """Attach a trusted ``eval_llm_boundary='live'`` marker for eval labeling.
+
+    Used only for real ``make_llm(...)`` results (or explicit live adapters).
+    Unknown injected objects must NOT be labeled live.
+    """
+    try:
+        object.__setattr__(llm, "eval_llm_boundary", "live")
+        return llm
+    except Exception:
+        return _TrustedLiveLLM(llm)
+
+
+class _TrustedLiveLLM:
+    """Thin adapter that preserves invoke while carrying the live marker."""
+
+    eval_llm_boundary = "live"
+
+    def __init__(self, inner: Any) -> None:
+        object.__setattr__(self, "_inner", inner)
+
+    def invoke(self, *args: Any, **kwargs: Any) -> Any:
+        return self._inner.invoke(*args, **kwargs)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+
+def _llm_boundary_label(llm: Any, mode: str = "") -> str:
+    """Label from trusted markers / known fakes only — never mode alone.
+
+    - ``ScriptedBottleneckLLM`` / ``eval_llm_boundary='fake_scripted'`` → fake_scripted
+    - ``eval_llm_boundary='live'`` (set by ``mark_live_llm`` on real make_llm) → live
+    - everything else unknown → injected
+    """
     marked = getattr(llm, "eval_llm_boundary", None)
-    if marked:
-        return str(marked)
-    if isinstance(llm, ScriptedBottleneckLLM):
+    if marked == "fake_scripted" or isinstance(llm, ScriptedBottleneckLLM):
         return "fake_scripted"
-    if mode == MODE_REAL_GRAPH_LLM:
+    if marked == "live":
         return "live"
     return "injected"
 
@@ -707,7 +738,10 @@ def run_real_graph_eval(
         require_llm_credentials(llm_backend)
         if llm is None:
             from inferops.agent.graph import make_llm
-            llm = make_llm(backend=llm_backend, temperature=0.0)
+            llm = mark_live_llm(make_llm(backend=llm_backend, temperature=0.0))
+        else:
+            # Caller-supplied llm: only "live" if already trusted-marked.
+            pass
         # Hard cap: ≤1 workload, ≤2 planner calls worth of budget
         names = (workloads or ALL_WORKLOAD_NAMES)[:1]
         budget = min(budget, 3)  # baseline + ≤2 experiments
