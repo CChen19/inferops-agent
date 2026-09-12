@@ -1,6 +1,8 @@
-# Stable interfaces for item ⑤ (consumers)
+# Stable interfaces for items ④ / ⑤
 
-Item ⑤ (not this PR) should consume these names. Do not invent parallel schemas.
+④ is the ledger + recalculation surface. ⑤ consumes those names and adds
+repeat / confirmation types in `inferops.metrics.confirm`. Do not invent
+parallel metrics schemas.
 
 ## Identity
 
@@ -41,6 +43,13 @@ Item ⑤ (not this PR) should consume these names. Do not invent parallel schema
 | `persist_ledger` / `load_ledger` | JSON round-trip |
 | `ledger_from_result` | Rebuild ledger from a result |
 | `is_promotable` / `derive_status` | Week-1 gates — **do not loosen** |
+| `interleave_schedule` / `run_interleaved_repeats` | ⑤: independent B/C repeats, same `RunConditions` |
+| `verdict_from_ledgers` / `evaluate_campaign` | ⑤: `no_diff` / `regression` / `too_noisy` / `confirmed_improvement` |
+| `is_confirmed_promotable` | ⑤: `is_promotable` **and** confirmation-phase improvement |
+| `ConfirmationDecision` / `RepeatPhase` / `RepeatCampaign` | ⑤: search winner ≠ confirmed |
+
+Search-phase wins must not auto-promote. See
+[`week2_repeat_confirmation.md`](./week2_repeat_confirmation.md).
 
 ## Persistence
 
@@ -53,4 +62,5 @@ Item ⑤ (not this PR) should consume these names. Do not invent parallel schema
 - Treat `incomplete` / timeout / cancel as success.
 - Fill missing TTFT/TPOT/GPU/cost with `0`.
 - Promote `best` without `is_promotable`.
-- Invent a second `run_id`.
+- Treat a search-phase winner as `confirmed_improvement`.
+- Invent a second `run_id` or a second metrics/ledger schema.

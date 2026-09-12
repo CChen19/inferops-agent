@@ -1,11 +1,12 @@
-"""Benchmark metric definitions + recalculable per-request ledger (Week-2 P0-④).
+"""Benchmark metric definitions + recalculable per-request ledger (Week-2 P0-④/⑤).
 
-Public surface consumed by bench_runner, reports, MLflow, and (later) item ⑤:
+Public surface consumed by bench_runner, reports, MLflow, and item ⑤:
   - RequestRecord / RequestLedger / RunConditions
   - TerminationReason / RequestOutcome
   - AggregateMetrics / LatencyStat
   - compute_tpot_ms, recalculate_from_ledger, ledger_to_experiment_fields
   - persist_ledger / load_ledger
+  - interleave_schedule / verdict_from_ledgers / is_confirmed_promotable
 """
 
 from inferops.metrics.aggregate import (
@@ -15,6 +16,30 @@ from inferops.metrics.aggregate import (
     format_aggregate_report,
     ledger_to_experiment_fields,
     recalculate_from_ledger,
+)
+from inferops.metrics.confirm import (
+    CONFIRMABLE_METRICS,
+    DEFAULT_MIN_PAIRS,
+    DEFAULT_MIN_REL_DELTA,
+    ConfirmationDecision,
+    ConfirmationVerdict,
+    NumericSignal,
+    PairClass,
+    RepeatArm,
+    RepeatCampaign,
+    RepeatPhase,
+    RepeatSlot,
+    conditions_fingerprint,
+    conditions_match,
+    evaluate_campaign,
+    format_confirmation_report,
+    interleave_schedule,
+    is_confirmed_promotable,
+    primary_metric_value,
+    relative_delta,
+    require_same_conditions,
+    run_interleaved_repeats,
+    verdict_from_ledgers,
 )
 from inferops.metrics.definitions import (
     ERROR_OUTCOMES,
@@ -48,6 +73,9 @@ from inferops.metrics.report import (
 )
 
 __all__ = [
+    "CONFIRMABLE_METRICS",
+    "DEFAULT_MIN_PAIRS",
+    "DEFAULT_MIN_REL_DELTA",
     "ERROR_OUTCOMES",
     "LATENCY_SUCCESS_OUTCOMES",
     "TPOT_MIN_OUTPUT_TOKENS",
@@ -55,8 +83,16 @@ __all__ = [
     "TPOT_SAMPLE_SCOPE",
     "E2E_SAMPLE_SCOPE",
     "AggregateMetrics",
+    "ConfirmationDecision",
+    "ConfirmationVerdict",
     "LatencyStat",
     "LEDGER_SCHEMA_VERSION",
+    "NumericSignal",
+    "PairClass",
+    "RepeatArm",
+    "RepeatCampaign",
+    "RepeatPhase",
+    "RepeatSlot",
     "RequestLedger",
     "RequestOutcome",
     "RequestRecord",
@@ -65,7 +101,13 @@ __all__ = [
     "TerminationReason",
     "apply_aggregate_to_result_fields",
     "compute_tpot_ms",
+    "conditions_fingerprint",
+    "conditions_match",
+    "evaluate_campaign",
     "format_aggregate_report",
+    "format_confirmation_report",
+    "interleave_schedule",
+    "is_confirmed_promotable",
     "is_error_for_rate",
     "is_latency_eligible",
     "is_tpot_eligible",
@@ -75,7 +117,12 @@ __all__ = [
     "load_ledger",
     "percentile",
     "persist_ledger",
+    "primary_metric_value",
     "recalculate_from_ledger",
+    "relative_delta",
     "report_from_ledger",
     "report_from_result",
+    "require_same_conditions",
+    "run_interleaved_repeats",
+    "verdict_from_ledgers",
 ]

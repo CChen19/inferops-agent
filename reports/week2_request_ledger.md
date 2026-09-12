@@ -1,8 +1,9 @@
 # Week-2 P0-④: Benchmark metric definitions + request ledger
 
 Measurement trust only. Reuses Week-1 experiment contract (`run_id`, validity,
-promotable gate) and config evidence. Does **not** loosen ① gates. Does **not**
-implement ⑤ / ⑥ / ⑧.
+promotable gate) and config evidence. Does **not** loosen ① gates. Item ⑤
+(repeat / confirmation) consumes this ledger and does **not** invent a second
+schema. ⑥ / ⑧ remain out of scope here.
 
 Rules live in `inferops/metrics/` (schema + functions), not prose alone.
 
