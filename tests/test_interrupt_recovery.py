@@ -22,10 +22,15 @@ from inferops.agent.graph import (
     session_thread_id,
 )
 from inferops.agent.recovery import (
+    CODE_ACK_LOST,
     RECOVERY_FIELDS,
+    TRAJECTORY_AUDIT_FIELDS,
+    AckLostError,
     current_attempt_latest,
+    is_ack_lost,
     is_hard_control_exception,
     recovery_event,
+    unconfirmable_contract_result,
 )
 from inferops.agent.reflect_constraints import MAX_REMEASURES
 from inferops.metrics import (
@@ -864,3 +869,368 @@ def test_graphinterrupt_is_reraised_not_swallowed():
             executor_node(state)
 
     assert is_hard_control_exception(GraphInterrupt()) is True
+
+
+# ---------------------------------------------------------------------------
+# Residual P0: startup-ok / ack-lost fact-check + unconfirmable persist
+# ---------------------------------------------------------------------------
+
+def test_is_ack_lost_matches_receipt_and_ack_wording():
+    assert is_ack_lost(AckLostError("startup ok")) is True
+    assert is_ack_lost(RuntimeError("vLLM/startup succeeded but receipt/ack lost")) is True
+    assert is_ack_lost(BenchmarkError("receipt lost after persist")) is True
+    assert is_ack_lost(RuntimeError("bench exploded")) is False
+    assert is_ack_lost(KeyboardInterrupt("user")) is False
+
+
+def test_unconfirmable_row_uses_week1_insufficient_evidence(config):
+    from inferops.schemas import derive_status, is_promotable
+
+    row = unconfirmable_contract_result(
+        experiment_id="sess_max_num_batched_tokens_4096",
+        config=config.model_copy(update={"experiment_id": "sess_max_num_batched_tokens_4096"}),
+        session_id="sess_",
+        reason="incomplete: receipt/ack lost",
+    )
+    assert row.status == ExperimentValidityStatus.INSUFFICIENT_EVIDENCE
+    assert (
+        derive_status(
+            evidence=row.config_evidence,
+            actual_config=row.actual_config,
+            requested_config=row.requested_config,
+        )
+        == ExperimentValidityStatus.INSUFFICIENT_EVIDENCE
+    )
+    assert is_promotable(row) is False
+    assert row.gpu_utilization_pct is None
+    assert row.gpu_memory_used_gb is None
+    assert row.throughput_rps is None
+
+
+def test_ack_lost_reuses_persisted_row_no_second_benchmark(result_b):
+    """Startup-ok + ack lost: fact-check by id, reuse row, do not re-bench."""
+    store: dict[str, object] = {}
+    calls: list[str] = []
+    eid = "sess_max_num_batched_tokens_4096"
+    persisted = result_b.model_copy(update={"experiment_id": eid})
+
+    def _bench(inp: RunBenchmarkInput):
+        calls.append(inp.experiment_id)
+        store[inp.experiment_id] = persisted.model_copy(
+            update={"experiment_id": inp.experiment_id}
+        )
+        raise RuntimeError("vLLM/startup succeeded but receipt/ack lost")
+
+    state = _pending_search_state()
+    with tool_boundary_overrides(
+        run_benchmark_fn=_bench,
+        propose_config_fn=lambda _inp: None,
+    ), patch(
+        "inferops.agent.executor.get_result_by_id",
+        side_effect=lambda e: store.get(e),
+    ), patch(
+        "inferops.agent.executor.analyze_bottleneck",
+        return_value=MagicMock(bottleneck="compute-bound"),
+    ), patch(
+        "inferops.agent.executor.compare_experiments",
+        return_value=MagicMock(delta_pct=19.0),
+    ):
+        first = executor_node(state)
+        assert calls == [eid]
+        assert first["last_result"].experiment_id == eid
+        assert first["last_recovery"] is None
+        assert first["experiment_summaries"][-1]["experiment_id"] == eid
+        assert first["trajectory"][-1]["result"]["promoted_to_best"] is False
+        # Same incoming state: lookup at start reuses; bench not called again.
+        resume = executor_node(state)
+
+    assert calls == [eid]
+    assert resume["last_result"].experiment_id == eid
+    assert resume["experiments_remaining"] == state["experiments_remaining"] - 1
+    assert resume["best_summary"]["experiment_id"] == "sess_baseline"
+    assert is_promotable(persisted) is True
+    merged = _merge(state, first)
+    refl = reflector_node(merged)
+    assert refl["best_summary"]["experiment_id"] == "sess_baseline"
+    assert refl["trajectory"][-1]["result"]["promoted_to_best"] is False
+    _assert_not_confirmed_promoted(refl)
+
+
+def test_ack_lost_unconfirmable_persists_insufficient_evidence():
+    """Lookup miss after ack-lost → explicit ① insufficient_evidence, not only flag."""
+    store: dict[str, object] = {}
+    calls: list[str] = []
+
+    def _bench(inp: RunBenchmarkInput):
+        calls.append(inp.experiment_id)
+        raise AckLostError("vLLM/startup succeeded but receipt/ack lost")
+
+    def _save(result, db_path=None):
+        store[result.experiment_id] = result
+
+    state = _pending_search_state()
+    with tool_boundary_overrides(
+        run_benchmark_fn=_bench,
+        propose_config_fn=lambda _inp: None,
+    ), patch(
+        "inferops.agent.executor.get_result_by_id",
+        side_effect=lambda e: store.get(e),
+    ), patch(
+        "inferops.agent.executor.save_result",
+        side_effect=_save,
+    ):
+        exec_patch = executor_node(state)
+
+    assert calls == ["sess_max_num_batched_tokens_4096"]
+    event = exec_patch["last_recovery"]
+    _assert_recovery_contract(event)
+    assert event["code"] == CODE_ACK_LOST
+    assert event["validity_status"] == "insufficient_evidence"
+    assert event["result_persisted"] is True
+    assert event.get("incomplete") is True
+    assert event["budget_consumed"] is True
+    assert event["next_action"] == "rollback"
+    summary = exec_patch["experiment_summaries"][-1]
+    assert summary["validity_status"] == "insufficient_evidence"
+    assert summary["promotable"] is False
+    persisted = exec_patch["last_result"]
+    assert persisted.status == ExperimentValidityStatus.INSUFFICIENT_EVIDENCE
+    assert is_promotable(persisted) is False
+    assert persisted.gpu_utilization_pct is None
+    assert store[persisted.experiment_id].status == ExperimentValidityStatus.INSUFFICIENT_EVIDENCE
+    # Resume must reuse the persisted incomplete row as failure — no second bench.
+    with tool_boundary_overrides(
+        run_benchmark_fn=_bench,
+        propose_config_fn=lambda _inp: None,
+    ), patch(
+        "inferops.agent.executor.get_result_by_id",
+        side_effect=lambda e: store.get(e),
+    ):
+        resume = executor_node(state)
+    assert calls == ["sess_max_num_batched_tokens_4096"]
+    assert resume["last_result"].status == ExperimentValidityStatus.INSUFFICIENT_EVIDENCE
+    assert resume["last_recovery"]["code"] == CODE_ACK_LOST
+    assert resume["hypotheses"][0]["status"] == "failed"
+    assert resume["trajectory"][-1]["result"]["promoted_to_best"] is False
+
+    merged = _merge(state, exec_patch)
+    refl = reflector_node(merged)
+    assert refl["next_action"] == "rollback"
+    assert refl["best_summary"]["experiment_id"] == "sess_baseline"
+    assert refl["trajectory"][-1]["result"]["promoted_to_best"] is False
+    _assert_not_confirmed_promoted(refl)
+
+
+def test_confirm_slot_ack_lost_reuses_persisted_no_rebench(result_b):
+    """Confirm slot persist + ack lost: fact-check reuses the slot, no second bench."""
+    store, inner = _tool_boundary_store(result_b, confirm_cand_rps=2.4)
+    calls: list[str] = []
+
+    def bench(inp: RunBenchmarkInput):
+        calls.append(inp.experiment_id)
+        out = inner(inp)
+        raise RuntimeError("vLLM/startup succeeded but receipt/ack lost")
+
+    state = _remeasure_state(remaining=2, remasure_count=1)
+    pre_budget = state["experiments_remaining"]
+    with tool_boundary_overrides(
+        run_benchmark_fn=bench,
+        propose_config_fn=lambda _inp: None,
+    ), patch(
+        "inferops.agent.executor.get_result_by_id",
+        side_effect=lambda e: store.get(e),
+    ):
+        exec_patch = executor_node(state)
+
+    expected_slots = DEFAULT_MIN_PAIRS * 2
+    assert len(calls) == expected_slots
+    assert len(set(calls)) == expected_slots
+    assert all("_r1_" in eid for eid in calls)
+    assert exec_patch["experiments_remaining"] == pre_budget - 1
+    assert exec_patch["confirmation_decision"] is not None
+    assert exec_patch["last_recovery"] is None
+    assert exec_patch["trajectory"][-1]["result"]["promoted_to_best"] is False
+    assert exec_patch["trajectory"][-1]["budget_consumed"] is True
+    assert exec_patch["trajectory"][-1]["retry_count"] == 1
+
+
+def test_ack_lost_save_failure_does_not_claim_persisted_or_rebench():
+    """Save fail after ack-lost: honest result_persisted=False, no success/re-bench."""
+    calls: list[str] = []
+    eid = "sess_max_num_batched_tokens_4096"
+
+    def _bench(inp: RunBenchmarkInput):
+        calls.append(inp.experiment_id)
+        raise AckLostError("vLLM/startup succeeded but receipt/ack lost")
+
+    state = _pending_search_state()
+    with tool_boundary_overrides(
+        run_benchmark_fn=_bench,
+        propose_config_fn=lambda _inp: None,
+    ), patch(
+        "inferops.agent.executor.get_result_by_id",
+        return_value=None,
+    ), patch(
+        "inferops.agent.executor.save_result",
+        side_effect=RuntimeError("sqlite locked"),
+    ):
+        exec_patch = executor_node(state)
+
+    assert calls == [eid]
+    event = exec_patch["last_recovery"]
+    _assert_recovery_contract(event)
+    assert event["code"] == CODE_ACK_LOST
+    assert event["result_persisted"] is False
+    assert event["validity_status"] == "insufficient_evidence"
+    assert event.get("incomplete") is True
+    assert exec_patch["last_result"] is None
+    assert "experiment_summaries" not in exec_patch
+    assert exec_patch["hypotheses"][0]["status"] == "failed"
+    assert exec_patch["trajectory"][-1]["result"]["promoted_to_best"] is False
+    # Same invocation did not fall through to a clean success / second bench.
+    refl = reflector_node(_merge(state, exec_patch))
+    assert refl["next_action"] == "rollback"
+    assert refl["best_summary"]["experiment_id"] == "sess_baseline"
+    _assert_not_confirmed_promoted(refl)
+
+
+def test_confirm_slot_ack_lost_miss_persists_insufficient_evidence():
+    """Confirm-slot lookup miss after ack-lost uses the same ① contract as search."""
+    store: dict[str, object] = {}
+    calls: list[str] = []
+
+    def _bench(inp: RunBenchmarkInput):
+        calls.append(inp.experiment_id)
+        raise AckLostError("vLLM/startup succeeded but receipt/ack lost")
+
+    def _save(result, db_path=None):
+        store[result.experiment_id] = result
+
+    state = _remeasure_state(remaining=2, remasure_count=1)
+    with tool_boundary_overrides(
+        run_benchmark_fn=_bench,
+        propose_config_fn=lambda _inp: None,
+    ), patch(
+        "inferops.agent.executor.get_result_by_id",
+        side_effect=lambda e: store.get(e),
+    ), patch(
+        "inferops.agent.executor.save_result",
+        side_effect=_save,
+    ):
+        exec_patch = executor_node(state)
+
+    assert len(calls) == 1
+    slot_eid = calls[0]
+    assert "confirm_" in slot_eid
+    event = exec_patch["last_recovery"]
+    _assert_recovery_contract(event)
+    assert event["code"] == CODE_ACK_LOST
+    assert event["validity_status"] == "insufficient_evidence"
+    assert event["result_persisted"] is True
+    assert event.get("incomplete") is True
+    assert event["code"] != "confirmation_slot_failed"
+    assert slot_eid in store
+    assert store[slot_eid].status == ExperimentValidityStatus.INSUFFICIENT_EVIDENCE
+    assert exec_patch["confirmation_decision"] is None
+    assert exec_patch["last_result"].status == ExperimentValidityStatus.INSUFFICIENT_EVIDENCE
+    assert exec_patch["experiment_summaries"][-1]["validity_status"] == "insufficient_evidence"
+    assert exec_patch["trajectory"][-1]["result"]["promoted_to_best"] is False
+    refl = reflector_node(_merge(state, exec_patch))
+    assert refl["best_summary"]["experiment_id"] == "sess_baseline"
+    _assert_not_confirmed_promoted(refl)
+
+
+def test_benchmark_error_persisted_lookup_keeps_failure_not_success(result_b):
+    """BenchmarkError saves exc.result; fact-check / resume stay on failure path."""
+    store: dict[str, object] = {}
+    calls: list[str] = []
+    eid = "sess_max_num_batched_tokens_4096"
+    failed = result_b.model_copy(
+        update={
+            "experiment_id": eid,
+            "status": ExperimentValidityStatus.FAILED,
+            "notes": "vLLM OOM during startup",
+            "successful_requests": 0,
+            "error_rate": 1.0,
+        }
+    )
+    assert is_promotable(failed) is False
+
+    def _bench(inp: RunBenchmarkInput):
+        calls.append(inp.experiment_id)
+        stored = failed.model_copy(update={"experiment_id": inp.experiment_id})
+        store[inp.experiment_id] = stored
+        raise OOMError("vLLM OOM during startup", result=stored)
+
+    state = _pending_search_state()
+    with tool_boundary_overrides(
+        run_benchmark_fn=_bench,
+        propose_config_fn=lambda _inp: None,
+    ), patch(
+        "inferops.agent.executor.get_result_by_id",
+        side_effect=lambda e: store.get(e),
+    ), patch(
+        "inferops.agent.executor.analyze_bottleneck",
+        return_value=MagicMock(bottleneck="compute-bound"),
+    ), patch(
+        "inferops.agent.executor.compare_experiments",
+        return_value=MagicMock(delta_pct=19.0),
+    ):
+        first = executor_node(state)
+        assert calls == [eid]
+        assert first["last_recovery"]["code"] == "benchmark_error"
+        assert first["last_recovery"]["result_persisted"] is True
+        assert first["hypotheses"][0]["status"] == "failed"
+        assert first["experiment_summaries"][-1]["validity_status"] == "failed"
+        assert first["last_result"].status == ExperimentValidityStatus.FAILED
+        assert first["trajectory"][-1]["result"]["promoted_to_best"] is False
+        # Resume / retry: DB lookup hits the failed row — still failure, no re-bench.
+        resume = executor_node(state)
+
+    assert calls == [eid]
+    assert resume["last_recovery"]["code"] == "benchmark_error"
+    assert resume["hypotheses"][0]["status"] == "failed"
+    assert resume["last_result"].status == ExperimentValidityStatus.FAILED
+    assert resume["trajectory"][-1]["result"]["promoted_to_best"] is False
+    refl = reflector_node(_merge(state, first))
+    assert refl["next_action"] == "rollback"
+    assert refl["best_summary"]["experiment_id"] == "sess_baseline"
+    _assert_not_confirmed_promoted(refl)
+
+
+def test_trajectory_records_retry_budget_stop_and_next_action():
+    state = _pending_search_state()
+    state["remeasure_count"] = 1
+    with patch("inferops.agent.executor.get_result_by_id", return_value=None), patch(
+        "inferops.tools.propose_config.propose_config_patch"
+    ), patch(
+        "inferops.agent.executor.run_benchmark",
+        side_effect=AckLostError("receipt lost"),
+    ), patch(
+        "inferops.agent.executor.save_result",
+    ):
+        exec_patch = executor_node(state)
+
+    step = exec_patch["trajectory"][-1]
+    for key in TRAJECTORY_AUDIT_FIELDS:
+        assert key in step
+    assert step["retry_count"] == 1
+    assert step["budget_consumed"] is True
+    assert step["next_action"] == "rollback"
+    assert step["stop_reason"] == ""
+    event = exec_patch["last_recovery"]
+    assert event["retry_count"] == 1
+    assert event["budget_consumed"] is True
+    assert event["next_action"] == "rollback"
+    assert event["validity_status"] == "insufficient_evidence"
+
+    merged = _merge(state, exec_patch)
+    refl = reflector_node(merged)
+    rstep = refl["trajectory"][-1]
+    for key in TRAJECTORY_AUDIT_FIELDS:
+        assert key in rstep
+    assert rstep["retry_count"] == 1
+    assert rstep["budget_consumed"] is True
+    assert rstep["next_action"] == "rollback"
+    assert "stop_reason" in rstep
+    assert rstep["result"]["promoted_to_best"] is False

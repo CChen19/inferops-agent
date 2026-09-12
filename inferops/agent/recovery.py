@@ -3,15 +3,38 @@
 Tune ⑧ contract. Does not invent ④/⑤ fields, GPU numbers, or a parallel
 metrics schema. Reflect reads this fact so a this-attempt failure cannot
 be mistaken for ``experiment_summaries[-1]`` prior success.
+
+Additive residual fields (Eval freeze surface — do not rewrite goldens):
+``validity_status`` (Week-1 contract status or ""), ``retry_count``.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
+from inferops.schemas import (
+    ExperimentConfig,
+    ExperimentResult,
+    ExperimentValidityStatus,
+    config_knobs,
+    derive_status,
+    empty_latency,
+)
+
 # Control-flow signals that must never be treated as a successful tool result.
 _HARD_CONTROL_NAMES = frozenset(
     {"KeyboardInterrupt", "SystemExit", "GraphInterrupt", "NodeInterrupt"}
+)
+
+# Receipt / ack loss after vLLM startup succeeded. Recover by id fact-check.
+CODE_ACK_LOST = "ack_lost"
+INCOMPLETE_NOTE_PREFIX = "incomplete:"
+ACK_LOST_TOKENS = (
+    "ack lost",
+    "receipt lost",
+    "receipt/ack lost",
+    "ack_lost",
+    "receipt_lost",
 )
 
 RECOVERY_FIELDS = (
@@ -26,6 +49,16 @@ RECOVERY_FIELDS = (
     "budget_consumed",
     "retryable",
     "next_action",
+    # Additive residual ⑧ — Eval goldens already iterate this tuple.
+    "validity_status",
+    "retry_count",
+)
+
+TRAJECTORY_AUDIT_FIELDS = (
+    "retry_count",
+    "budget_consumed",
+    "next_action",
+    "stop_reason",
 )
 
 # stage == tool for the current single-tool-per-stage loop.
@@ -63,6 +96,136 @@ def hypothesis_fact(hyp: dict[str, Any] | None) -> dict[str, Any] | None:
     }
 
 
+class AckLostError(Exception):
+    """vLLM/startup succeeded but the completion receipt/ack was lost."""
+
+    def __init__(
+        self,
+        message: str = "",
+        *,
+        experiment_id: str = "",
+        result: Any = None,
+        result_persisted: bool = False,
+    ) -> None:
+        super().__init__(message)
+        self.experiment_id = experiment_id
+        self.result = result
+        self.result_persisted = bool(result_persisted)
+
+
+def is_ack_lost(exc: BaseException) -> bool:
+    """True when the tool reports startup-ok + lost receipt/ack."""
+    if isinstance(exc, AckLostError):
+        return True
+    text = f"{type(exc).__name__} {exc}".lower()
+    return any(token in text for token in ACK_LOST_TOKENS)
+
+
+def is_failed_contract_row(result: Any) -> bool:
+    return contract_status_value(result) == ExperimentValidityStatus.FAILED.value
+
+
+def is_unconfirmable_contract_row(result: Any) -> bool:
+    """True for the ① insufficient_evidence row we persist on ack-lost miss."""
+    if contract_status_value(result) != ExperimentValidityStatus.INSUFFICIENT_EVIDENCE.value:
+        return False
+    notes = str(getattr(result, "notes", "") or "")
+    return notes.startswith(INCOMPLETE_NOTE_PREFIX)
+
+
+def keep_failed_recovery_semantics(result: Any, exc: BaseException | None = None) -> bool:
+    """Fact-check reuse must not turn a failed/BenchmarkError row into success."""
+    if result is not None and (
+        is_failed_contract_row(result) or is_unconfirmable_contract_row(result)
+    ):
+        return True
+    if (
+        exc is not None
+        and type(exc).__name__ == "BenchmarkError"
+        and getattr(exc, "result", None) is not None
+    ):
+        return True
+    return False
+
+
+def contract_status_value(result: Any) -> str:
+    """Week-1 validity status from a contract row (empty if none)."""
+    if result is None:
+        return ""
+    status = getattr(result, "status", None)
+    if status is None:
+        return ""
+    return status.value if hasattr(status, "value") else str(status)
+
+
+def unconfirmable_contract_result(
+    *,
+    experiment_id: str,
+    config: ExperimentConfig,
+    session_id: str | None,
+    reason: str,
+) -> ExperimentResult:
+    """Persistable ① row when completion cannot be confirmed.
+
+    Uses ``derive_status`` (no evidence / no actual) → ``insufficient_evidence``.
+    Does not invent a parallel ``incomplete`` validity enum. Missing metrics
+    stay None. No GPU numbers.
+    """
+    requested = config_knobs(config)
+    notes = reason if reason.startswith(INCOMPLETE_NOTE_PREFIX) else f"{INCOMPLETE_NOTE_PREFIX} {reason}"
+    status = derive_status(
+        failed=False,
+        evidence=None,
+        actual_config=None,
+        requested_config=requested,
+    )
+    return ExperimentResult(
+        experiment_id=experiment_id,
+        config=config,
+        total_requests=0,
+        successful_requests=0,
+        total_time_s=0.0,
+        throughput_rps=None,
+        tokens_per_second=None,
+        error_rate=None,
+        ttft=empty_latency(),
+        tpot=empty_latency(),
+        e2e_latency=empty_latency(),
+        gpu_memory_used_gb=None,
+        gpu_utilization_pct=None,
+        cost_usd=None,
+        session_id=session_id,
+        requested_config=requested,
+        actual_config=None,
+        config_evidence=None,
+        status=status,
+        notes=notes,
+    )
+
+
+def trajectory_audit_fields(
+    state: dict[str, Any] | None,
+    *,
+    budget_consumed: bool,
+    next_action: str = "",
+    stop_reason: str = "",
+    retry_count: int | None = None,
+) -> dict[str, Any]:
+    """Auditable retry / budget / stop fields for executor + Reflect steps.
+
+    Planner steps do not carry these fields (planner does not consume budget
+    or decide stop / remasure). See ``reports/week3_interrupt_recovery.md``.
+    """
+    if retry_count is None:
+        retry_count = int((state or {}).get("remeasure_count") or 0)
+    return {
+        "retry_count": int(retry_count),
+        "budget_consumed": bool(budget_consumed),
+        "next_action": next_action,
+        "stop_reason": stop_reason,
+    }
+
+
 def recovery_event(
     *,
     experiment_id: str,
@@ -78,9 +241,12 @@ def recovery_event(
     cited_run_ids: list[str] | None = None,
     this_attempt_failed: bool = True,
     tool: str | None = None,
+    validity_status: str = "",
+    retry_count: int = 0,
+    incomplete: bool = False,
 ) -> dict[str, Any]:
     """Minimal auditable failure fact for this attempt."""
-    return {
+    event = {
         "attempt_id": attempt_id or experiment_id,
         "experiment_id": experiment_id,
         "hypothesis": hypothesis_fact(hypothesis),
@@ -94,7 +260,13 @@ def recovery_event(
         "next_action": next_action,
         "this_attempt_failed": bool(this_attempt_failed),
         "cited_run_ids": list(cited_run_ids or []),
+        "validity_status": validity_status,
+        "retry_count": int(retry_count),
     }
+    if incomplete:
+        # Additive marker — Week-1 status stays insufficient_evidence.
+        event["incomplete"] = True
+    return event
 
 
 def tool_unavailable(exc: BaseException) -> dict[str, Any]:
