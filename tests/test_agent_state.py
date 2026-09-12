@@ -80,3 +80,7 @@ def test_summary_from_result_uses_primary_metric(result_b):
     assert summary["value_changed"] == 4096
     assert summary["throughput_rps"] == 2.38
     assert summary["vs_baseline_pct"] == 19.0
+    assert summary["validity_status"] == "valid"
+    assert summary["has_config_evidence"] is True
+    assert summary["run_id"] == result_b.run_id
+    assert summary["promotable"] is True

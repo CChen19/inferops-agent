@@ -45,7 +45,12 @@ def write_report_section(inp: WriteReportInput) -> WriteReportOutput:
             if path.stat().st_size == 0 if path.exists() else True:
                 # New file — write header
                 if not path.exists() or path.stat().st_size == 0:
-                    f.write("# InferOps Agent Report\n")
+                    f.write(
+                        "# InferOps Agent Report\n\n"
+                        "_Statuses: `valid` | `invalid` | `failed` | "
+                        "`insufficient_evidence`. "
+                        "Only `valid` + critical config evidence may be best._\n"
+                    )
             f.write(section)
         bytes_written = len(section.encode())
 

@@ -17,6 +17,12 @@ _BASELINE = {
     "e2e_p50_ms": 900.0,
     "bottleneck": "compute-bound",
     "vs_baseline_pct": 0.0,
+    "run_id": "baseline-run",
+    "validity_status": "valid",
+    "mlflow_run_id": "mlflow-baseline",
+    "has_config_evidence": True,
+    "promotable": True,
+        "failure_reason": "",
 }
 
 _BEST = {
@@ -30,6 +36,12 @@ _BEST = {
     "e2e_p50_ms": 820.0,
     "bottleneck": "compute-bound",
     "vs_baseline_pct": 14.7,
+    "run_id": "best-run",
+    "validity_status": "valid",
+    "mlflow_run_id": "mlflow-best",
+    "has_config_evidence": True,
+    "promotable": True,
+        "failure_reason": "",
 }
 
 

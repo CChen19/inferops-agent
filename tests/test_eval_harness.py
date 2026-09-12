@@ -43,7 +43,8 @@ def test_render_markdown_report_contains_dashboard_tables():
     assert "random_agent" in text
     assert "greedy_agent" in text
     assert "| Strategy | Mean gap %" in text
-
+    assert "Mock eval only" in text
+    assert "not** real measured performance" in text
 
 def test_write_eval_outputs_writes_markdown_and_json(tmp_path):
     report = run_mock_eval("abc123", FIXTURES, workloads=["chat_short"], budget=2)

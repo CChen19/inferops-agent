@@ -65,6 +65,11 @@ def compare_experiments(inp: CompareExperimentsInput) -> ComparisonResult:
     if res_b is None:
         raise ValueError(f"Experiment '{inp.experiment_id_b}' not found")
 
+    def _status_note(res) -> str:
+        status = getattr(res, "status", None)
+        value = status.value if hasattr(status, "value") else (status or "insufficient_evidence")
+        return value
+
     def _get_samples(res, metric: str) -> list[float]:
         if metric in ("ttft_p50_ms", "ttft_p99_ms"):
             return res.raw_ttft_ms or _percentile_to_samples(res.ttft.p50, res.ttft.p99, res.successful_requests)
@@ -113,6 +118,14 @@ def compare_experiments(inp: CompareExperimentsInput) -> ComparisonResult:
     # Significant if CI doesn't straddle zero
     significant = not (ci_low <= 0 <= ci_high)
 
+    status_a = _status_note(res_a)
+    status_b = _status_note(res_b)
+    validity_note = (
+        f" Validity: a=`{status_a}` (run_id={getattr(res_a, 'run_id', '')}), "
+        f"b=`{status_b}` (run_id={getattr(res_b, 'run_id', '')}). "
+        "Metric deltas do not imply config was applied."
+    )
+
     if lower_is_better:
         winner = "b" if delta_pct < -2 else ("a" if delta_pct > 2 else "tie")
         better_word = "lower" if delta_pct < 0 else "higher"
@@ -120,6 +133,7 @@ def compare_experiments(inp: CompareExperimentsInput) -> ComparisonResult:
             f"{inp.experiment_id_b} has {abs(delta_pct):.1f}% {better_word} {inp.metric} "
             f"(CI [{ci_low:.1f}%, {ci_high:.1f}%]). "
             f"{'Statistically significant.' if significant else 'Not significant — may be noise.'}"
+            f"{validity_note}"
         )
     else:
         winner = "b" if delta_pct > 2 else ("a" if delta_pct < -2 else "tie")
@@ -128,6 +142,7 @@ def compare_experiments(inp: CompareExperimentsInput) -> ComparisonResult:
             f"{inp.experiment_id_b} has {abs(delta_pct):.1f}% {better_word} {inp.metric} "
             f"(CI [{ci_low:.1f}%, {ci_high:.1f}%]). "
             f"{'Statistically significant.' if significant else 'Not significant — may be noise.'}"
+            f"{validity_note}"
         )
 
     return ComparisonResult(

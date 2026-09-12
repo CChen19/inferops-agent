@@ -9,6 +9,19 @@ from inferops.agent.state import AgentState, initial_state
 from inferops.tools.run_benchmark import RunBenchmarkOutput
 
 
+def _contract_fields(**overrides):
+    base = {
+        "run_id": "ffffffffffffffffffffffffffffffff",
+        "validity_status": "valid",
+        "mlflow_run_id": "mlflow-baseline",
+        "has_config_evidence": True,
+        "promotable": True,
+        "failure_reason": "",
+    }
+    base.update(overrides)
+    return base
+
+
 def _state_with_baseline() -> AgentState:
     state = initial_state("chat_short", "sess_", max_experiments=5)
     baseline = {
@@ -22,6 +35,7 @@ def _state_with_baseline() -> AgentState:
         "e2e_p50_ms": 900.0,
         "bottleneck": "compute-bound",
         "vs_baseline_pct": 0.0,
+        **_contract_fields(),
     }
     state["baseline_summary"] = baseline
     state["best_summary"] = baseline
@@ -49,6 +63,7 @@ def test_executor_skips_duplicate_without_spending_budget():
         "e2e_p50_ms": 850.0,
         "bottleneck": "compute-bound",
         "vs_baseline_pct": 5.0,
+        **_contract_fields(run_id="11111111111111111111111111111111"),
     })
     state["hypotheses"] = [
         {
@@ -79,6 +94,10 @@ def test_executor_uses_existing_result_and_updates_best(result_b):
             "experiment_id": None,
         }
     ]
+    # Align experiment_id with executor naming
+    result_b = result_b.model_copy(
+        update={"experiment_id": "sess_max_num_batched_tokens_4096"}
+    )
     analysis = MagicMock(bottleneck="compute-bound")
     comparison = MagicMock(delta_pct=19.0)
 
@@ -93,6 +112,44 @@ def test_executor_uses_existing_result_and_updates_best(result_b):
     assert patch_out["best_summary"]["experiment_id"] == "sess_max_num_batched_tokens_4096"
     assert patch_out["experiment_summaries"][-1]["vs_baseline_pct"] == 19.0
     assert patch_out["experiments_remaining"] == 3
+    assert patch_out["best_summary"]["validity_status"] == "valid"
+
+
+def test_executor_does_not_promote_high_score_without_evidence(result_b_unevidenced):
+    """Targeted gate: high primary metric + missing evidence must NOT become best."""
+    state = _state_with_baseline()
+    state["hypotheses"] = [
+        {
+            "id": "h1",
+            "param": "max_num_batched_tokens",
+            "value": 4096,
+            "rationale": "rps=2.0 suggests batching could help",
+            "status": "pending",
+            "experiment_id": None,
+        }
+    ]
+    # Make score extremely high but strip evidence (fixture already unevidenced)
+    hot = result_b_unevidenced.model_copy(
+        update={
+            "experiment_id": "sess_max_num_batched_tokens_4096",
+            "throughput_rps": 99.9,
+        }
+    )
+    analysis = MagicMock(bottleneck="compute-bound")
+    comparison = MagicMock(delta_pct=4895.0)
+
+    with patch("inferops.agent.executor.get_result_by_id", return_value=hot), \
+         patch("inferops.agent.executor.run_benchmark") as mock_run, \
+         patch("inferops.agent.executor.analyze_bottleneck", return_value=analysis), \
+         patch("inferops.agent.executor.compare_experiments", return_value=comparison):
+        patch_out = executor_node(state)
+
+    mock_run.assert_not_called()
+    assert patch_out["experiment_summaries"][-1]["throughput_rps"] == 99.9
+    assert patch_out["experiment_summaries"][-1]["validity_status"] == "insufficient_evidence"
+    # Best must remain the evidenced baseline — not the hot unevidenced candidate
+    assert patch_out["best_summary"]["experiment_id"] == "sess_baseline"
+    assert patch_out["trajectory"][-1]["result"]["promoted_to_best"] is False
 
 
 def test_executor_marks_failed_when_benchmark_raises():
@@ -133,6 +190,9 @@ def test_executor_runs_benchmark_when_no_existing_result(result_b):
             "experiment_id": None,
         }
     ]
+    result_b = result_b.model_copy(
+        update={"experiment_id": "sess_max_num_batched_tokens_4096"}
+    )
     bench_out = RunBenchmarkOutput(
         experiment_id="sess_max_num_batched_tokens_4096",
         workload_name="chat_short",
@@ -145,7 +205,9 @@ def test_executor_runs_benchmark_when_no_existing_result(result_b):
         gpu_util_pct=88.0,
         gpu_mem_gb=3.8,
         success_rate="10/10",
-        mlflow_run_id=None,
+        mlflow_run_id="mlflow-test-b",
+        run_id=result_b.run_id,
+        status="valid",
     )
 
     with patch("inferops.agent.executor.get_result_by_id", side_effect=[None, result_b]), \
@@ -163,3 +225,4 @@ def test_executor_runs_benchmark_when_no_existing_result(result_b):
 
     assert patch_out["hypotheses"][0]["status"] == "success"
     assert patch_out["experiment_summaries"][-1]["throughput_rps"] == 2.38
+    assert patch_out["best_summary"]["experiment_id"] == "sess_max_num_batched_tokens_4096"

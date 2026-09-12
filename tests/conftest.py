@@ -90,17 +90,26 @@ def result(config) -> ExperimentResult:
         gpu_utilization_pct=85.0,
         raw_ttft_ms=[40.0, 45.0, 48.0, 50.0, 55.0, 60.0, 62.0, 65.0, 68.0, 70.0],
         raw_e2e_ms=[850.0, 870.0, 900.0, 910.0, 920.0, 940.0, 960.0, 970.0, 990.0, 1000.0],
+        # Intentionally omit status/evidence → defaults to insufficient_evidence
+        # so fixtures represent legacy / incomplete rows unless upgraded.
     )
 
 
 @pytest.fixture
 def result_b(config, workload) -> ExperimentResult:
     """A second result (big_batch variant) that is clearly better."""
+    from inferops.schemas import (
+        ConfigEvidence,
+        ExperimentValidityStatus,
+        config_knobs,
+    )
+
     cfg_b = config.model_copy(update={
         "experiment_id": "test_big_batch",
         "max_num_batched_tokens": 4096,
         "tags": {"variant": "big_batch"},
     })
+    knobs = config_knobs(cfg_b)
     lp = LatencyPercentiles(p50=52.0, p90=62.0, p95=64.0, p99=66.0)
     e2e = LatencyPercentiles(p50=780.0, p90=820.0, p95=840.0, p99=870.0)
     return ExperimentResult(
@@ -118,6 +127,35 @@ def result_b(config, workload) -> ExperimentResult:
         gpu_utilization_pct=88.0,
         raw_ttft_ms=[44.0, 48.0, 50.0, 52.0, 54.0, 58.0, 60.0, 62.0, 64.0, 66.0],
         raw_e2e_ms=[750.0, 770.0, 780.0, 790.0, 800.0, 820.0, 840.0, 850.0, 860.0, 870.0],
+        # Promotable by default for tests that expect a better valid candidate.
+        run_id="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        session_id="sess_",
+        mlflow_run_id="mlflow-test-b",
+        requested_config=knobs,
+        actual_config=dict(knobs),
+        config_evidence=ConfigEvidence(
+            kind="managed_process_start",
+            verified=True,
+            instance_id="127.0.0.1:8000:pid=1",
+            process_pid=1,
+            observed_params=dict(knobs),
+        ),
+        status=ExperimentValidityStatus.VALID,
+    )
+
+
+@pytest.fixture
+def result_b_unevidenced(result_b) -> ExperimentResult:
+    """High-scoring twin of result_b with evidence stripped (not promotable)."""
+    from inferops.schemas import ExperimentValidityStatus
+
+    return result_b.model_copy(
+        update={
+            "status": ExperimentValidityStatus.INSUFFICIENT_EVIDENCE,
+            "actual_config": None,
+            "config_evidence": None,
+            "run_id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        }
     )
 
 
