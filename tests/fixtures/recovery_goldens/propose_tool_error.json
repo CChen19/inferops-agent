@@ -1,0 +1,18 @@
+{
+  "id": "propose_tool_error",
+  "schema": "inferops.recovery_goldens.v1",
+  "synthetic": true,
+  "gpu_sampled": false,
+  "driver": "propose_tool_error",
+  "expect": {
+    "require_recovery": true,
+    "recovery_code": "propose_tool_error",
+    "result_persisted": false,
+    "budget_consumed": false,
+    "no_forged_summary": true,
+    "no_stale_latest": true,
+    "next_action": "rollback",
+    "confirmed_promotable": false,
+    "week1_gate_closed": true
+  }
+}

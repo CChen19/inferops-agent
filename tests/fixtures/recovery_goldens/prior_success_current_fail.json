@@ -1,0 +1,18 @@
+{
+  "id": "prior_success_current_fail",
+  "schema": "inferops.recovery_goldens.v1",
+  "synthetic": true,
+  "gpu_sampled": false,
+  "driver": "prior_success_current_fail",
+  "expect": {
+    "require_recovery": true,
+    "recovery_code": "tool_exception",
+    "result_persisted": false,
+    "budget_consumed": true,
+    "no_forged_summary": true,
+    "no_stale_latest": true,
+    "no_double_budget": true,
+    "next_action": "rollback",
+    "confirmed_promotable": false
+  }
+}
