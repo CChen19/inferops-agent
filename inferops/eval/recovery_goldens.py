@@ -26,7 +26,10 @@ from inferops.agent.executor import (
 )
 from inferops.agent.graph import build_graph, graph_invoke_config, session_thread_id
 from inferops.agent.recovery import (
+    CODE_ACK_LOST,
     RECOVERY_FIELDS,
+    TRAJECTORY_AUDIT_FIELDS,
+    AckLostError,
     current_attempt_latest,
 )
 from inferops.agent.reflector import reflector_node
@@ -42,9 +45,9 @@ from inferops.tools.run_benchmark import RunBenchmarkInput, RunBenchmarkOutput
 GOLDEN_SCHEMA = "inferops.recovery_goldens.v1"
 GPU_QUEUE_ENV = "INFEROPS_GPU_GOLDENS"
 INVENTED_GPU_FIELDS = ("gpu_utilization_pct", "gpu_memory_used_gb", "cost_usd")
-TUNE_TIP_SHA = "d1e5e8259601ec3eca69e5852cdb3774dfd9881d"
-TUNE_MASTER_SHA = "45d2d4ed5253fa29ae98cd25826b894597c16288"
-TUNE_PR = "https://github.com/CChen19/inferops-agent/pull/11"
+TUNE_TIP_SHA = "fcb0f48a5252c8e8c6b265a19579cc2c37b048e6"
+TUNE_MASTER_SHA = "a0c7061ef82fc32b68ae78f3ad504ac33eda191d"
+TUNE_PR = "https://github.com/CChen19/inferops-agent/pull/13"
 
 DEFAULT_FIXTURE_DIR = Path("tests/fixtures/recovery_goldens")
 
@@ -58,6 +61,9 @@ REQUIRED_GOLDEN_IDS: tuple[str, ...] = (
     "post_persist_pre_commit_interrupt",
     "idempotent_re_resume",
     "resume_equivalence",
+    "ack_lost_unconfirmable",
+    "ack_lost_save_failure",
+    "trajectory_audit_executor_reflect",
 )
 
 # U vs R must match this full comparable_terminal projection — not a subset.
@@ -618,6 +624,95 @@ def _drive_prior_success_current_fail() -> dict[str, Any]:
     }
 
 
+def _drive_ack_lost_unconfirmable() -> dict[str, Any]:
+    """Startup-ok + ack lost + lookup miss → ① insufficient_evidence."""
+    store: dict[str, Any] = {}
+    calls: list[str] = []
+
+    def _bench(inp: RunBenchmarkInput) -> Any:
+        calls.append(inp.experiment_id)
+        raise AckLostError("vLLM/startup succeeded but receipt/ack lost")
+
+    def _save(result: Any, db_path: Any = None) -> None:
+        store[result.experiment_id] = result
+
+    state = _pending_search_state()
+    with tool_boundary_overrides(
+        run_benchmark_fn=_bench,
+        propose_config_fn=lambda _inp: None,
+    ), patch(
+        "inferops.agent.executor.get_result_by_id",
+        side_effect=lambda e: store.get(e),
+    ), patch(
+        "inferops.agent.executor.save_result",
+        side_effect=_save,
+    ):
+        exec_patch = executor_node(state)
+        resume = executor_node(state)
+    final = _exec_then_reflect(state, exec_patch)
+    return {
+        "state": final,
+        "exec_patch": exec_patch,
+        "resume": resume,
+        "calls": calls,
+        "store": store,
+        "budget_before": state["experiments_remaining"],
+        "starting_best": dict(state.get("best_summary") or {}),
+    }
+
+
+def _drive_ack_lost_save_failure() -> dict[str, Any]:
+    """Ack-lost + save fail: honest result_persisted=false, no forge / re-bench."""
+    calls: list[str] = []
+
+    def _bench(inp: RunBenchmarkInput) -> Any:
+        calls.append(inp.experiment_id)
+        raise AckLostError("vLLM/startup succeeded but receipt/ack lost")
+
+    state = _pending_search_state()
+    with tool_boundary_overrides(
+        run_benchmark_fn=_bench,
+        propose_config_fn=lambda _inp: None,
+    ), patch(
+        "inferops.agent.executor.get_result_by_id",
+        return_value=None,
+    ), patch(
+        "inferops.agent.executor.save_result",
+        side_effect=RuntimeError("sqlite locked"),
+    ):
+        exec_patch = executor_node(state)
+    final = _exec_then_reflect(state, exec_patch)
+    return {
+        "state": final,
+        "exec_patch": exec_patch,
+        "calls": calls,
+        "budget_before": state["experiments_remaining"],
+        "starting_best": dict(state.get("best_summary") or {}),
+    }
+
+
+def _drive_trajectory_audit_executor_reflect() -> dict[str, Any]:
+    """Executor + Reflect carry TRAJECTORY_AUDIT_FIELDS; planner must not."""
+    state = _pending_search_state()
+    state["remeasure_count"] = 1
+    with patch("inferops.agent.executor.get_result_by_id", return_value=None), patch(
+        "inferops.tools.propose_config.propose_config_patch"
+    ), patch(
+        "inferops.agent.executor.run_benchmark",
+        side_effect=AckLostError("receipt lost"),
+    ), patch(
+        "inferops.agent.executor.save_result",
+    ):
+        exec_patch = executor_node(state)
+    final = _exec_then_reflect(state, exec_patch)
+    return {
+        "state": final,
+        "exec_patch": exec_patch,
+        "budget_before": state["experiments_remaining"],
+        "starting_best": dict(state.get("best_summary") or {}),
+    }
+
+
 def _ledger_backed(template: Any, *, experiment_id: str, run_id: str, rps: float) -> Any:
     from inferops.eval.measurement_goldens import rps_ledger
 
@@ -927,6 +1022,9 @@ DRIVERS = {
     "post_persist_pre_commit_interrupt": _drive_post_persist_pre_commit,
     "idempotent_re_resume": _drive_idempotent_re_resume,
     "resume_equivalence": _drive_resume_equivalence,
+    "ack_lost_unconfirmable": _drive_ack_lost_unconfirmable,
+    "ack_lost_save_failure": _drive_ack_lost_save_failure,
+    "trajectory_audit_executor_reflect": _drive_trajectory_audit_executor_reflect,
 }
 
 
@@ -982,11 +1080,15 @@ def evaluate_golden(spec: dict[str, Any]) -> GoldenCaseResult:
 
     if expect.get("require_recovery"):
         failures.extend(_assert_recovery_fields(event, golden_id))
-        if event and expect.get("recovery_code") and event.get("code") != expect["recovery_code"]:
-            failures.append(
-                f"{golden_id}: recovery.code={event.get('code')!r}, "
-                f"expected {expect['recovery_code']!r}"
-            )
+        if event and expect.get("recovery_code"):
+            expected_code = expect["recovery_code"]
+            if expected_code == "ack_lost":
+                expected_code = CODE_ACK_LOST
+            if event.get("code") != expected_code:
+                failures.append(
+                    f"{golden_id}: recovery.code={event.get('code')!r}, "
+                    f"expected {expected_code!r}"
+                )
         if event and "result_persisted" in expect:
             if bool(event.get("result_persisted")) != bool(expect["result_persisted"]):
                 failures.append(
@@ -998,6 +1100,25 @@ def evaluate_golden(spec: dict[str, Any]) -> GoldenCaseResult:
                 failures.append(
                     f"{golden_id}: budget_consumed={event.get('budget_consumed')}, "
                     f"expected {expect['budget_consumed']}"
+                )
+        if event and expect.get("validity_status"):
+            if event.get("validity_status") != expect["validity_status"]:
+                failures.append(
+                    f"{golden_id}: recovery.validity_status="
+                    f"{event.get('validity_status')!r}, "
+                    f"expected {expect['validity_status']!r}"
+                )
+        if event and "incomplete" in expect:
+            if bool(event.get("incomplete")) != bool(expect["incomplete"]):
+                failures.append(
+                    f"{golden_id}: recovery.incomplete={event.get('incomplete')}, "
+                    f"expected {expect['incomplete']}"
+                )
+        if event and "retry_count" in expect:
+            if event.get("retry_count") != expect["retry_count"]:
+                failures.append(
+                    f"{golden_id}: recovery.retry_count={event.get('retry_count')!r}, "
+                    f"expected {expect['retry_count']!r}"
                 )
 
     if "next_action" in expect and state.get("next_action") != expect["next_action"]:
@@ -1038,6 +1159,74 @@ def evaluate_golden(spec: dict[str, Any]) -> GoldenCaseResult:
         )
         if latest is None:
             failures.append(f"{golden_id}: current_attempt_latest ignored persisted fail")
+
+    if expect.get("unconfirmable_insufficient_evidence"):
+        last = exec_patch.get("last_result")
+        if "last_result" not in exec_patch:
+            last = state.get("last_result")
+        status = getattr(last, "status", None) if last is not None else None
+        if hasattr(status, "value"):
+            status = status.value
+        if status != "insufficient_evidence":
+            failures.append(
+                f"{golden_id}: unconfirmable last_result status={status!r}, "
+                "expected insufficient_evidence"
+            )
+        if last is not None and is_promotable(last):
+            failures.append(f"{golden_id}: unconfirmable row became is_promotable")
+        summaries = exec_patch.get("experiment_summaries") or state.get(
+            "experiment_summaries"
+        )
+        last_summary = (summaries or [])[-1] if summaries else None
+        if (
+            last_summary is None
+            or last_summary.get("validity_status") != "insufficient_evidence"
+        ):
+            failures.append(
+                f"{golden_id}: unconfirmable summary is not insufficient_evidence"
+            )
+        if last is not None and (
+            last.gpu_utilization_pct is not None or last.gpu_memory_used_gb is not None
+        ):
+            failures.append(f"{golden_id}: unconfirmable row invented GPU numbers")
+
+    if expect.get("no_second_bench"):
+        calls = list(payload.get("calls") or [])
+        if len(calls) != 1:
+            failures.append(
+                f"{golden_id}: expected one bench call after ack-lost resume, got {calls}"
+            )
+
+    if expect.get("trajectory_audit"):
+        exec_steps = [s for s in traj if s.get("node") == "executor"]
+        refl_steps = [s for s in traj if s.get("node") == "reflector"]
+        plan_steps = [s for s in traj if s.get("node") == "planner"]
+        if not exec_steps or not refl_steps:
+            failures.append(
+                f"{golden_id}: trajectory missing executor/reflector for audit fields"
+            )
+        for label, step in (
+            ("executor", exec_steps[-1] if exec_steps else {}),
+            ("reflector", refl_steps[-1] if refl_steps else {}),
+        ):
+            missing = [key for key in TRAJECTORY_AUDIT_FIELDS if key not in step]
+            if missing:
+                failures.append(
+                    f"{golden_id}: {label} missing TRAJECTORY_AUDIT_FIELDS {missing}"
+                )
+        for step in plan_steps:
+            present = [key for key in TRAJECTORY_AUDIT_FIELDS if key in step]
+            if present:
+                failures.append(
+                    f"{golden_id}: planner must not carry TRAJECTORY_AUDIT_FIELDS {present}"
+                )
+        if "retry_count" in expect and exec_steps:
+            if exec_steps[-1].get("retry_count") != expect["retry_count"]:
+                failures.append(
+                    f"{golden_id}: executor.retry_count="
+                    f"{exec_steps[-1].get('retry_count')!r}, "
+                    f"expected {expect['retry_count']!r}"
+                )
 
     if expect.get("no_stale_latest"):
         latest = current_attempt_latest(

@@ -11,17 +11,23 @@
     "pre_tool_interrupt",
     "post_persist_pre_commit_interrupt",
     "idempotent_re_resume",
-    "resume_equivalence"
+    "resume_equivalence",
+    "ack_lost_unconfirmable",
+    "ack_lost_save_failure",
+    "trajectory_audit_executor_reflect"
   ],
   "tune_contract": {
     "status": "frozen",
-    "tip_sha": "d1e5e8259601ec3eca69e5852cdb3774dfd9881d",
-    "master_sha": "45d2d4ed5253fa29ae98cd25826b894597c16288",
-    "pr": "https://github.com/CChen19/inferops-agent/pull/11",
+    "tip_sha": "fcb0f48a5252c8e8c6b265a19579cc2c37b048e6",
+    "master_sha": "a0c7061ef82fc32b68ae78f3ad504ac33eda191d",
+    "pr": "https://github.com/CChen19/inferops-agent/pull/13",
     "imports": [
       "inferops.agent.recovery.RECOVERY_FIELDS",
+      "inferops.agent.recovery.TRAJECTORY_AUDIT_FIELDS",
+      "inferops.agent.recovery.CODE_ACK_LOST",
       "inferops.agent.recovery.recovery_event",
       "inferops.agent.recovery.current_attempt_latest",
+      "inferops.agent.recovery.unconfirmable_contract_result",
       "inferops.agent.graph.build_graph",
       "inferops.agent.graph.graph_invoke_config",
       "inferops.agent.graph.session_thread_id",

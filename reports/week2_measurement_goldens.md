@@ -78,3 +78,13 @@ measurement-trust golden gate passed (CPU/fixture; GPU-not-run ≠ pass)
 
 CPU / fixture only. No real vLLM / GPU numbers are claimed in this
 environment.
+
+## Week-3 ⑦ closeout
+
+The thin 6-case set above is still the measurement-trust floor. Week-3
+closeout expands original ⑦ 验收 via a unified manifest (~24 cases)
+spanning these goldens + recovery goldens + error-memory goldens.
+
+See `reports/week3_w3_closeout_⑦.md` and `reports/week3_real_llm.md`.
+Real-LLM and GPU layers are **separate** and are not labeled from
+these CPU fixtures.

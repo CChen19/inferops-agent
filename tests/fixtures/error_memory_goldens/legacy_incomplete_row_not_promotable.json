@@ -1,0 +1,15 @@
+{
+  "id": "legacy_incomplete_row_not_promotable",
+  "schema": "inferops.error_memory_goldens.v1",
+  "synthetic": true,
+  "gpu_sampled": false,
+  "driver": "legacy_incomplete_row_not_promotable",
+  "expect": {
+    "is_promotable": false,
+    "status": "insufficient_evidence",
+    "remembered": true,
+    "get_promotable_result_none": true,
+    "promotable_only_includes": false,
+    "promotable_flag": 0
+  }
+}

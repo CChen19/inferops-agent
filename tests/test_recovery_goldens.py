@@ -13,7 +13,12 @@ from pathlib import Path
 import pytest
 
 from inferops.agent.graph import graph_invoke_config, session_thread_id
-from inferops.agent.recovery import RECOVERY_FIELDS
+from inferops.agent.recovery import (
+    CODE_ACK_LOST,
+    RECOVERY_FIELDS,
+    TRAJECTORY_AUDIT_FIELDS,
+    unconfirmable_contract_result,
+)
 from inferops.eval.recovery_goldens import (
     DEFAULT_FIXTURE_DIR,
     GPU_QUEUE_ENV,
@@ -49,8 +54,19 @@ def test_catalog_requires_the_thin_p0_set():
     assert catalog["tune_contract"]["status"] == "frozen"
     assert catalog["tune_contract"]["tip_sha"] == TUNE_TIP_SHA
     assert catalog["tune_contract"]["master_sha"] == TUNE_MASTER_SHA
+    assert TUNE_TIP_SHA.startswith("fcb0f48")
+    assert TUNE_MASTER_SHA.startswith("a0c7061")
     for key in RECOVERY_FIELDS:
         assert key
+    assert "validity_status" in RECOVERY_FIELDS
+    assert "retry_count" in RECOVERY_FIELDS
+    assert CODE_ACK_LOST == "ack_lost"
+    assert TRAJECTORY_AUDIT_FIELDS == (
+        "retry_count",
+        "budget_consumed",
+        "next_action",
+        "stop_reason",
+    )
 
 
 def test_recovery_golden_gate_passes_cpu_fixtures():
@@ -294,4 +310,36 @@ def test_every_fixture_is_synthetic_cpu():
 @pytest.mark.parametrize("golden_id", REQUIRED_GOLDEN_IDS)
 def test_each_required_golden(golden_id: str):
     case = evaluate_golden(_spec(golden_id))
+    assert case.ok, case.failures
+
+
+def test_unconfirmable_maps_to_week1_insufficient_evidence():
+    stub = promotable_stub_result()
+    row = unconfirmable_contract_result(
+        experiment_id="sess_max_num_batched_tokens_4096",
+        config=stub.config,
+        session_id="sess_",
+        reason="incomplete: receipt/ack lost",
+    )
+    assert row.status.value == "insufficient_evidence"
+    assert is_promotable(row) is False
+    assert row.gpu_utilization_pct is None
+    assert row.gpu_memory_used_gb is None
+    assert row.throughput_rps is None
+
+
+def test_ack_lost_unconfirmable_is_not_a_promote():
+    case = evaluate_golden(_spec("ack_lost_unconfirmable"))
+    assert case.ok, case.failures
+    assert case.terminal is not None
+    assert case.terminal["best_confirmed_promotable"] is False
+
+
+def test_ack_lost_save_failure_does_not_forge():
+    case = evaluate_golden(_spec("ack_lost_save_failure"))
+    assert case.ok, case.failures
+
+
+def test_trajectory_audit_fields_on_executor_and_reflect():
+    case = evaluate_golden(_spec("trajectory_audit_executor_reflect"))
     assert case.ok, case.failures

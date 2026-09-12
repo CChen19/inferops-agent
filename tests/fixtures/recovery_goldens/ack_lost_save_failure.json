@@ -1,0 +1,20 @@
+{
+  "id": "ack_lost_save_failure",
+  "schema": "inferops.recovery_goldens.v1",
+  "synthetic": true,
+  "gpu_sampled": false,
+  "driver": "ack_lost_save_failure",
+  "expect": {
+    "require_recovery": true,
+    "recovery_code": "ack_lost",
+    "result_persisted": false,
+    "budget_consumed": true,
+    "validity_status": "insufficient_evidence",
+    "incomplete": true,
+    "no_forged_summary": true,
+    "no_double_budget": true,
+    "next_action": "rollback",
+    "confirmed_promotable": false,
+    "week1_gate_closed": true
+  }
+}

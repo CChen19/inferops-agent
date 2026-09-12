@@ -28,6 +28,15 @@ jobs:
       - name: Recovery golden gate (CPU/fixture; GPU-not-run ≠ pass)
         run: .venv/bin/python scripts/run_recovery_goldens.py
 
+      - name: Error-memory golden gate (CPU/fixture; GPU-not-run ≠ pass)
+        run: .venv/bin/python scripts/run_error_memory_goldens.py
+
+      - name: Unified ⑦ golden gate (CPU/fixture; GPU-not-run ≠ pass)
+        run: .venv/bin/python scripts/run_unified_goldens.py
+
+      - name: Real-LLM multi-run evidence (separate; blocker ≠ fake LLM)
+        run: .venv/bin/python scripts/run_real_llm_goldens.py
+
       - name: Run mock eval harness + regression gate
         run: |
           .venv/bin/python scripts/run_eval.py \

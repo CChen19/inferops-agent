@@ -1,0 +1,21 @@
+{
+  "id": "ack_lost_unconfirmable",
+  "schema": "inferops.recovery_goldens.v1",
+  "synthetic": true,
+  "gpu_sampled": false,
+  "driver": "ack_lost_unconfirmable",
+  "expect": {
+    "require_recovery": true,
+    "recovery_code": "ack_lost",
+    "result_persisted": true,
+    "budget_consumed": true,
+    "validity_status": "insufficient_evidence",
+    "incomplete": true,
+    "unconfirmable_insufficient_evidence": true,
+    "no_second_bench": true,
+    "no_double_budget": true,
+    "next_action": "rollback",
+    "confirmed_promotable": false,
+    "week1_gate_closed": true
+  }
+}

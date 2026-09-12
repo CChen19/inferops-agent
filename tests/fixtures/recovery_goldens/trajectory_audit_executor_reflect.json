@@ -1,0 +1,18 @@
+{
+  "id": "trajectory_audit_executor_reflect",
+  "schema": "inferops.recovery_goldens.v1",
+  "synthetic": true,
+  "gpu_sampled": false,
+  "driver": "trajectory_audit_executor_reflect",
+  "expect": {
+    "require_recovery": true,
+    "recovery_code": "ack_lost",
+    "validity_status": "insufficient_evidence",
+    "retry_count": 1,
+    "trajectory_audit": true,
+    "budget_consumed": true,
+    "next_action": "rollback",
+    "confirmed_promotable": false,
+    "week1_gate_closed": true
+  }
+}
