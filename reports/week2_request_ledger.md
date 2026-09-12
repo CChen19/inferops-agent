@@ -62,7 +62,7 @@ unevidenced row **cannot** promote best.
 - Cases: success, fail, timeout, cancel, truncate, zero output, single output token
 - Independent recalculation from persisted ledger matches report
 - Incomplete ≠ success
-- `pytest -q` (see PR body for results)
+- `pytest -q` → **236 passed** (2026-09-12)
 
 Synthetic example (not a real vLLM measurement):
 
