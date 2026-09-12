@@ -10,6 +10,7 @@ N ≥ 3 when credentials exist. GPU is out of scope here.
 from __future__ import annotations
 
 import json
+import math
 import os
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
@@ -251,13 +252,26 @@ def judge_live_run(report: dict[str, Any] | None) -> LiveRunJudgement:
     )
 
 
-def _int_field(payload: dict[str, Any], key: str) -> int | None:
-    if key not in payload:
+def _strict_nonneg_int(value: Any) -> int | None:
+    """Accept only a real non-negative ``int``.
+
+    ``int(3.9) == 3`` and ``int(True) == 1`` must not count. Bools, floats,
+    strings, and negatives are rejected.
+    """
+    if type(value) is not int:
         return None
-    try:
-        return int(payload[key])
-    except (TypeError, ValueError):
+    if value < 0:
         return None
+    return value
+
+
+def _finite_number(value: Any) -> float | None:
+    """Accept a finite real number. Reject bool, NaN, and ±Inf."""
+    if type(value) not in (int, float):
+        return None
+    if not math.isfinite(value):
+        return None
+    return float(value)
 
 
 def _accepted_runs(runs: list[Any]) -> tuple[int, list[str]]:
@@ -320,22 +334,16 @@ def validate_real_llm_campaign(campaign: dict[str, Any] | None) -> list[str]:
             failures.append("blocked real-LLM campaign must have passed=False")
         if "pass_rate" not in campaign or rate is not None:
             failures.append("blocked real-LLM campaign must have pass_rate=None")
+        if "n_requested" in campaign and _strict_nonneg_int(n_req) is None:
+            failures.append("blocked real-LLM campaign n_requested must be a non-negative int")
         if "n_completed" not in campaign:
             failures.append("blocked real-LLM campaign must present n_completed=0")
-        else:
-            try:
-                if int(n_comp) != 0:
-                    failures.append("blocked real-LLM campaign must have n_completed=0")
-            except (TypeError, ValueError):
-                failures.append("blocked real-LLM campaign must have n_completed=0")
+        elif _strict_nonneg_int(n_comp) != 0:
+            failures.append("blocked real-LLM campaign must have n_completed=0")
         if "n_accepted" not in campaign:
             failures.append("blocked real-LLM campaign must present n_accepted=0")
-        else:
-            try:
-                if int(n_acc) != 0:
-                    failures.append("blocked real-LLM campaign must have n_accepted=0")
-            except (TypeError, ValueError):
-                failures.append("blocked real-LLM campaign must have n_accepted=0")
+        elif _strict_nonneg_int(n_acc) != 0:
+            failures.append("blocked real-LLM campaign must have n_accepted=0")
         if "runs" not in campaign:
             failures.append("blocked real-LLM campaign must present empty runs")
         elif not isinstance(runs, list) or runs:
@@ -345,36 +353,33 @@ def validate_real_llm_campaign(campaign: dict[str, Any] | None) -> list[str]:
     if "runs" not in campaign or not isinstance(runs, list):
         failures.append("ran campaign missing runs list")
         runs = []
-    if "n_requested" not in campaign:
+    n_req_i = _strict_nonneg_int(n_req) if "n_requested" in campaign else None
+    if n_req_i is None:
         n_req_i = 0
-        failures.append("ran campaign missing n_requested")
-    else:
-        try:
-            n_req_i = int(n_req)
-        except (TypeError, ValueError):
-            n_req_i = 0
-            failures.append("ran campaign missing n_requested")
+        failures.append(
+            "ran campaign n_requested must be a non-negative int"
+            if "n_requested" in campaign
+            else "ran campaign missing n_requested"
+        )
+    n_comp_i = _strict_nonneg_int(n_comp) if "n_completed" in campaign else None
     if "n_completed" not in campaign:
         failures.append("ran campaign missing n_completed")
-    else:
-        try:
-            if int(n_comp) != len(runs):
-                failures.append("n_completed inconsistent with runs")
-        except (TypeError, ValueError):
-            failures.append("n_completed inconsistent with runs")
+    elif n_comp_i is None:
+        failures.append("ran campaign n_completed must be a non-negative int")
+    elif n_comp_i != len(runs):
+        failures.append("n_completed inconsistent with runs")
 
     accepted, accept_failures = _accepted_runs(runs)
     failures.extend(accept_failures)
+    n_acc_i = _strict_nonneg_int(n_acc) if "n_accepted" in campaign else None
     if "n_accepted" not in campaign:
         failures.append("ran campaign missing n_accepted")
-    else:
-        n_acc_i = _int_field(campaign, "n_accepted")
-        if n_acc_i is None:
-            failures.append("ran campaign n_accepted is not an integer")
-        elif n_acc_i != accepted:
-            failures.append(
-                f"n_accepted={n_acc!r} inconsistent with accepted runs ({accepted})"
-            )
+    elif n_acc_i is None:
+        failures.append("ran campaign n_accepted must be a non-negative int")
+    elif n_acc_i != accepted:
+        failures.append(
+            f"n_accepted={n_acc!r} inconsistent with accepted runs ({accepted})"
+        )
 
     expected_rate = (accepted / n_req_i) if n_req_i else None
     if "pass_rate" not in campaign:
@@ -385,14 +390,14 @@ def validate_real_llm_campaign(campaign: dict[str, Any] | None) -> list[str]:
     elif rate is None:
         failures.append("ran campaign missing pass_rate")
     else:
-        try:
-            if abs(float(rate) - expected_rate) > 1e-9:
-                failures.append(
-                    f"pass_rate {rate!r} != accepted/n_requested "
-                    f"({accepted}/{n_req_i})"
-                )
-        except (TypeError, ValueError):
-            failures.append(f"pass_rate {rate!r} is not numeric")
+        parsed_rate = _finite_number(rate)
+        if parsed_rate is None:
+            failures.append(f"pass_rate {rate!r} is not a finite number")
+        elif abs(parsed_rate - expected_rate) > 1e-9:
+            failures.append(
+                f"pass_rate {rate!r} != accepted/n_requested "
+                f"({accepted}/{n_req_i})"
+            )
     expected_passed = bool(n_req_i >= N_RUNS and accepted == n_req_i)
     if passed is True and not expected_passed:
         failures.append(
@@ -421,7 +426,6 @@ def validate_real_llm_campaign(campaign: dict[str, Any] | None) -> list[str]:
             for row in runs
         ):
             failures.append("every run in a passing campaign must be accepted")
-        n_acc_i = _int_field(campaign, "n_accepted")
         if n_acc_i is None or n_acc_i != n_req_i:
             failures.append(
                 "claimed pass requires n_accepted consistent with n_requested"

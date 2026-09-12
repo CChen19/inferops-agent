@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 
 from inferops.eval.error_memory_goldens import REQUIRED_GOLDEN_IDS as ERROR_MEMORY_IDS
@@ -303,3 +304,57 @@ def test_claimed_pass_missing_accepted_fields_fail_closed():
     issues = validate_real_llm_campaign(missing_completed)
     assert any("n_completed" in f for f in issues)
     assert unified_golden_gate(real_llm_campaign=missing_completed).passed is False
+
+
+def test_float_n_counts_fail_closed():
+    """int(3.9)==3 must not satisfy N≥3 / n_accepted consistency."""
+    campaign = _claimed_live_pass()
+    campaign["n_requested"] = 3.9
+    campaign["n_completed"] = 3.9
+    campaign["n_accepted"] = 3.9
+    issues = validate_real_llm_campaign(campaign)
+    assert issues
+    assert any("non-negative int" in f for f in issues)
+    assert real_llm_layer_status(campaign).passed is False
+    assert unified_golden_gate(real_llm_campaign=campaign).passed is False
+
+    blocked = _honest_blocked()
+    blocked["n_completed"] = 0.9
+    blocked["n_accepted"] = 0.0
+    issues = validate_real_llm_campaign(blocked)
+    assert issues
+    assert any("n_completed=0" in f or "n_accepted=0" in f for f in issues)
+    assert real_llm_layer_status(blocked).passed is False
+
+
+def test_bool_n_counts_fail_closed():
+    """int(True)==1 / int(False)==0 must not count as typed integers."""
+    campaign = _claimed_live_pass()
+    campaign["n_requested"] = True
+    campaign["n_completed"] = True
+    campaign["n_accepted"] = True
+    issues = validate_real_llm_campaign(campaign)
+    assert issues
+    assert any("non-negative int" in f for f in issues)
+    assert real_llm_layer_status(campaign).passed is False
+    assert unified_golden_gate(real_llm_campaign=campaign).passed is False
+
+    blocked = _honest_blocked()
+    blocked["n_completed"] = False
+    blocked["n_accepted"] = False
+    issues = validate_real_llm_campaign(blocked)
+    assert issues
+    assert any("n_completed=0" in f or "n_accepted=0" in f for f in issues)
+    assert real_llm_layer_status(blocked).passed is False
+
+
+def test_nan_or_inf_pass_rate_fail_closed():
+    """json.loads NaN/Inf must not bypass the pass_rate delta compare."""
+    for bad in (math.nan, math.inf, -math.inf, float("nan"), float("inf")):
+        campaign = _claimed_live_pass()
+        campaign["pass_rate"] = bad
+        issues = validate_real_llm_campaign(campaign)
+        assert issues, f"pass_rate={bad!r} must fail closed"
+        assert any("finite" in f or "pass_rate" in f for f in issues)
+        assert real_llm_layer_status(campaign).passed is False
+        assert unified_golden_gate(real_llm_campaign=campaign).passed is False
