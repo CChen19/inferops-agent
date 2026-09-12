@@ -419,6 +419,91 @@ def test_invalid_min_pairs_and_min_rel_delta_rejected():
         )
 
 
+def test_nonfinite_min_rel_delta_rejected():
+    base = _n_ledgers("infb", 2.0, 3)
+    cand = _n_ledgers("infc", 2.4, 3)
+    for bad in (float("inf"), float("-inf"), float("nan")):
+        with pytest.raises(ValueError, match="finite"):
+            verdict_from_ledgers(base, cand, min_rel_delta=bad)
+        with pytest.raises(ValidationError):
+            ConfirmationDecision(
+                phase=RepeatPhase.CONFIRMATION,
+                verdict=ConfirmationVerdict.TOO_NOISY,
+                numeric_signal=NumericSignal.TOO_NOISY,
+                metric="throughput_rps",
+                min_rel_delta=bad,
+            )
+
+
+def test_mutated_computed_decision_cannot_confirm(result_b):
+    """Frozen + gate re-check: too_noisy/no_diff cannot be mutated into confirm."""
+    decision = verdict_from_ledgers(
+        _n_ledgers("mutb", 2.00, 3),
+        _n_ledgers("mutc", 2.04, 3),
+        phase=RepeatPhase.CONFIRMATION,
+    )
+    assert decision.verdict == ConfirmationVerdict.NO_DIFF
+    assert is_confirmed_promotable(result_b, decision) is False
+
+    with pytest.raises(ValidationError, match="frozen"):
+        decision.verdict = ConfirmationVerdict.CONFIRMED_IMPROVEMENT  # type: ignore[misc]
+
+    with pytest.raises(ValidationError, match="forged ConfirmationDecision"):
+        decision.model_copy(
+            update={
+                "verdict": ConfirmationVerdict.CONFIRMED_IMPROVEMENT,
+                "numeric_signal": NumericSignal.IMPROVEMENT,
+            }
+        )
+
+    object.__setattr__(decision, "verdict", ConfirmationVerdict.CONFIRMED_IMPROVEMENT)
+    object.__setattr__(decision, "numeric_signal", NumericSignal.IMPROVEMENT)
+    assert is_confirmed_promotable(result_b, decision) is False
+
+
+def test_evaluate_campaign_rejects_missing_or_wrong_schedule():
+    base = _n_ledgers("schb", 2.0, 3)
+    cand = _n_ledgers("schc", 2.4, 3)
+    with pytest.raises(ValidationError, match="schedule"):
+        RepeatCampaign(
+            phase=RepeatPhase.CONFIRMATION,
+            conditions=CONDITIONS,
+            baseline_ledgers=base,
+            candidate_ledgers=cand,
+            schedule=[],
+        )
+    missing = RepeatCampaign.model_construct(
+        phase=RepeatPhase.CONFIRMATION,
+        conditions=CONDITIONS,
+        schedule=[],
+        baseline_ledgers=base,
+        candidate_ledgers=cand,
+    )
+    with pytest.raises(ValueError, match="schedule is missing"):
+        evaluate_campaign(missing)
+
+    wrong_slots = interleave_schedule(
+        3, phase=RepeatPhase.CONFIRMATION, start_arm=RepeatArm.CANDIDATE
+    )
+    with pytest.raises(ValidationError, match="interleave|order/pairing"):
+        RepeatCampaign(
+            phase=RepeatPhase.CONFIRMATION,
+            conditions=CONDITIONS,
+            baseline_ledgers=base,
+            candidate_ledgers=cand,
+            schedule=wrong_slots,
+        )
+    wrong = RepeatCampaign.model_construct(
+        phase=RepeatPhase.CONFIRMATION,
+        conditions=CONDITIONS,
+        schedule=wrong_slots,
+        baseline_ledgers=base,
+        candidate_ledgers=cand,
+    )
+    with pytest.raises(ValueError, match="order/pairing|interleave_schedule"):
+        evaluate_campaign(wrong)
+
+
 # ---------------------------------------------------------------------------
 # Missing metrics / provenance cannot fake gains
 # ---------------------------------------------------------------------------

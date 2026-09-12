@@ -40,8 +40,11 @@ B0, C0, B1, C1, B2, C2, …
 `interleave_schedule(n_pairs, phase=…)` / `run_interleaved_repeats(run_arm, …)`
 produce that order. A conditions mismatch raises — it is not a silent verdict.
 The same `RequestLedger` / `run_id` cannot count as multiple pairs
-(`require_unique_repeat_identities`). `min_pairs` and `min_rel_delta` must
-be `> 0`.
+(`require_unique_repeat_identities`). `evaluate_campaign` also requires
+`campaign.schedule` to match `interleave_schedule` (B0 C0 B1 C1 …).
+`min_pairs` must be `> 0`. `min_rel_delta` must be finite and `> 0`.
+`ConfirmationDecision` is frozen; mutating a computed `too_noisy` /
+`no_diff` cannot pass `is_confirmed_promotable`.
 
 Search and confirmation are different phases:
 
@@ -121,6 +124,9 @@ CPU / ledger fixtures in `tests/test_repeat_confirmation.py`:
 - Duplicate `run_id` / reused ledger cannot count as independent repeats
 - `min_pairs <= 0` and `min_rel_delta <= 0` rejected
 - Any missing primary → `too_noisy` even when other pairs would suffice
+- Mutating a computed `no_diff` / `too_noisy` decision cannot pass the gate
+- `evaluate_campaign` without / with a non-interleaved schedule is rejected
+- Non-finite `min_rel_delta` (`inf` / `-inf` / `nan`) is rejected
 
 ```bash
 pytest -q

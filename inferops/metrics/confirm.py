@@ -12,12 +12,13 @@ unchanged and still required.
 from __future__ import annotations
 
 import contextvars
+import math
 from collections.abc import Callable, Sequence
 from enum import Enum
 from statistics import median
 from typing import Any
 
-from pydantic import BaseModel, Field, PrivateAttr, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
 
 from inferops.metrics.aggregate import AggregateMetrics, recalculate_from_ledger
 from inferops.metrics.ledger import RequestLedger, RunConditions
@@ -107,6 +108,8 @@ class PairClass(str, Enum):
 class RepeatSlot(BaseModel):
     """One independent run in an interleaved baseline/candidate schedule."""
 
+    model_config = ConfigDict(frozen=True)
+
     sequence_index: int
     pair_index: int
     arm: RepeatArm
@@ -115,6 +118,8 @@ class RepeatSlot(BaseModel):
 
 class RepeatPair(BaseModel):
     """One independent (baseline, candidate) pair after recalculation."""
+
+    model_config = ConfigDict(frozen=True)
 
     pair_index: int
     baseline_run_id: str
@@ -140,6 +145,7 @@ class RepeatCampaign(BaseModel):
             require_unique_repeat_identities(
                 self.baseline_ledgers, self.candidate_ledgers
             )
+            require_interleaved_schedule(self)
         return self
 
 
@@ -149,7 +155,11 @@ class ConfirmationDecision(BaseModel):
     `confirmed_improvement` cannot be hand-built. It is only legal from
     `verdict_from_ledgers` / `evaluate_campaign`, and only when
     `numeric_signal=improvement` with enough unique usable pairs.
+    Frozen after construct: attribute assign / `model_copy` cannot turn
+    `too_noisy` / `no_diff` into a confirm while keeping `_origin`.
     """
+
+    model_config = ConfigDict(frozen=True)
 
     phase: RepeatPhase
     verdict: ConfirmationVerdict
@@ -157,14 +167,17 @@ class ConfirmationDecision(BaseModel):
     search_winner: bool = False
     metric: str
     min_pairs: int = Field(default=DEFAULT_MIN_PAIRS, gt=0)
-    min_rel_delta: float = Field(default=DEFAULT_MIN_REL_DELTA, gt=0)
+    min_rel_delta: float = Field(
+        default=DEFAULT_MIN_REL_DELTA, gt=0, allow_inf_nan=False
+    )
     pair_count: int = Field(default=0, ge=0)
     usable_pairs: int = Field(default=0, ge=0)
-    median_rel_delta: float | None = None
-    median_improvement_pct: float | None = None  # None if not computable — never 0
-    pairs: list[RepeatPair] = Field(default_factory=list)
+    median_rel_delta: float | None = Field(default=None, allow_inf_nan=False)
+    median_improvement_pct: float | None = Field(default=None, allow_inf_nan=False)
+    pairs: tuple[RepeatPair, ...] = Field(default_factory=tuple)
     reason: str = ""
     _origin: str = PrivateAttr(default="")
+    _fingerprint: tuple[Any, ...] | None = PrivateAttr(default=None)
 
     @model_validator(mode="after")
     def _encode_phase_and_missing_rules(self) -> ConfirmationDecision:
@@ -173,17 +186,7 @@ class ConfirmationDecision(BaseModel):
         )
         if self.metric not in CONFIRMABLE_METRICS:
             raise ValueError(f"unsupported confirmation metric: {self.metric!r}")
-        if self.usable_pairs > self.pair_count:
-            raise ValueError("usable_pairs cannot exceed pair_count")
-        if self.pairs:
-            if self.pair_count != len(self.pairs):
-                raise ValueError("pair_count does not match pairs")
-            computed_usable = sum(
-                1 for p in self.pairs if p.classification != PairClass.MISSING
-            )
-            if self.usable_pairs != computed_usable:
-                raise ValueError("usable_pairs does not match pair classifications")
-            require_unique_pair_run_ids(self.pairs)
+        _require_pair_consistency(self)
         if self.verdict == ConfirmationVerdict.CONFIRMED_IMPROVEMENT:
             if self.phase != RepeatPhase.CONFIRMATION:
                 raise ValueError(
@@ -194,44 +197,97 @@ class ConfirmationDecision(BaseModel):
                     "forged ConfirmationDecision: confirmed_improvement is only "
                     "legal from verdict_from_ledgers / evaluate_campaign"
                 )
-            if self.numeric_signal != NumericSignal.IMPROVEMENT:
-                raise ValueError(
-                    "confirmed_improvement requires numeric_signal=improvement"
-                )
-            if self.usable_pairs < self.min_pairs:
-                raise ValueError(
-                    "confirmed_improvement requires usable_pairs >= min_pairs"
-                )
-            if not self.pairs:
-                raise ValueError("confirmed_improvement requires pair evidence")
-            if any(p.classification != PairClass.BETTER for p in self.pairs):
-                raise ValueError(
-                    "confirmed_improvement requires every pair to be better "
-                    "(missing primary is too_noisy)"
-                )
-            if (
-                self.median_rel_delta is None
-                or self.median_rel_delta < self.min_rel_delta
-            ):
-                raise ValueError(
-                    "confirmed_improvement requires median_rel_delta >= min_rel_delta"
-                )
-        if self.phase == RepeatPhase.SEARCH:
-            self.search_winner = self.numeric_signal == NumericSignal.IMPROVEMENT
-            if self.verdict == ConfirmationVerdict.CONFIRMED_IMPROVEMENT:
-                raise ValueError("search phase cannot confirm improvement")
-        else:
-            self.search_winner = False
+            _require_confirmed_improvement_invariants(self)
+        search_winner = (
+            self.phase == RepeatPhase.SEARCH
+            and self.numeric_signal == NumericSignal.IMPROVEMENT
+        )
+        if self.phase == RepeatPhase.SEARCH and (
+            self.verdict == ConfirmationVerdict.CONFIRMED_IMPROVEMENT
+        ):
+            raise ValueError("search phase cannot confirm improvement")
+        object.__setattr__(self, "search_winner", search_winner)
         if self.median_rel_delta is None:
-            self.median_improvement_pct = None
+            object.__setattr__(self, "median_improvement_pct", None)
+        if _COMPUTE_GATE.get():
+            object.__setattr__(self, "_origin", _COMPUTED_ORIGIN)
         return self
 
 
 def require_positive_bounds(*, min_pairs: int, min_rel_delta: float) -> None:
     if min_pairs <= 0:
         raise ValueError("min_pairs must be > 0")
-    if min_rel_delta <= 0:
-        raise ValueError("min_rel_delta must be > 0")
+    if not isinstance(min_rel_delta, (int, float)) or isinstance(min_rel_delta, bool):
+        raise ValueError("min_rel_delta must be a finite value > 0")
+    if not math.isfinite(min_rel_delta) or min_rel_delta <= 0:
+        raise ValueError("min_rel_delta must be a finite value > 0")
+
+
+def _require_pair_consistency(decision: ConfirmationDecision) -> None:
+    if decision.usable_pairs > decision.pair_count:
+        raise ValueError("usable_pairs cannot exceed pair_count")
+    if decision.pairs:
+        if decision.pair_count != len(decision.pairs):
+            raise ValueError("pair_count does not match pairs")
+        computed_usable = sum(
+            1 for p in decision.pairs if p.classification != PairClass.MISSING
+        )
+        if decision.usable_pairs != computed_usable:
+            raise ValueError("usable_pairs does not match pair classifications")
+        require_unique_pair_run_ids(decision.pairs)
+
+
+def _require_confirmed_improvement_invariants(decision: ConfirmationDecision) -> None:
+    if decision.phase != RepeatPhase.CONFIRMATION:
+        raise ValueError("confirmed_improvement is illegal outside phase=confirmation")
+    if decision.numeric_signal != NumericSignal.IMPROVEMENT:
+        raise ValueError("confirmed_improvement requires numeric_signal=improvement")
+    if decision.usable_pairs < decision.min_pairs:
+        raise ValueError("confirmed_improvement requires usable_pairs >= min_pairs")
+    if not decision.pairs:
+        raise ValueError("confirmed_improvement requires pair evidence")
+    if any(p.classification != PairClass.BETTER for p in decision.pairs):
+        raise ValueError(
+            "confirmed_improvement requires every pair to be better "
+            "(missing primary is too_noisy)"
+        )
+    if (
+        decision.median_rel_delta is None
+        or not math.isfinite(decision.median_rel_delta)
+        or decision.median_rel_delta < decision.min_rel_delta
+    ):
+        raise ValueError(
+            "confirmed_improvement requires finite median_rel_delta >= min_rel_delta"
+        )
+
+
+def _decision_fingerprint(decision: ConfirmationDecision) -> tuple[Any, ...]:
+    return (
+        decision.phase,
+        decision.verdict,
+        decision.numeric_signal,
+        decision.search_winner,
+        decision.metric,
+        decision.min_pairs,
+        decision.min_rel_delta,
+        decision.pair_count,
+        decision.usable_pairs,
+        decision.median_rel_delta,
+        decision.median_improvement_pct,
+        decision.reason,
+        tuple(
+            (
+                p.pair_index,
+                p.baseline_run_id,
+                p.candidate_run_id,
+                p.baseline_value,
+                p.candidate_value,
+                p.rel_delta,
+                p.classification,
+            )
+            for p in decision.pairs
+        ),
+    )
 
 
 def require_unique_repeat_identities(
@@ -268,11 +324,11 @@ def require_unique_pair_run_ids(pairs: Sequence[RepeatPair]) -> None:
 
 
 def _computed_decision(**kwargs: Any) -> ConfirmationDecision:
-    """Mint a decision from the controlled compute path only."""
+    """Mint a frozen decision from the controlled compute path only."""
     token = _COMPUTE_GATE.set(True)
     try:
         decision = ConfirmationDecision(**kwargs)
-        decision._origin = _COMPUTED_ORIGIN
+        object.__setattr__(decision, "_fingerprint", _decision_fingerprint(decision))
         return decision
     finally:
         _COMPUTE_GATE.reset(token)
@@ -306,6 +362,42 @@ def interleave_schedule(
             )
             seq += 1
     return slots
+
+
+def require_interleaved_schedule(campaign: RepeatCampaign) -> None:
+    """Unique run_ids are not enough — the campaign must be B0 C0 B1 C1 …"""
+    n_pairs = len(campaign.baseline_ledgers)
+    if n_pairs != len(campaign.candidate_ledgers):
+        raise ValueError(
+            "baseline and candidate must have the same number of independent repeats"
+        )
+    if n_pairs < 1:
+        raise ValueError("campaign has no interleaved pairs")
+    if not campaign.schedule:
+        raise ValueError(
+            "campaign.schedule is missing; refuse non-interleaved repeats"
+        )
+    expected = interleave_schedule(n_pairs, phase=campaign.phase)
+    if len(campaign.schedule) != len(expected):
+        raise ValueError(
+            "campaign.schedule does not match interleave_schedule; "
+            "refuse non-interleaved repeats"
+        )
+    for slot, exp in zip(campaign.schedule, expected, strict=True):
+        if (
+            slot.sequence_index,
+            slot.pair_index,
+            slot.arm,
+            slot.phase,
+        ) != (
+            exp.sequence_index,
+            exp.pair_index,
+            exp.arm,
+            exp.phase,
+        ):
+            raise ValueError(
+                "campaign.schedule order/pairing does not match interleave_schedule"
+            )
 
 
 def conditions_fingerprint(conditions: RunConditions) -> dict[str, Any]:
@@ -518,6 +610,7 @@ def evaluate_campaign(
     require_unique_repeat_identities(
         campaign.baseline_ledgers, campaign.candidate_ledgers
     )
+    require_interleaved_schedule(campaign)
     require_same_conditions(campaign.baseline_ledgers + campaign.candidate_ledgers)
     if not conditions_match(
         campaign.conditions, campaign.baseline_ledgers[0].conditions
@@ -585,13 +678,29 @@ def is_confirmed_promotable(
         return False
     if not is_promotable(result):
         return False
-    if decision.phase != RepeatPhase.CONFIRMATION:
-        return False
-    if decision.verdict != ConfirmationVerdict.CONFIRMED_IMPROVEMENT:
-        return False
     if result.successful_requests <= 0:
         return False
-    if getattr(decision, "_origin", None) != _COMPUTED_ORIGIN:
+    return _computed_confirmation_holds(decision)
+
+
+def _computed_confirmation_holds(decision: ConfirmationDecision) -> bool:
+    """Re-check every confirm invariant. Mutated / forged decisions fail."""
+    try:
+        if getattr(decision, "_origin", None) != _COMPUTED_ORIGIN:
+            return False
+        stored = getattr(decision, "_fingerprint", None)
+        if stored is None or stored != _decision_fingerprint(decision):
+            return False
+        require_positive_bounds(
+            min_pairs=decision.min_pairs, min_rel_delta=decision.min_rel_delta
+        )
+        if decision.metric not in CONFIRMABLE_METRICS:
+            return False
+        if decision.verdict != ConfirmationVerdict.CONFIRMED_IMPROVEMENT:
+            return False
+        _require_pair_consistency(decision)
+        _require_confirmed_improvement_invariants(decision)
+    except (TypeError, ValueError):
         return False
     return True
 

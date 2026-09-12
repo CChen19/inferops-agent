@@ -48,7 +48,8 @@ parallel metrics schemas.
 | `is_confirmed_promotable` | ⑤: `is_promotable` **and** confirmation-phase improvement |
 | `ConfirmationDecision` / `RepeatPhase` / `RepeatCampaign` | ⑤: search winner ≠ confirmed; hand-built confirm rejected |
 | `require_unique_repeat_identities` | ⑤: unique `run_id`s; same ledger ≠ two pairs |
-| `require_positive_bounds` | ⑤: `min_pairs > 0`, `min_rel_delta > 0` |
+| `require_interleaved_schedule` | ⑤: schedule must be B0 C0 B1 C1 … (`interleave_schedule`) |
+| `require_positive_bounds` | ⑤: `min_pairs > 0`, finite `min_rel_delta > 0` |
 
 Search-phase wins must not auto-promote. See
 [`week2_repeat_confirmation.md`](./week2_repeat_confirmation.md).
@@ -67,4 +68,6 @@ Search-phase wins must not auto-promote. See
 - Treat a search-phase winner as `confirmed_improvement`.
 - Hand-build `confirmed_improvement` (must come from `verdict_from_ledgers`).
 - Count the same `run_id` / ledger object as multiple independent repeats.
+- Ignore `campaign.schedule` or treat a non-interleaved order as confirmation.
+- Mutate a computed decision into `confirmed_improvement`.
 - Invent a second `run_id` or a second metrics/ledger schema.
