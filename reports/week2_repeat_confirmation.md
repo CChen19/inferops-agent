@@ -133,7 +133,7 @@ pytest -q
 ```
 
 ```text
-275 passed in 18.28s
+278 passed in 16.42s
 ```
 
 No real vLLM / GPU numbers are claimed in this environment.

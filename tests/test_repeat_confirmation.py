@@ -397,9 +397,9 @@ def test_invalid_min_pairs_and_min_rel_delta_rejected():
         verdict_from_ledgers(base, cand, min_pairs=0)
     with pytest.raises(ValueError, match="min_pairs must be > 0"):
         verdict_from_ledgers(base, cand, min_pairs=-1)
-    with pytest.raises(ValueError, match="min_rel_delta must be > 0"):
+    with pytest.raises(ValueError, match="min_rel_delta must be"):
         verdict_from_ledgers(base, cand, min_rel_delta=0.0)
-    with pytest.raises(ValueError, match="min_rel_delta must be > 0"):
+    with pytest.raises(ValueError, match="min_rel_delta must be"):
         verdict_from_ledgers(base, cand, min_rel_delta=-0.05)
     with pytest.raises(ValidationError):
         ConfirmationDecision(

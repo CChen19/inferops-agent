@@ -213,6 +213,18 @@ class ConfirmationDecision(BaseModel):
             object.__setattr__(self, "_origin", _COMPUTED_ORIGIN)
         return self
 
+    def model_copy(
+        self,
+        *,
+        update: dict[str, Any] | None = None,
+        deep: bool = False,
+    ) -> ConfirmationDecision:
+        """Re-validate copies. `update` cannot keep `_origin` and forge a confirm."""
+        payload = self.model_dump()
+        if update:
+            payload.update(update)
+        return ConfirmationDecision.model_validate(payload)
+
 
 def require_positive_bounds(*, min_pairs: int, min_rel_delta: float) -> None:
     if min_pairs <= 0:
