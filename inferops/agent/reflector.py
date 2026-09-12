@@ -6,7 +6,8 @@ Decision logic is **deterministic code** (``reflect_constraints``):
   - Budget exhausted                         → stop
   - Duplicate candidate                      → continue (do not promote)
   - OOM / exec fail                          → rollback
-  - SLO breach (error_rate)                  → rollback
+  - invalid / insufficient_evidence          → rollback (fail-closed)
+  - SLO breach or missing error_rate         → rollback (fail-closed)
   - ⑤ ``too_noisy``                          → remeasure (cap) or stop
   - ⑤ ``no_diff`` / ``regression``           → stop (no_reliable_improvement)
   - ⑤ search winner                          → remeasure (queue confirmation)
@@ -29,6 +30,10 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
+from inferops.agent.confirm_campaign import (
+    candidate_fingerprint,
+    clear_confirmation_fields,
+)
 from inferops.agent.reflect_constraints import (
     LLM_MUST_NOT_OWN,
     conclude_experiment,
@@ -99,6 +104,8 @@ def reflector_node(state: AgentState) -> dict:
             confirmation_decision=state.get("confirmation_decision"),
             repeat_ledgers=state.get("repeat_ledgers"),
             primary_metric=WORKLOAD_PRIMARY_METRIC[state["workload_name"]],
+            bound_run_ids=state.get("confirmation_bound_run_ids"),
+            bound_target=state.get("confirmation_target"),
         )
         return _apply_conclusion(state, conclusion, latest)
 
@@ -119,6 +126,8 @@ def reflector_node(state: AgentState) -> dict:
         confirmation_decision=state.get("confirmation_decision"),
         repeat_ledgers=state.get("repeat_ledgers"),
         primary_metric=WORKLOAD_PRIMARY_METRIC[state["workload_name"]],
+        bound_run_ids=state.get("confirmation_bound_run_ids"),
+        bound_target=state.get("confirmation_target"),
     )
     return _apply_conclusion(state, conclusion, latest)
 
@@ -149,7 +158,12 @@ def _apply_conclusion(
             metric=WORKLOAD_PRIMARY_METRIC[state["workload_name"]],
         )
         new_best, promoted = maybe_promote_best(
-            state.get("last_result"), decision, latest, new_best
+            state.get("last_result"),
+            decision,
+            latest,
+            new_best,
+            bound_run_ids=state.get("confirmation_bound_run_ids"),
+            bound_target=state.get("confirmation_target"),
         )
         if not promoted:
             new_best = state.get("best_summary")
@@ -196,6 +210,13 @@ def _apply_conclusion(
         "remeasure_count": remasure_count,
         "best_summary": new_best,
     }
+    # Stale ⑤ decisions must not outlive this candidate. Keep only while remasuring.
+    if conclusion.next_action == "remeasure" and hyp:
+        patch["confirmation_target"] = candidate_fingerprint(hyp.get("param"), hyp.get("value"))
+    else:
+        patch.update(clear_confirmation_fields())
+        if conclusion.next_action != "remeasure":
+            patch["remeasure_count"] = 0
     return patch
 
 

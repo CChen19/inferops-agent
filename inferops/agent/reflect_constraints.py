@@ -10,9 +10,14 @@ Promotion requires ``is_confirmed_promotable(result, decision)``.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
+from inferops.agent.confirm_campaign import (
+    decision_applies_to_latest,
+    decision_binds_to_result,
+)
 from inferops.metrics import (
     DEFAULT_MIN_PAIRS,
     DEFAULT_MIN_REL_DELTA,
@@ -25,8 +30,16 @@ from inferops.metrics import (
 
 NextAction = Literal["continue", "remeasure", "rollback", "stop"]
 
-# Agent-local SLO: reads existing ``error_rate`` only (④ field). Not a new schema.
+# Agent-local SLO hook (④ ``error_rate`` only — not a new metrics schema).
+# 5% matches ⑤ DEFAULT_MIN_REL_DELTA / the search improvement bar.
 MAX_ERROR_RATE = 0.05
+
+
+def slo_max_error_rate() -> float:
+    raw = os.environ.get("INFEROPS_REFLECT_MAX_ERROR_RATE")
+    if raw is None or raw == "":
+        return MAX_ERROR_RATE
+    return float(raw)
 # Cap remasures so too_noisy cannot loop forever (⑤ default pair floor).
 MAX_REMEASURES = DEFAULT_MIN_PAIRS
 IMPROVEMENT_THRESHOLD_PCT = 5.0
@@ -63,15 +76,28 @@ class ReflectConclusion:
 
 
 def check_slo(summary: dict[str, Any] | None) -> dict[str, Any]:
-    """Deterministic SLO. Missing ``error_rate`` is not a pass invented as 0."""
+    """Deterministic SLO. Missing ``error_rate`` is fail-closed (not SLO-ok)."""
     if not summary:
-        return {"ok": True, "error_rate": None, "reason": "no_summary"}
+        return {"ok": False, "error_rate": None, "reason": "no_summary"}
+    if "error_rate" not in summary or summary.get("error_rate") is None:
+        return {"ok": False, "error_rate": None, "reason": "error_rate_missing_fail_closed"}
     err = summary.get("error_rate")
-    if err is None:
-        return {"ok": True, "error_rate": None, "reason": "error_rate_not_measured"}
-    if err > MAX_ERROR_RATE:
+    limit = slo_max_error_rate()
+    if err > limit:
         return {"ok": False, "error_rate": err, "reason": "error_rate_exceeds_slo"}
     return {"ok": True, "error_rate": err, "reason": "slo_ok"}
+
+
+def is_candidate_summary(summary: dict[str, Any] | None) -> bool:
+    return bool(summary) and summary.get("param_changed") not in (None, "")
+
+
+def needs_validity_rollback(summary: dict[str, Any] | None) -> bool:
+    """invalid / insufficient_evidence (and unknown-on-candidate) are fail-closed."""
+    if not is_candidate_summary(summary):
+        return False
+    status = str((summary or {}).get("validity_status") or "insufficient_evidence")
+    return status in {"invalid", "insufficient_evidence"}
 
 
 def is_exec_fail(summary: dict[str, Any] | None) -> bool:
@@ -204,9 +230,25 @@ def maybe_promote_best(
     decision: ConfirmationDecision | None,
     candidate: dict[str, Any] | None,
     current_best: dict[str, Any] | None,
+    *,
+    bound_run_ids: list[str] | None = None,
+    bound_target: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any] | None, bool]:
-    """Best updates only through ``is_confirmed_promotable``. Search/forged stay out."""
-    if candidate is None or not is_confirmed_promotable(result, decision):
+    """Best updates only through bind + ``is_confirmed_promotable``.
+
+    A ⑤ decision computed for candidate A cannot promote candidate B.
+    """
+    if candidate is None:
+        return current_best, False
+    if not decision_binds_to_result(
+        decision,
+        result,
+        candidate=candidate,
+        bound_run_ids=bound_run_ids,
+        bound_target=bound_target,
+    ):
+        return current_best, False
+    if not is_confirmed_promotable(result, decision):
         return current_best, False
     promoted = dict(candidate)
     promoted["confirmed_promotable"] = True
@@ -244,6 +286,8 @@ def conclude_experiment(
     confirmation_decision: ConfirmationDecision | None = None,
     repeat_ledgers: dict[str, Any] | None = None,
     primary_metric: str = "throughput_rps",
+    bound_run_ids: list[str] | None = None,
+    bound_target: dict[str, Any] | None = None,
 ) -> ReflectConclusion:
     """Priority-ordered Reflect rules. Deterministic; no LLM."""
 
@@ -252,14 +296,34 @@ def conclude_experiment(
         confirmation_decision=confirmation_decision,
         metric=primary_metric,
     )
-    slo = check_slo(latest)
+    if decision is not None and not decision_applies_to_latest(
+        decision,
+        last_result=last_result,
+        latest=latest,
+        bound_run_ids=bound_run_ids,
+        bound_target=bound_target,
+    ):
+        decision = None
+    slo = check_slo(latest) if is_candidate_summary(latest) else {
+        "ok": True,
+        "error_rate": (latest or {}).get("error_rate") if latest else None,
+        "reason": "baseline_or_no_candidate",
+    }
     duplicate = is_duplicate_candidate(
         summaries, latest, last_skip_reason=last_skip_reason
     )
     exec_fail = is_exec_fail(latest)
+    validity_rollback = needs_validity_rollback(latest)
     validity = str((latest or {}).get("validity_status") or "unknown")
     budget = int(experiments_remaining)
-    _, would_promote = maybe_promote_best(last_result, decision, latest, best)
+    _, would_promote = maybe_promote_best(
+        last_result,
+        decision,
+        latest,
+        best,
+        bound_run_ids=bound_run_ids,
+        bound_target=bound_target,
+    )
     run_ids = cited_run_ids(baseline, latest, best, decision=decision, last_result=last_result)
 
     checks = {
@@ -269,6 +333,7 @@ def conclude_experiment(
         "budget_remaining": budget,
         "is_duplicate": duplicate,
         "exec_fail": exec_fail,
+        "validity_rollback": validity_rollback,
         "remeasure_count": remeasure_count,
         **_confirmation_fields(decision, result=last_result, promoted=False),
     }
@@ -333,7 +398,25 @@ def conclude_experiment(
             reason="oom_or_exec_fail",
         )
 
-    # 4. SLO breach
+    # 3b. invalid / insufficient_evidence — fail-closed rollback
+    if validity_rollback:
+        streak = no_improvement_streak + 1
+        if streak >= MAX_STREAK:
+            return _done(
+                "stop",
+                stop=True,
+                stop_reason="no_reliable_improvement",
+                streak=streak,
+                reason="validity_fail_closed_streak",
+            )
+        return _done(
+            "rollback",
+            stop=False,
+            streak=streak,
+            reason="validity_fail_closed",
+        )
+
+    # 4. SLO breach (missing error_rate is fail-closed)
     if not slo["ok"]:
         streak = no_improvement_streak + 1
         if streak >= MAX_STREAK:

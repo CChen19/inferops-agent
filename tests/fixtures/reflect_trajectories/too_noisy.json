@@ -27,5 +27,10 @@
     "gate": "is_confirmed_promotable"
   },
   "next_action": "remeasure",
-  "stop_reason": ""
+  "stop_reason": "",
+  "reasoning": "next_action=remeasure reason=too_noisy_queue_remeasure",
+  "result": {
+    "promoted_to_best": false,
+    "confirmation": {"verdict": "too_noisy", "phase": "confirmation"}
+  }
 }

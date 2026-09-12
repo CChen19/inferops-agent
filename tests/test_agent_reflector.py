@@ -26,6 +26,13 @@ def _base_state(bottleneck: str = "compute-bound") -> AgentState:
         "e2e_p50_ms": 1015.0,
         "bottleneck": bottleneck,
         "vs_baseline_pct": 0.0,
+        "run_id": "baseline-run",
+        "validity_status": "valid",
+        "error_rate": 0.0,
+        "promotable": True,
+        "has_config_evidence": True,
+        "mlflow_run_id": None,
+        "failure_reason": "",
     }
     return s
 
@@ -42,6 +49,13 @@ def _add_summary(state: AgentState, vs_baseline_pct: float, bottleneck: str) -> 
         "e2e_p50_ms": 900.0,
         "bottleneck": bottleneck,
         "vs_baseline_pct": vs_baseline_pct,
+        "run_id": f"run-{len(state['experiment_summaries'])}",
+        "validity_status": "valid",
+        "error_rate": 0.0,
+        "promotable": True,
+        "has_config_evidence": True,
+        "mlflow_run_id": None,
+        "failure_reason": "",
     })
     return state
 

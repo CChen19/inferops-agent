@@ -20,6 +20,14 @@ from typing import Any, Callable, Iterator
 
 from rich.console import Console
 
+from inferops.agent.confirm_campaign import (
+    campaign_to_repeat_ledgers,
+    candidate_fingerprint,
+    clear_confirmation_fields,
+    decision_binds_to_result,
+    fingerprints_match,
+    run_confirmation_campaign,
+)
 from inferops.agent.state import (
     WORKLOAD_PRIMARY_METRIC,
     AgentState,
@@ -42,6 +50,7 @@ console = Console()
 # Optional eval stubs (tool edges only). None → production callables.
 _run_benchmark_override: Callable[[RunBenchmarkInput], Any] | None = None
 _propose_config_override: Callable[..., Any] | None = None
+_confirmation_run_arm_override: Callable[..., Any] | None = None
 
 
 @contextmanager
@@ -49,19 +58,36 @@ def tool_boundary_overrides(
     *,
     run_benchmark_fn: Callable[[RunBenchmarkInput], Any] | None = None,
     propose_config_fn: Callable[..., Any] | None = None,
+    confirmation_run_arm_fn: Callable[..., Any] | None = None,
 ) -> Iterator[None]:
-    """Temporarily replace benchmark / propose callables at the tool boundary."""
-    global _run_benchmark_override, _propose_config_override
+    """Temporarily replace benchmark / propose / confirmation-run_arm at tool edges."""
+    global _run_benchmark_override, _propose_config_override, _confirmation_run_arm_override
     prev_bench, prev_propose = _run_benchmark_override, _propose_config_override
+    prev_arm = _confirmation_run_arm_override
     if run_benchmark_fn is not None:
         _run_benchmark_override = run_benchmark_fn
     if propose_config_fn is not None:
         _propose_config_override = propose_config_fn
+    if confirmation_run_arm_fn is not None:
+        _confirmation_run_arm_override = confirmation_run_arm_fn
     try:
         yield
     finally:
         _run_benchmark_override = prev_bench
         _propose_config_override = prev_propose
+        _confirmation_run_arm_override = prev_arm
+
+
+@contextmanager
+def confirmation_run_arm_override(run_arm: Callable[..., Any]) -> Iterator[None]:
+    """Offline / fixture ⑤ run_arm — no GPU. Preferred CI confirmation path."""
+    global _confirmation_run_arm_override
+    prev = _confirmation_run_arm_override
+    _confirmation_run_arm_override = run_arm
+    try:
+        yield
+    finally:
+        _confirmation_run_arm_override = prev
 
 
 def executor_node(state: AgentState) -> dict:
@@ -81,6 +107,18 @@ def executor_node(state: AgentState) -> dict:
 
     # --- Deduplication check (remeasure of the same hyp is not a skip) ---
     remeasuring = state.get("next_action") == "remeasure"
+    same_target = fingerprints_match(
+        state.get("confirmation_target"), hyp["param"], hyp["value"]
+    )
+    if not (remeasuring and same_target):
+        # New hyp / different candidate: drop stale ⑤ state so A cannot promote B.
+        stale_clear = clear_confirmation_fields()
+    else:
+        stale_clear = {}
+
+    if remeasuring:
+        # Always a new ⑤ campaign for this hyp — do not re-apply stale_clear after.
+        return _execute_confirmation_campaign(state, hyp, primary_metric)
     if not remeasuring and is_duplicate(state, hyp["param"], hyp["value"]):
         console.print(f"  [dim]executor: skip duplicate ({hyp['param']}={hyp['value']})[/dim]")
         updated_hyps = _set_status(state["hypotheses"], hyp["id"], "skipped", None)
@@ -103,6 +141,7 @@ def executor_node(state: AgentState) -> dict:
             "last_skipped_hypothesis_id": hyp["id"],
             "last_result": None,
             "trajectory": state["trajectory"] + [traj_step],
+            **stale_clear,
         }
 
     # --- Build experiment ID ---
@@ -326,12 +365,127 @@ def executor_node(state: AgentState) -> dict:
         "last_result":           result,
         "last_skip_reason":      "",
         "trajectory":            state["trajectory"] + [traj_step],
+        **stale_clear,
     }
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _execute_confirmation_campaign(
+    state: AgentState,
+    hyp: Hypothesis,
+    primary_metric: str,
+) -> dict[str, Any]:
+    """Drive ⑤ interleave + evaluate_campaign. Fixture run_arm is the CI path."""
+    from inferops.metrics import DEFAULT_MIN_PAIRS, RepeatPhase
+
+    run_arm = _confirmation_run_arm_override
+    expected = None
+    rl = state.get("repeat_ledgers") or {}
+    if rl.get("conditions") is not None:
+        expected = rl["conditions"]
+    elif rl.get("baseline"):
+        expected = rl["baseline"][0].conditions
+
+    updated_hyps = _set_status(state["hypotheses"], hyp["id"], "success", hyp.get("experiment_id"))
+    target = candidate_fingerprint(hyp["param"], hyp["value"])
+    if run_arm is None:
+        console.print(
+            "  [yellow]executor: remasure has no confirmation run_arm "
+            "(CI uses fixtures; production slots would call run_benchmark)[/yellow]"
+        )
+        traj_step = {
+            "step": len(state["trajectory"]) + 1,
+            "node": "executor",
+            "workload": state["workload_name"],
+            "action": "confirmation_campaign",
+            "hypothesis": {
+                "id": hyp["id"],
+                "param": hyp["param"],
+                "value": hyp["value"],
+                "text": hyp.get("rationale") or "",
+            },
+            "cited_run_ids": [],
+            "result": {
+                "status": "unavailable",
+                "reason": "confirmation_campaign_unavailable",
+                "promoted_to_best": False,
+            },
+        }
+        return {
+            "hypotheses": updated_hyps,
+            "next_action": "remeasure",
+            "confirmation_target": target,
+            "confirmation_decision": None,
+            "repeat_ledgers": None,
+            "confirmation_bound_run_ids": None,
+            "confirmation_blocked": True,
+            "last_skip_reason": "",
+            "trajectory": state["trajectory"] + [traj_step],
+        }
+
+    campaign, decision = run_confirmation_campaign(
+        run_arm,
+        # Confirmation always uses the ⑤ default pair floor — do not inherit
+        # a search-phase min_pairs=1 from the queued search winner.
+        n_pairs=DEFAULT_MIN_PAIRS,
+        metric=rl.get("metric") or primary_metric,
+        phase=RepeatPhase.CONFIRMATION,
+        expected_conditions=expected,
+    )
+    bound_ids = [lg.run_id for lg in campaign.candidate_ledgers]
+    last_result = state.get("last_result")
+    if not decision_binds_to_result(
+        decision, last_result, bound_run_ids=bound_ids, bound_target=target
+    ):
+        # Keep last_result only when it is a candidate arm of THIS campaign.
+        last_result = None
+
+    cited = []
+    for lg in list(campaign.baseline_ledgers) + list(campaign.candidate_ledgers):
+        if lg.run_id not in cited:
+            cited.append(lg.run_id)
+
+    traj_step = {
+        "step": len(state["trajectory"]) + 1,
+        "node": "executor",
+        "workload": state["workload_name"],
+        "action": "confirmation_campaign",
+        "hypothesis": {
+            "id": hyp["id"],
+            "param": hyp["param"],
+            "value": hyp["value"],
+            "text": hyp.get("rationale") or "",
+        },
+        "cited_run_ids": cited,
+        "result": {
+            "phase": decision.phase.value,
+            "verdict": decision.verdict.value,
+            "search_winner": decision.search_winner,
+            "promoted_to_best": False,
+        },
+    }
+    console.print(
+        f"  executor: confirmation campaign — verdict={decision.verdict.value} "
+        f"phase={decision.phase.value} pairs={decision.usable_pairs}/{decision.pair_count}"
+    )
+    return {
+        "hypotheses": updated_hyps,
+        "confirmation_decision": decision,
+        "repeat_ledgers": campaign_to_repeat_ledgers(
+            campaign, metric=rl.get("metric") or primary_metric
+        ),
+        "confirmation_target": target,
+        "confirmation_bound_run_ids": bound_ids,
+        "confirmation_blocked": False,
+        "last_result": last_result,
+        "last_skip_reason": "",
+        "best_summary": state.get("best_summary"),
+        "trajectory": state["trajectory"] + [traj_step],
+    }
+
 
 def _set_status(
     hypotheses: list[Hypothesis],

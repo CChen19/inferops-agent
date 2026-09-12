@@ -27,5 +27,10 @@
     "gate": "is_confirmed_promotable"
   },
   "next_action": "stop",
-  "stop_reason": "no_reliable_improvement"
+  "stop_reason": "no_reliable_improvement",
+  "reasoning": "next_action=stop reason=confirmation_no_diff",
+  "result": {
+    "promoted_to_best": false,
+    "confirmation": {"verdict": "no_diff", "phase": "confirmation"}
+  }
 }

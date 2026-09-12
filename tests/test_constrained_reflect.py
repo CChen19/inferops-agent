@@ -7,10 +7,12 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 
-from inferops.agent.executor import executor_node
+from inferops.agent.confirm_campaign import decision_binds_to_result
+from inferops.agent.executor import confirmation_run_arm_override, executor_node
 from inferops.agent.reflect_constraints import (
     LLM_MUST_NOT_OWN,
     MAX_ERROR_RATE,
@@ -26,12 +28,13 @@ from inferops.agent.state import initial_state, is_promotable_summary, summary_f
 from inferops.metrics import (
     ConfirmationDecision,
     ConfirmationVerdict,
+    RepeatArm,
     RepeatPhase,
     is_confirmed_promotable,
     verdict_from_ledgers,
 )
 from inferops.schemas import is_promotable
-from tests.test_repeat_confirmation import _n_ledgers
+from tests.test_repeat_confirmation import CONDITIONS, _n_ledgers, make_rps_ledger
 
 
 def _contract(**overrides):
@@ -245,11 +248,13 @@ def test_streak_without_confirmation_is_also_no_reliable_improvement():
 # ---------------------------------------------------------------------------
 
 def test_search_winner_remeasures_and_does_not_promote(result_b):
-    state = _state_with_candidate()
-    state["last_result"] = result_b
+    cands = _n_ledgers("swc", 3.0, 1)
+    bound = result_b.model_copy(update={"run_id": cands[0].run_id})
+    state = _state_with_candidate(run_id=cands[0].run_id)
+    state["last_result"] = bound
     state["repeat_ledgers"] = {
         "baseline": _n_ledgers("swb", 2.0, 1),
-        "candidate": _n_ledgers("swc", 3.0, 1),
+        "candidate": cands,
         "phase": RepeatPhase.SEARCH,
         "min_pairs": 1,
     }
@@ -260,7 +265,7 @@ def test_search_winner_remeasures_and_does_not_promote(result_b):
         min_pairs=1,
     )
     assert decision.search_winner is True
-    assert is_confirmed_promotable(result_b, decision) is False
+    assert is_confirmed_promotable(bound, decision) is False
 
     patch = reflector_node(state)
     step = patch["trajectory"][-1]
@@ -272,12 +277,19 @@ def test_search_winner_remeasures_and_does_not_promote(result_b):
 
 
 def test_confirmed_improvement_promotes_only_via_is_confirmed_promotable(result_b):
-    state = _state_with_candidate()
-    state["last_result"] = result_b
+    cands = _n_ledgers("okc", 2.4, 3)
+    bound = result_b.model_copy(update={"run_id": cands[-1].run_id})
+    state = _state_with_candidate(run_id=cands[-1].run_id)
+    state["last_result"] = bound
     state["repeat_ledgers"] = {
         "baseline": _n_ledgers("okb", 2.0, 3),
-        "candidate": _n_ledgers("okc", 2.4, 3),
+        "candidate": cands,
         "phase": RepeatPhase.CONFIRMATION,
+    }
+    state["confirmation_bound_run_ids"] = [lg.run_id for lg in cands]
+    state["confirmation_target"] = {
+        "param": "max_num_batched_tokens",
+        "value": "4096",
     }
     decision = verdict_from_ledgers(
         state["repeat_ledgers"]["baseline"],
@@ -285,8 +297,9 @@ def test_confirmed_improvement_promotes_only_via_is_confirmed_promotable(result_
         phase=RepeatPhase.CONFIRMATION,
     )
     assert decision.verdict == ConfirmationVerdict.CONFIRMED_IMPROVEMENT
-    assert is_promotable(result_b) is True
-    assert is_confirmed_promotable(result_b, decision) is True
+    assert is_promotable(bound) is True
+    assert is_confirmed_promotable(bound, decision) is True
+    assert decision_binds_to_result(decision, bound, candidate=state["experiment_summaries"][-1])
 
     patch = reflector_node(state)
     step = patch["trajectory"][-1]
@@ -296,16 +309,22 @@ def test_confirmed_improvement_promotes_only_via_is_confirmed_promotable(result_
     assert step["constraint_checks"]["confirmed_promotable"] is True
     assert step["constraint_checks"]["gate_result"] is True
     assert step["result"]["promoted_to_best"] is True
+    # Non-remeasure clears stale ⑤ state after the promote.
+    assert patch["confirmation_decision"] is None
+    assert patch["repeat_ledgers"] is None
 
 
 def test_unevidenced_result_not_promoted_even_with_confirm(
     result_b, result_b_unevidenced
 ):
-    state = _state_with_candidate()
-    state["last_result"] = result_b_unevidenced
+    cands = _n_ledgers("uec", 3.0, 3)
+    bound = result_b.model_copy(update={"run_id": cands[-1].run_id})
+    unevid = result_b_unevidenced.model_copy(update={"run_id": cands[-1].run_id})
+    state = _state_with_candidate(run_id=cands[-1].run_id)
+    state["last_result"] = unevid
     state["repeat_ledgers"] = {
         "baseline": _n_ledgers("ueb", 2.0, 3),
-        "candidate": _n_ledgers("uec", 3.0, 3),
+        "candidate": cands,
         "phase": RepeatPhase.CONFIRMATION,
     }
     decision = verdict_from_ledgers(
@@ -314,8 +333,8 @@ def test_unevidenced_result_not_promoted_even_with_confirm(
         phase=RepeatPhase.CONFIRMATION,
     )
     assert decision.verdict == ConfirmationVerdict.CONFIRMED_IMPROVEMENT
-    assert is_confirmed_promotable(result_b, decision) is True
-    assert is_confirmed_promotable(result_b_unevidenced, decision) is False
+    assert is_confirmed_promotable(bound, decision) is True
+    assert is_confirmed_promotable(unevid, decision) is False
 
     patch = reflector_node(state)
     assert patch["best_summary"]["experiment_id"] == "sess_baseline"
@@ -439,12 +458,13 @@ def test_conclusion_is_pure_and_llm_explanation_is_not_control_flow():
     assert c.constraint_checks["slo_ok"] is False
 
 
-def test_slo_missing_error_rate_is_not_invented_zero():
+def test_slo_missing_error_rate_is_fail_closed():
     got = check_slo({"error_rate": None})
-    assert got["ok"] is True
+    assert got["ok"] is False
     assert got["error_rate"] is None
-    assert got["reason"] == "error_rate_not_measured"
+    assert got["reason"] == "error_rate_missing_fail_closed"
     assert MAX_ERROR_RATE == 0.05
+    assert check_slo({})["ok"] is False
 
 
 def test_fixture_trajectories_cover_required_cases():
@@ -461,6 +481,233 @@ def test_fixture_trajectories_cover_required_cases():
         step = json.loads((root / name).read_text())
         _assert_reflect_step(step)
         assert step["next_action"] == action
+
+
+# ---------------------------------------------------------------------------
+# P1 proofs
+# ---------------------------------------------------------------------------
+
+def test_confirmed_decision_for_a_does_not_promote_b(result_b):
+    """Stale ⑤ confirm for candidate A must not promote a later candidate B."""
+    ledgers_a = _n_ledgers("p1a", 2.4, 3)
+    decision_a = verdict_from_ledgers(
+        _n_ledgers("p1ab", 2.0, 3),
+        ledgers_a,
+        phase=RepeatPhase.CONFIRMATION,
+    )
+    assert decision_a.verdict == ConfirmationVerdict.CONFIRMED_IMPROVEMENT
+
+    result_a = result_b.model_copy(update={"run_id": ledgers_a[-1].run_id})
+    result_b2 = result_b.model_copy(update={"run_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"})
+    assert result_a.run_id != result_b2.run_id
+    assert is_confirmed_promotable(result_b2, decision_a) is True  # ⑤ does not bind
+    assert decision_binds_to_result(decision_a, result_b2) is False
+
+    cand_b = _summary(
+        eid="sess_max_num_seqs_64",
+        param="max_num_seqs",
+        value=64,
+        run_id=result_b2.run_id,
+    )
+    current = _summary(eid="sess_baseline", param=None, value=None, vs=0.0)
+    best, promoted = maybe_promote_best(
+        result_b2,
+        decision_a,
+        cand_b,
+        current,
+        bound_run_ids=[lg.run_id for lg in ledgers_a],
+        bound_target={"param": "max_num_batched_tokens", "value": "4096"},
+    )
+    assert promoted is False
+    assert best["experiment_id"] == "sess_baseline"
+
+    state = _state_with_candidate(
+        eid="sess_max_num_seqs_64",
+        param="max_num_seqs",
+        value=64,
+        run_id=result_b2.run_id,
+    )
+    state["last_result"] = result_b2
+    state["confirmation_decision"] = decision_a
+    state["confirmation_bound_run_ids"] = [lg.run_id for lg in ledgers_a]
+    state["confirmation_target"] = {"param": "max_num_batched_tokens", "value": "4096"}
+    state["repeat_ledgers"] = {
+        "baseline": _n_ledgers("p1ab2", 2.0, 3),
+        "candidate": ledgers_a,
+        "phase": RepeatPhase.CONFIRMATION,
+    }
+    patch = reflector_node(state)
+    assert patch["best_summary"]["experiment_id"] == "sess_baseline"
+    assert patch["trajectory"][-1]["result"]["promoted_to_best"] is False
+    assert patch["confirmation_decision"] is None
+
+
+def test_executor_clears_confirmation_when_candidate_changes(result_b):
+    ledgers_a = _n_ledgers("clr", 2.4, 3)
+    decision_a = verdict_from_ledgers(
+        _n_ledgers("clrb", 2.0, 3),
+        ledgers_a,
+        phase=RepeatPhase.CONFIRMATION,
+    )
+    state = _state_with_candidate()
+    state["confirmation_decision"] = decision_a
+    state["confirmation_target"] = {"param": "max_num_batched_tokens", "value": "4096"}
+    state["confirmation_bound_run_ids"] = [lg.run_id for lg in ledgers_a]
+    state["next_action"] = "continue"
+    state["experiment_summaries"] = [state["baseline_summary"]]
+    state["hypotheses"] = [
+        {
+            "id": "h2",
+            "param": "max_num_seqs",
+            "value": 64,
+            "rationale": "rps=2.0 try fewer seqs [source: paged_attention]",
+            "status": "pending",
+            "experiment_id": None,
+        }
+    ]
+    with patch("inferops.agent.executor.get_result_by_id", return_value=result_b), \
+         patch(
+             "inferops.agent.executor.analyze_bottleneck",
+             return_value=MagicMock(bottleneck="compute-bound"),
+         ), \
+         patch(
+             "inferops.agent.executor.compare_experiments",
+             return_value=MagicMock(delta_pct=1.0),
+         ):
+        out = executor_node(state)
+    assert out["confirmation_decision"] is None
+    assert out["repeat_ledgers"] is None
+    assert out["confirmation_target"] is None
+
+
+def _fixture_run_arm(prefix: str, base_rps: float, cand_rps: float, bound_run_id: str):
+    def run_arm(arm: RepeatArm, slot):
+        if arm == RepeatArm.BASELINE:
+            return make_rps_ledger(
+                f"{prefix}-b{slot.pair_index}",
+                rps=base_rps,
+                conditions=CONDITIONS,
+            )
+        rid = bound_run_id if slot.pair_index == 2 else f"{prefix}-c{slot.pair_index}"
+        return make_rps_ledger(rid, rps=cand_rps, conditions=CONDITIONS)
+
+    return run_arm
+
+
+def test_search_winner_remeasure_campaign_promotes(result_b):
+    """search winner → remasure → ⑤ confirmation campaign → bound promote."""
+    search_cands = _n_ledgers("sw2c", 3.0, 1)
+    bound_id = "campaign-cand-2"
+    result = result_b.model_copy(update={"run_id": search_cands[0].run_id})
+    state = _state_with_candidate(run_id=search_cands[0].run_id)
+    state["last_result"] = result
+    state["repeat_ledgers"] = {
+        "baseline": _n_ledgers("sw2b", 2.0, 1),
+        "candidate": search_cands,
+        "phase": RepeatPhase.SEARCH,
+        "min_pairs": 1,
+        "conditions": CONDITIONS,
+        "metric": "throughput_rps",
+    }
+    search_patch = reflector_node(state)
+    assert search_patch["next_action"] == "remeasure"
+    assert search_patch["best_summary"]["experiment_id"] == "sess_baseline"
+    assert search_patch["hypotheses"][0]["status"] == "pending"
+
+    merged = {**state, **search_patch}
+    with confirmation_run_arm_override(_fixture_run_arm("prom", 2.0, 2.4, bound_id)):
+        exec_patch = executor_node(merged)
+    decision = exec_patch["confirmation_decision"]
+    assert decision.phase == RepeatPhase.CONFIRMATION
+    assert decision.verdict == ConfirmationVerdict.CONFIRMED_IMPROVEMENT
+    assert bound_id in exec_patch["confirmation_bound_run_ids"]
+
+    result_bound = result_b.model_copy(update={"run_id": bound_id})
+    latest = dict(merged["experiment_summaries"][-1])
+    latest["run_id"] = bound_id
+    after = {
+        **merged,
+        **exec_patch,
+        "last_result": result_bound,
+        "experiment_summaries": merged["experiment_summaries"][:-1] + [latest],
+    }
+    assert is_confirmed_promotable(result_bound, decision) is True
+    refl = reflector_node(after)
+    assert refl["best_summary"].get("confirmed_promotable") is True
+    assert refl["best_summary"]["experiment_id"] == latest["experiment_id"]
+    assert refl["trajectory"][-1]["result"]["promoted_to_best"] is True
+
+
+def test_search_winner_remeasure_unconfirmed_does_not_promote(result_b):
+    search_cands = _n_ledgers("sw3c", 3.0, 1)
+    bound_id = "flat-cand-2"
+    result = result_b.model_copy(update={"run_id": search_cands[0].run_id})
+    state = _state_with_candidate(run_id=search_cands[0].run_id)
+    state["last_result"] = result
+    state["repeat_ledgers"] = {
+        "baseline": _n_ledgers("sw3b", 2.0, 1),
+        "candidate": search_cands,
+        "phase": RepeatPhase.SEARCH,
+        "min_pairs": 1,
+        "conditions": CONDITIONS,
+        "metric": "throughput_rps",
+    }
+    search_patch = reflector_node(state)
+    merged = {**state, **search_patch}
+    with confirmation_run_arm_override(_fixture_run_arm("flat", 2.0, 2.0, bound_id)):
+        exec_patch = executor_node(merged)
+    decision = exec_patch["confirmation_decision"]
+    assert decision.phase == RepeatPhase.CONFIRMATION
+    assert decision.verdict != ConfirmationVerdict.CONFIRMED_IMPROVEMENT
+
+    result_bound = result_b.model_copy(update={"run_id": bound_id})
+    latest = dict(merged["experiment_summaries"][-1])
+    latest["run_id"] = bound_id
+    after = {
+        **merged,
+        **exec_patch,
+        "last_result": result_bound,
+        "experiment_summaries": merged["experiment_summaries"][:-1] + [latest],
+    }
+    assert is_confirmed_promotable(result_bound, decision) is False
+    refl = reflector_node(after)
+    assert refl["best_summary"]["experiment_id"] == "sess_baseline"
+    assert refl["trajectory"][-1]["result"]["promoted_to_best"] is False
+
+
+def test_invalid_and_insufficient_evidence_rollback():
+    for status in ("invalid", "insufficient_evidence"):
+        state = _state_with_candidate(validity=status, promotable=False, error_rate=0.0)
+        patch = reflector_node(state)
+        step = patch["trajectory"][-1]
+        _assert_reflect_step(step)
+        assert step["next_action"] == "rollback"
+        assert step["constraint_checks"]["validity_rollback"] is True
+        assert patch["best_summary"]["experiment_id"] == "sess_baseline"
+
+
+def test_missing_error_rate_rollback_fail_closed():
+    state = _state_with_candidate()
+    state["experiment_summaries"][-1]["error_rate"] = None
+    patch = reflector_node(state)
+    step = patch["trajectory"][-1]
+    _assert_reflect_step(step)
+    assert step["constraint_checks"]["slo_ok"] is False
+    assert step["constraint_checks"]["slo"]["reason"] == "error_rate_missing_fail_closed"
+    assert step["next_action"] == "rollback"
+    assert patch["best_summary"]["experiment_id"] == "sess_baseline"
+
+
+def test_live_reflect_steps_match_fixture_contract():
+    """Fixtures are the live Reflect contract (same keys / next_action)."""
+    root = Path("tests/fixtures/reflect_trajectories")
+    state = _state_with_candidate()
+    state["last_skip_reason"] = "duplicate_candidate"
+    live = reflector_node(state)["trajectory"][-1]
+    fixture = json.loads((root / "duplicate_candidate.json").read_text())
+    for key in fixture:
+        assert key in live
+    assert live["next_action"] == fixture["next_action"]
 
 
 def test_summary_from_result_carries_error_rate(result_b):

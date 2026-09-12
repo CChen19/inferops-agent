@@ -26,5 +26,10 @@
     "gate": "is_confirmed_promotable"
   },
   "next_action": "rollback",
-  "stop_reason": ""
+  "stop_reason": "",
+  "reasoning": "next_action=rollback reason=oom_or_exec_fail",
+  "result": {
+    "promoted_to_best": false,
+    "confirmation": null
+  }
 }

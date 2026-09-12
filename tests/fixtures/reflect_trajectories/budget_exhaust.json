@@ -25,5 +25,10 @@
     "gate": "is_confirmed_promotable"
   },
   "next_action": "stop",
-  "stop_reason": "budget_exhausted"
+  "stop_reason": "budget_exhausted",
+  "reasoning": "next_action=stop reason=experiments_remaining<=0",
+  "result": {
+    "promoted_to_best": false,
+    "confirmation": null
+  }
 }

@@ -25,5 +25,10 @@
     "gate": "is_confirmed_promotable"
   },
   "next_action": "continue",
-  "stop_reason": ""
+  "stop_reason": "",
+  "reasoning": "next_action=continue reason=duplicate_candidate",
+  "result": {
+    "promoted_to_best": false,
+    "confirmation": null
+  }
 }
