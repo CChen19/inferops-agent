@@ -850,8 +850,8 @@ def test_simulate_startup_identity_failure(monkeypatch, config):
         "probe_live_instance",
         lambda *a, **k: LiveProbe(healthy=False),
     )
-    monkeypatch.setattr(bench_runner, "assert_listener_bound_to_child", lambda **k: 5)
     stopped = {"n": 0}
+    waited = {"n": 0}
 
     class Proc:
         def __init__(self, cfg, host="127.0.0.1", port=8000):
@@ -875,6 +875,7 @@ def test_simulate_startup_identity_failure(monkeypatch, config):
             return None
 
         def wait_ready_verbose(self, log_fn):
+            waited["n"] += 1
             return True
 
         def stop(self):
@@ -894,3 +895,70 @@ def test_simulate_startup_identity_failure(monkeypatch, config):
     with pytest.raises(bench_runner.BenchmarkError, match="SIMULATE_STARTUP_FAILURE=identity"):
         bench_runner.run_experiment(config, ["p"])
     assert stopped["n"] >= 1
+    assert waited["n"] == 0  # must abort before readiness wait
+
+
+@pytest.mark.parametrize(
+    "mode,exc_type,match",
+    [
+        ("oom", bench_runner.OOMError, "SIMULATE_STARTUP_FAILURE=oom"),
+        ("timeout", bench_runner.StartupTimeoutError, "SIMULATE_STARTUP_FAILURE=timeout"),
+    ],
+)
+def test_simulate_startup_oom_and_timeout_before_wait(monkeypatch, config, mode, exc_type, match):
+    """oom/timeout inject before wait_ready — fast, independent of real health."""
+    _patch_common(monkeypatch)
+    monkeypatch.setenv("INFEROPS_SIMULATE_STARTUP_FAILURE", mode)
+    monkeypatch.setattr(
+        bench_runner,
+        "probe_live_instance",
+        lambda *a, **k: LiveProbe(healthy=False),
+    )
+    waited = {"n": 0}
+    stopped = {"n": 0}
+
+    class Proc:
+        def __init__(self, cfg, host="127.0.0.1", port=8000):
+            self.cfg = cfg
+            self.host = host
+            self.port = port
+            self.log_path = "logs/fake.log"
+            self.start_token = "t"
+            self._pid = 9
+
+        @property
+        def pid(self):
+            return self._pid
+
+        def identity(self):
+            return InstanceIdentity(
+                host=self.host, port=self.port, pid=self._pid, start_token=self.start_token
+            )
+
+        def start(self):
+            return None
+
+        def wait_ready_verbose(self, log_fn):
+            waited["n"] += 1
+            raise AssertionError("wait_ready must not run under simulate startup failure")
+
+        def stop(self):
+            stopped["n"] += 1
+            self._pid = None
+
+        def evidenced_actual_config(self):
+            return {}
+
+        def oom_in_log(self):
+            return False
+
+        def is_crashed(self):
+            return False
+
+    monkeypatch.setattr(bench_runner, "VLLMProcess", Proc)
+    with pytest.raises(exc_type, match=match) as ei:
+        bench_runner.run_experiment(config, ["p"])
+    assert waited["n"] == 0
+    assert stopped["n"] >= 1
+    assert ei.value.result is not None
+    assert ei.value.result.status == ExperimentValidityStatus.FAILED

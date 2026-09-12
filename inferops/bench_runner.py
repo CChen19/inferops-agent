@@ -254,22 +254,37 @@ def _ensure_managed_vllm(
         if proc.log_path:
             log(f"  vLLM log → {proc.log_path}")
 
-        ready = proc.wait_ready_verbose(log)
-        # Deterministic startup-failure injection (GPU checklist) — after spawn,
-        # before identity bind. Child is always stopped via _abort.
+        # Deterministic startup-failure injection (GPU checklist) — BEFORE the
+        # long readiness wait so oom/timeout/identity paths are fast and do not
+        # depend on real /health success. Child is always stopped via _abort.
         sim_fail = os.getenv("INFEROPS_SIMULATE_STARTUP_FAILURE", "").strip().lower()
         if sim_fail == "oom":
             if on_progress:
                 on_progress("status:failed:startup:simulated_oom")
-            _abort(OOMError(f"INFEROPS_SIMULATE_STARTUP_FAILURE=oom — config: {cfg.experiment_id}"))
+            _abort(
+                OOMError(
+                    f"INFEROPS_SIMULATE_STARTUP_FAILURE=oom — config: {cfg.experiment_id}"
+                )
+            )
         if sim_fail == "timeout":
             if on_progress:
                 on_progress("status:failed:startup:simulated_timeout")
             _abort(
                 StartupTimeoutError(
-                    "INFEROPS_SIMULATE_STARTUP_FAILURE=timeout — refusing ready"
+                    "INFEROPS_SIMULATE_STARTUP_FAILURE=timeout — skipping readiness wait"
                 )
             )
+        if sim_fail == "identity":
+            if on_progress:
+                on_progress("status:failed:identity_bind:simulated")
+            _abort(
+                BenchmarkError(
+                    "INFEROPS_SIMULATE_STARTUP_FAILURE=identity — "
+                    "forced identity failure before readiness wait"
+                )
+            )
+
+        ready = proc.wait_ready_verbose(log)
         if not ready:
             if on_progress:
                 on_progress("status:failed:startup")
@@ -300,17 +315,6 @@ def _ensure_managed_vllm(
             if on_progress:
                 on_progress("status:failed:identity_bind")
             _abort(BenchmarkError(str(exc)))
-
-        # Optional deterministic identity-failure injection (GPU checklist).
-        if os.getenv("INFEROPS_SIMULATE_STARTUP_FAILURE", "").strip().lower() == "identity":
-            if on_progress:
-                on_progress("status:failed:identity_bind:simulated")
-            _abort(
-                BenchmarkError(
-                    "INFEROPS_SIMULATE_STARTUP_FAILURE=identity — "
-                    "forced listener/child mismatch path"
-                )
-            )
 
         final_identity = proc.identity()
         if final_identity.pid is None or not final_identity.start_token:
