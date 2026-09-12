@@ -288,6 +288,7 @@ def conclude_experiment(
     primary_metric: str = "throughput_rps",
     bound_run_ids: list[str] | None = None,
     bound_target: dict[str, Any] | None = None,
+    last_recovery: dict[str, Any] | None = None,
 ) -> ReflectConclusion:
     """Priority-ordered Reflect rules. Deterministic; no LLM."""
 
@@ -325,6 +326,11 @@ def conclude_experiment(
         bound_target=bound_target,
     )
     run_ids = cited_run_ids(baseline, latest, best, decision=decision, last_result=last_result)
+    this_attempt_failed = bool(last_recovery and last_recovery.get("this_attempt_failed"))
+    if this_attempt_failed:
+        for rid in last_recovery.get("cited_run_ids") or []:
+            if rid and rid not in run_ids:
+                run_ids.append(str(rid))
 
     checks = {
         "validity_status": validity,
@@ -335,6 +341,10 @@ def conclude_experiment(
         "exec_fail": exec_fail,
         "validity_rollback": validity_rollback,
         "remeasure_count": remeasure_count,
+        "this_attempt_failed": this_attempt_failed,
+        "recovery_stage": (last_recovery or {}).get("stage"),
+        "recovery_code": (last_recovery or {}).get("code"),
+        "recovery_result_persisted": bool((last_recovery or {}).get("result_persisted")),
         **_confirmation_fields(decision, result=last_result, promoted=False),
     }
 
@@ -363,21 +373,42 @@ def conclude_experiment(
             cited_run_ids=run_ids,
         )
 
-    # 1. Budget
-    if budget <= 0:
-        return _done(
-            "stop",
-            stop=True,
-            stop_reason="budget_exhausted",
-            reason="experiments_remaining<=0",
-        )
-
-    # 2. Duplicate candidate (executor skip or repeated (param, value))
+    # 1. Duplicate candidate (executor skip or repeated (param, value))
     if duplicate:
         return _done(
             "continue",
             stop=False,
             reason="duplicate_candidate",
+        )
+
+    # 2. This-attempt failure — never read a prior success summary as current.
+    # Confirmation-slot failures may remasure only while under remasure/budget cap.
+    if this_attempt_failed:
+        retryable = (
+            bool(last_recovery.get("retryable"))
+            and remeasure_count < MAX_REMEASURES
+            and budget > 0
+        )
+        if retryable:
+            return _done(
+                "remeasure",
+                stop=False,
+                reason="attempt_failed_retryable",
+            )
+        streak = no_improvement_streak + 1
+        if streak >= MAX_STREAK:
+            return _done(
+                "stop",
+                stop=True,
+                stop_reason="no_reliable_improvement",
+                streak=streak,
+                reason="attempt_failed_streak",
+            )
+        return _done(
+            "rollback",
+            stop=False,
+            streak=streak,
+            reason="attempt_failed",
         )
 
     # 3. OOM / exec fail
@@ -432,6 +463,25 @@ def conclude_experiment(
             stop=False,
             streak=streak,
             reason="slo_breach",
+        )
+
+    # 4b. Budget — only after fail-closed validity / SLO. A last-slot
+    # confirmation may still promote; SLO / validity cannot be skipped.
+    if budget <= 0:
+        if would_promote:
+            return _done(
+                "stop",
+                stop=True,
+                stop_reason="budget_exhausted",
+                streak=0,
+                promote=True,
+                reason="confirmed_promotable",
+            )
+        return _done(
+            "stop",
+            stop=True,
+            stop_reason="budget_exhausted",
+            reason="experiments_remaining<=0",
         )
 
     # 5. Confirmation (⑤) when a decision exists

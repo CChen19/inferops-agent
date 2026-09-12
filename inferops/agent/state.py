@@ -76,6 +76,8 @@ class AgentState(TypedDict):
     repeat_ledgers: dict[str, Any] | None
     confirmation_target: dict[str, Any] | None  # {param, value} the ⑤ campaign is bound to
     confirmation_bound_run_ids: list[str] | None  # candidate run_ids from that campaign
+    confirmation_blocked: bool   # True after a confirmation-slot / attempt failure
+    last_recovery: dict[str, Any] | None  # ⑧ this-attempt failure fact (not a metrics schema)
 
     # Trajectory (for eval/judge in Phase 3 eval framework)
     trajectory: list[dict[str, Any]]
@@ -154,6 +156,8 @@ def initial_state(
         "repeat_ledgers":        None,
         "confirmation_target":   None,
         "confirmation_bound_run_ids": None,
+        "confirmation_blocked":  False,
+        "last_recovery":         None,
         "trajectory":            [],
         "messages":              [],
     }

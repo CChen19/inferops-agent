@@ -19,6 +19,8 @@ def test_initial_state_sets_budget_and_defaults():
     assert state["current_bottleneck"] == "unknown"
     assert state["hypotheses"] == []
     assert state["messages"] == []
+    assert state["last_recovery"] is None
+    assert state["confirmation_blocked"] is False
 
 
 def test_pending_hypotheses_filters_only_pending():
