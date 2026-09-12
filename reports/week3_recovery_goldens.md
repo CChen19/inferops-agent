@@ -171,12 +171,13 @@ python scripts/run_recovery_goldens.py
 ```
 
 ```text
-370 passed in 13.80s
+375 passed in 14.20s
 measurement-trust golden gate passed (CPU/fixture; GPU-not-run ≠ pass)
 recovery golden gate passed (CPU/fixture; GPU-not-run ≠ pass)
 ```
 
-Proving tests (Codex P1 on `4a16220`):
+Eval tip after Codex P1: `35cc642` on master `45d2d4e` (Tune tip `d1e5e82`).
+Proving tests:
 `test_catalog_subset_and_deleted_fixtures_fail_floor`,
 `test_resume_equivalence_compares_full_end_state`,
 `test_search_winner_best_swap_fails_without_confirmed_flag`,
