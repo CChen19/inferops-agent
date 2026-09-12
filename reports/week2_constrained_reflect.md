@@ -132,7 +132,7 @@ pytest -q
 ```
 
 ```text
-(pytest count filled after `pytest -q`)
+311 passed in 14.29s
 ```
 
 P1 proofs (this revision — residual search→confirm production path):
