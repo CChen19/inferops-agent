@@ -29,7 +29,12 @@ def test_extract_percentiles_nearest_rank_ceil():
 
 @pytest.mark.asyncio
 async def test_run_load_aggregates_successful_requests(monkeypatch):
-    from inferops.metrics.ledger import RequestOutcome, RequestRecord, TerminationReason
+    from inferops.metrics.ledger import (
+        RequestOutcome,
+        RequestRecord,
+        TerminationReason,
+        TokenCountSource,
+    )
 
     async def fake_send_one(
         client,
@@ -82,6 +87,7 @@ async def test_run_load_aggregates_successful_requests(monkeypatch):
             ttft_ms=10.0 + idx,
             e2e_ms=100.0 + idx,
             output_tokens=2,
+            token_count_source=TokenCountSource.USAGE,
             outcome=RequestOutcome.SUCCESS,
             termination_reason=TerminationReason.STOP,
         )
