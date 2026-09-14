@@ -1,16 +1,22 @@
 # Demo script (3–5 minutes)
 
+**Interview freeze SHA:** `2731bed` (see [`interview.md`](interview.md)).
+Demo artifacts and claims are pinned to that freeze. Do not ad-lib numbers from
+later commits.
+
 Goal of the demo: show that this is an inference-tuning agent whose interesting
 property is *refusing to claim wins it cannot prove*. Do not try to show a
 throughput victory — there isn't a confirmed one, and claiming one is the fastest
 way to lose the room.
 
 Total: ~4 minutes. No GPU run during the demo. Everything is pre-recorded
-artifacts read from disk.
+artifacts read from disk. Still **no live GPU** during the interview slot.
 
 ## 0. Setup before the call (not counted)
 
-- Have open: `reports/internship_case/case.md`,
+- Checkout or read artifacts at interview SHA `2731bed`.
+- Have open: `reports/internship_case/interview.md`,
+  `reports/internship_case/case.md`,
   `reports/live_fair_compare/live_fair_compare.md`, and `inferops/decision.py`.
 - Do **not** plan a live vLLM launch. Startup can take up to 180 s
   (`STARTUP_TIMEOUT_S`) and a cold CUDA graph build will eat the whole slot.
