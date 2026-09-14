@@ -329,6 +329,7 @@ def prepare_initial_state(
 
         hw = collect_hardware_info(
             model_name=str(resolved.model_name or ""),
+            engine=resolved.engine.value,
             probe_nvidia=True,
         )
         state["hardware_fingerprint"] = fingerprint_from_hardware(hw)
