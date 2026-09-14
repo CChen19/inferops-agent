@@ -4,6 +4,20 @@ Split into two lists on purpose. "Verified" means there is a real artifact or a
 line of code behind it. "Known limits" are things the system does not do; they
 are not bugs to be hidden in an interview, they are the scope boundary.
 
+**Interview freeze SHA:** `2731bed`. Short pack and capability boundary summary:
+[`interview.md`](interview.md).
+
+## Capability boundary (interview)
+
+| Area | Boundary |
+|---|---|
+| Confirmation campaign on the live case | **Not proven** — 3.77% < 5%, so confirmation never ran |
+| Memory reducing wasted trials | **Not proven** on live hardware |
+| Agent vs search at adoption | **Not proven** — exploratory compare only; `confirmed_gain` is null |
+| Document citations | **Existence-only** when a chunk was retrieved; not semantic support |
+| Live keep-baseline decision / search observe-after-pick numbers | **Proven live** (see tables below; different SHAs) |
+| Resume, citation gates, lifecycle, report formatting | **Proven CPU** (merged tests; not new GPU runs) |
+
 ## Verified by real evidence
 
 | Claim | Evidence |
