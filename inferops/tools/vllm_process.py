@@ -27,12 +27,16 @@ from inferops.schemas import (
     config_knobs,
     managed_cli_actual_config,
 )
+from inferops.tools.managed_lifecycle import cancel_requested
 
 DEFAULT_VLLM_PYTHON = "/home/chris/miniconda3/envs/vllm-dev/bin/python"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8000
 STARTUP_TIMEOUT_S = 180  # CUDA graph compilation can be slow
 HEALTH_POLL_S = 3
+# Between /health probes the wait loop sleeps in short slices so a Stop
+# (cancel flag / stop()) is noticed within this many seconds, not HEALTH_POLL_S.
+CANCEL_CHECK_S = 0.25
 
 # Alias kept for tests / call sites; source of truth is schemas.
 CLI_EVIDENCED_KNOB_KEYS: tuple[str, ...] = tuple(sorted(MANAGED_CLI_EVIDENCED_KEYS))
@@ -496,6 +500,10 @@ class VLLMProcess:
 
         Health alone does NOT prove identity — callers must call
         `assert_listener_bound_to_child` afterward.
+
+        Returns False promptly (not after STARTUP_TIMEOUT_S) when the managed
+        child has crashed, has been ``stop()``-ed (``_proc`` cleared), or the
+        lifecycle cancel flag is set — there is no child worth waiting for.
         """
         deadline = time.time() + STARTUP_TIMEOUT_S
         url = f"{self.base_url}/health"
@@ -503,8 +511,8 @@ class VLLMProcess:
         elapsed_ticks = 0
 
         while time.time() < deadline:
-            if self._proc and self._proc.poll() is not None:
-                return False  # crashed during startup
+            if self._wait_should_abort():
+                return False
             try:
                 r = httpx.get(url, timeout=3)
                 if r.status_code == 200:
@@ -522,8 +530,28 @@ class VLLMProcess:
                         break
 
             elapsed_ticks += 1
-            time.sleep(HEALTH_POLL_S)
+            if self._sleep_until_next_poll(deadline):
+                return False
         return False
+
+    def _wait_should_abort(self) -> bool:
+        """True when readiness polling is pointless: no child, dead child, or cancel."""
+        if self._proc is None:
+            return True  # never started or stop()-ed — nothing to become ready
+        if self._proc.poll() is not None:
+            return True  # crashed during startup
+        return cancel_requested()
+
+    def _sleep_until_next_poll(self, deadline: float) -> bool:
+        """Sleep HEALTH_POLL_S in CANCEL_CHECK_S slices; True if the wait should abort."""
+        wake = min(time.time() + HEALTH_POLL_S, deadline)
+        while True:
+            remaining = wake - time.time()
+            if remaining <= 0:
+                return False
+            time.sleep(min(CANCEL_CHECK_S, remaining))
+            if self._wait_should_abort():
+                return True
 
     def is_crashed(self) -> bool:
         return self._proc is not None and self._proc.poll() is not None

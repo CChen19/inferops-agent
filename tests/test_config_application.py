@@ -337,7 +337,8 @@ def test_external_health_only_insufficient_evidence(monkeypatch, config):
     assert any("external_health_only" in p for p in progress)
 
 
-def test_identity_change_required_after_restart(monkeypatch, config):
+def test_identity_change_required_after_restart(monkeypatch, config, tmp_path):
+    monkeypatch.chdir(tmp_path)  # live_identity_*.json goes to tmp, not repo logs/
     _patch_common(monkeypatch)
     _record_stale_managed_child(monkeypatch, child_pid=4242)
 
@@ -617,8 +618,9 @@ def test_stale_occupant_still_healthy_unknown_pid(monkeypatch, config):
     assert ei.value.result.status == ExperimentValidityStatus.FAILED
 
 
-def test_mismatch_yields_invalid(monkeypatch, config):
+def test_mismatch_yields_invalid(monkeypatch, config, tmp_path):
     """Critical evidence + shared key mismatch → invalid (never valid)."""
+    monkeypatch.chdir(tmp_path)  # live_identity_*.json goes to tmp, not repo logs/
     _patch_common(monkeypatch)
     monkeypatch.setattr(
         bench_runner,
