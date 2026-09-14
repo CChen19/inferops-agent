@@ -1310,3 +1310,18 @@ def test_trajectory_records_retry_budget_stop_and_next_action():
     assert rstep["next_action"] == "rollback"
     assert "stop_reason" in rstep
     assert rstep["result"]["promoted_to_best"] is False
+
+
+def test_interrupt_recovery_stays_on_memory_saver_without_repo_sqlite():
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    goldens = (root / "inferops/eval/recovery_goldens.py").read_text()
+    assert "checkpointer = MemorySaver()" in goldens
+    assert "production_checkpointer" not in goldens
+    for name in (
+        "inferops_memory.db",
+        "inferops_memory.db-wal",
+        "inferops_memory.db-shm",
+    ):
+        assert not (root / name).exists(), f"leaked {name} into repo root"

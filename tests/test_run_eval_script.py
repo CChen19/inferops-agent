@@ -70,22 +70,27 @@ def test_run_eval_without_mock_or_prefix_exits_with_error(tmp_path):
 
 
 def test_run_eval_real_mode_requires_matching_session(tmp_path):
+    repo = Path(__file__).resolve().parents[1]
     cmd = [
         sys.executable,
-        "scripts/run_eval.py",
+        str(repo / "scripts/run_eval.py"),
         "--commit-sha",
         "unitsha",
         "--prefix",
         "missing_",
         "--ground-truth",
-        "tests/fixtures/ground_truth",
+        str(repo / "tests/fixtures/ground_truth"),
         "--output-dir",
         str(tmp_path),
         "--workloads",
         "chat_short",
     ]
 
-    proc = subprocess.run(cmd, text=True, capture_output=True, check=False)
+    # Session eval queries the default SQLite path; cwd=tmp_path so it cannot
+    # leave inferops_memory.db in the worktree root.
+    proc = subprocess.run(
+        cmd, text=True, capture_output=True, check=False, cwd=tmp_path,
+    )
 
     assert proc.returncode == 1
     assert "No session results found" in proc.stdout
