@@ -18,6 +18,12 @@ _CONTEXT_SOURCE_RE = re.compile(
     r"^\[source:\s*([^\]\r\n]+?)\s*\][ \t]+§[^\r\n]*$",
     re.IGNORECASE | re.MULTILINE,
 )
+_CONTEXT_DOCUMENT_RE = re.compile(
+    r"^\[source:\s*([^\]\r\n]+?)\s*\][ \t]+§[^\r\n]*\r?\n"
+    r"chunk_id=([^\s=]+)[ \t]+version=([^\s=]+)[ \t]*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+DocumentRef = tuple[str, str, str]
 _CITABLE_METRICS = frozenset(
     {
         "throughput_rps",
@@ -41,6 +47,14 @@ def sources_from_context(context: str) -> set[str]:
     return {match.group(1).strip() for match in _CONTEXT_SOURCE_RE.finditer(context)}
 
 
+def documents_from_context(context: str) -> set[DocumentRef]:
+    """Return ``(chunk_id, source, version)`` refs from rendered chunk metadata."""
+    return {
+        (match.group(2), match.group(1).strip(), match.group(3))
+        for match in _CONTEXT_DOCUMENT_RE.finditer(context)
+    }
+
+
 def _same_numeric_value(actual: Any, cited: Any) -> bool:
     if (
         isinstance(actual, bool)
@@ -56,6 +70,7 @@ def valid_structured_citations(
     hypothesis: Mapping[str, Any],
     summaries: Iterable[Mapping[str, Any]],
     available_sources: set[str],
+    available_documents: set[DocumentRef] | None = None,
 ) -> bool:
     """Check metric and document citation existence against current inputs."""
     citations = hypothesis.get("citations")
@@ -89,9 +104,22 @@ def valid_structured_citations(
         return False
     cited_source_tags = source_tags(rationale)
     source = document_citation.get("source")
+    chunk_id = document_citation.get("chunk_id")
+    version = document_citation.get("version")
     if not available_sources:
-        return source is None and not cited_source_tags
+        return (
+            source is None
+            and chunk_id is None
+            and version is None
+            and not cited_source_tags
+        )
     if not isinstance(source, str) or source not in available_sources:
+        return False
+    if not isinstance(chunk_id, str) or not chunk_id:
+        return False
+    if not isinstance(version, str) or not version:
+        return False
+    if not available_documents or (chunk_id, source, version) not in available_documents:
         return False
     if source not in cited_source_tags:
         return False

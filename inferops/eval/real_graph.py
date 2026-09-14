@@ -33,7 +33,7 @@ from inferops.agent.state import (
     initial_state,
     is_promotable_summary,
 )
-from inferops.citations import sources_from_context
+from inferops.citations import documents_from_context, sources_from_context
 from inferops.eval.judge import judge_trajectory
 from inferops.eval.metrics import (
     EfficiencyMetrics,
@@ -144,15 +144,19 @@ def _scoped_memory_db(db_path: Path | None) -> Iterator[None]:
 
 SCRIPTED_KNOWLEDGE_CONTEXT = """\
 [source: chunked_prefill] §Scheduler
+chunk_id=chunk_0 version=inferops-corpus-1
 Chunked prefill is a scheduler tuning option.
 
 [source: paged_attention] §KV cache
+chunk_id=chunk_1 version=inferops-corpus-1
 Paged attention manages KV-cache blocks.
 
 [source: prefix_caching] §Prefix cache
+chunk_id=chunk_2 version=inferops-corpus-1
 Prefix caching can reuse shared prompt prefixes.
 
 [source: vllm_scheduler] §Batching
+chunk_id=chunk_3 version=inferops-corpus-1
 The scheduler controls batching and sequence concurrency.\
 """
 
@@ -287,6 +291,7 @@ class ScriptedBottleneckLLM:
             user_text,
         )
         sources = sorted(sources_from_context(user_text))
+        documents = sorted(documents_from_context(user_text))
         if metric_match is None:
             # Production validation must reject this response when the eval
             # prompt itself has no citable metric.
@@ -294,6 +299,7 @@ class ScriptedBottleneckLLM:
 
         run_id, raw_value = metric_match.groups()
         source = sources[0] if sources else None
+        document = next((ref for ref in documents if ref[1] == source), None)
         for hypothesis in hypotheses:
             rationale = str(hypothesis.get("rationale", ""))
             if source is None:
@@ -317,8 +323,13 @@ class ScriptedBottleneckLLM:
                     "value": float(raw_value),
                 }
             }
-            if source is not None:
-                hypothesis["citations"]["document"] = {"source": source}
+            if source is not None and document is not None:
+                chunk_id, _, version = document
+                hypothesis["citations"]["document"] = {
+                    "chunk_id": chunk_id,
+                    "source": source,
+                    "version": version,
+                }
         return json.dumps(data)
 
     def invoke(self, messages: list[Any], **kwargs: Any) -> AIMessage:

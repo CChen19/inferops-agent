@@ -49,7 +49,13 @@ def _mock_llm(content: str):
     return llm
 
 
+def _document_ref(source="vllm_scheduler"):
+    chunk_id = "chunk_0" if source == "vllm_scheduler" else "chunk_1"
+    return (chunk_id, source, "inferops-corpus-1")
+
+
 def _cited_hypothesis(param, value, rationale, *, source="vllm_scheduler"):
+    chunk_id, _, version = _document_ref(source)
     return {
         "param": param,
         "value": value,
@@ -60,7 +66,7 @@ def _cited_hypothesis(param, value, rationale, *, source="vllm_scheduler"):
                 "metric": "throughput_rps",
                 "value": 14.96,
             },
-            "document": {"source": source},
+            "document": {"chunk_id": chunk_id, "source": source, "version": version},
         },
     }
 
@@ -70,8 +76,12 @@ def _retrieved_context():
     with patch(
         "inferops.agent.planner._retrieve_knowledge",
         return_value=(
-            "[source: vllm_scheduler] §Scheduling\nscheduler guidance\n\n"
-            "[source: chunked_prefill] §Chunked prefill\nchunked prefill guidance"
+            "[source: vllm_scheduler] §Scheduling\n"
+            "chunk_id=chunk_0 version=inferops-corpus-1\n"
+            "scheduler guidance\n\n"
+            "[source: chunked_prefill] §Chunked prefill\n"
+            "chunk_id=chunk_1 version=inferops-corpus-1\n"
+            "chunked prefill guidance"
         ),
     ):
         yield
@@ -136,7 +146,9 @@ def test_validate_accepts_valid_hypothesis():
             "rps=14.96 is low; [source: vllm_scheduler] larger batches improve GPU saturation",
         )
     ]
-    result = _validate_hypotheses(raw, state, {"vllm_scheduler"})
+    result = _validate_hypotheses(
+        raw, state, {"vllm_scheduler"}, {_document_ref()}
+    )
     assert len(result) == 1
     assert result[0]["param"] == "max_num_batched_tokens"
     assert result[0]["value"] == 4096
@@ -152,7 +164,9 @@ def test_validate_coerces_bool():
             source="chunked_prefill",
         )
     ]
-    result = _validate_hypotheses(raw, state, {"chunked_prefill"})
+    result = _validate_hypotheses(
+        raw, state, {"chunked_prefill"}, {_document_ref("chunked_prefill")}
+    )
     assert len(result) == 1
     assert result[0]["value"] is True
 
@@ -167,7 +181,9 @@ def test_validate_coerces_false_string_to_false():
             source="chunked_prefill",
         )
     ]
-    result = _validate_hypotheses(raw, state, {"chunked_prefill"})
+    result = _validate_hypotheses(
+        raw, state, {"chunked_prefill"}, {_document_ref("chunked_prefill")}
+    )
     assert len(result) == 1
     assert result[0]["value"] is False
 
@@ -185,7 +201,9 @@ def test_table_rendered_metric_value_is_accepted_without_precision_loss():
     raw[0]["citations"]["metric"]["value"] = 14.961234567
 
     assert "14.961234567" in _build_history_table(state["experiment_summaries"])
-    assert _validate_hypotheses(raw, state, {"vllm_scheduler"})
+    assert _validate_hypotheses(
+        raw, state, {"vllm_scheduler"}, {_document_ref()}
+    )
 
 
 def test_vs_baseline_pct_rendered_at_stored_precision_and_citable():
@@ -207,10 +225,19 @@ def test_vs_baseline_pct_rendered_at_stored_precision_and_citable():
         return [h]
 
     # Citing exactly what the table prints is accepted.
-    assert _validate_hypotheses(_cite(20.05), state, {"vllm_scheduler"})
+    available_documents = {_document_ref()}
+    assert _validate_hypotheses(
+        _cite(20.05), state, {"vllm_scheduler"}, available_documents
+    )
     # Citing the rounded (previously printed) value, or any nearby value, is rejected.
-    assert _validate_hypotheses(_cite(20.1), state, {"vllm_scheduler"}) == []
-    assert _validate_hypotheses(_cite(20.06), state, {"vllm_scheduler"}) == []
+    assert (
+        _validate_hypotheses(_cite(20.1), state, {"vllm_scheduler"}, available_documents)
+        == []
+    )
+    assert (
+        _validate_hypotheses(_cite(20.06), state, {"vllm_scheduler"}, available_documents)
+        == []
+    )
 
 
 # ---------------------------------------------------------------------------
