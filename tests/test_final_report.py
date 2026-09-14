@@ -64,6 +64,13 @@ def test_write_final_report_creates_file(tmp_path):
     assert result.improvement_pct == pytest.approx(14.7)
 
 
+def _executive_summary_section(text: str) -> str:
+    _, rest = text.split("## Executive Summary", 1)
+    if "\n## " in rest:
+        rest = rest.split("\n## ", 1)[0]
+    return rest
+
+
 def test_write_final_report_improvement_none_when_vs_baseline_missing(tmp_path):
     """P0-B: missing vs_baseline_pct → improvement_pct is None, not 0.0."""
     best_missing = {**_BEST, "vs_baseline_pct": None}
@@ -79,8 +86,28 @@ def test_write_final_report_improvement_none_when_vs_baseline_missing(tmp_path):
         )
     )
     assert result.improvement_pct is None
-    text = out_path.read_text()
-    assert "n/a" in text
+    headline = _executive_summary_section(out_path.read_text())
+    assert "**n/a**" in headline
+    assert "+0.0%" not in headline
+
+
+def test_executive_summary_renders_vs_baseline_at_stored_precision(tmp_path):
+    """Headline must print stored vs_baseline_pct so readers can cite it as-is."""
+    summary = {**_BEST, "vs_baseline_pct": 3.77}
+    out_path = tmp_path / "headline.md"
+    write_final_report(
+        FinalReportInput(
+            workload_name="chat_short",
+            session_prefix="sess_",
+            experiment_summaries=[_BASELINE, summary],
+            baseline_summary=_BASELINE,
+            best_summary=summary,
+            output_path=str(out_path),
+        )
+    )
+    headline = _executive_summary_section(out_path.read_text())
+    assert "**+3.77%**" in headline
+    assert "+3.8%" not in headline
 
 
 def _experiment_log_section(text: str) -> str:
