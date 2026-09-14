@@ -228,9 +228,12 @@ def _ensure_managed_vllm(
         by a crashed InferOps run when ``INFEROPS_ADOPT_STALE_MANAGED=1``
       * any failure after spawn stops *our* child and releases the lease
 
-    On success the child is registered as owned (``register_owned``) so
-    cancel/abort can stop exactly it; the lease is released by
-    ``release_owned`` in ``run_experiment``.
+    The child is registered as owned (``register_owned``) *as soon as it is
+    spawned* — before the (often minutes-long) readiness wait — so a user
+    Stop / ``cancel_owned_children`` can abort an in-flight model load. A
+    cancel observed after spawn, after readiness, or right before returning
+    fails closed with ``TaskCancelled`` (never ``valid``). On success the
+    lease is released by ``release_owned`` in ``run_experiment``.
 
     Returns (proc, actual_config, evidence).
     """
@@ -241,27 +244,53 @@ def _ensure_managed_vllm(
         experiment_id=cfg.experiment_id,
         session_id=str(sess) if sess else None,
     )
-    try:
-        lease.acquire()
-    except GPUBusyError as exc:
-        log(str(exc))
-        if on_progress:
-            on_progress("status:failed:gpu_busy")
-        raise BenchmarkError(str(exc)) from exc
+    # Constructed only after the lease is ours (gpu_busy never builds a child);
+    # construction is pure assignment, nothing spawns until start()/restart.
+    proc: VLLMProcess | None = None
 
-    proc = VLLMProcess(cfg, host=VLLM_HOST, port=VLLM_PORT)
-
-    def _abort(exc: Exception) -> None:
-        """Always kill the child we may have spawned, release the lease, re-raise."""
+    def _teardown() -> None:
+        """Stop the child we may have spawned (once), drop it from the owned
+        registry, release the lease. Every step is idempotent, so this is safe
+        whether or not the child was registered / already stopped by Stop."""
         try:
-            proc.stop()
+            if proc is not None:
+                release_owned(proc)
         except Exception:
             pass
         finally:
             lease.release()
+
+    def _abort(exc: Exception) -> None:
+        """Always kill the child we may have spawned, release the lease, re-raise."""
+        _teardown()
         raise exc
 
+    def _abort_if_cancelled(stage: str) -> None:
+        """User pressed Stop while we were starting: fail closed, never valid."""
+        if not cancel_requested():
+            return
+        pid = proc.pid if proc is not None else None
+        if on_progress:
+            on_progress(f"status:cancelled:{stage}")
+        _abort(
+            TaskCancelled(
+                f"Cancelled {cfg.experiment_id} during managed startup ({stage}); "
+                f"spawned vLLM child pid={pid} stopped, GPU lease released."
+            )
+        )
+
     try:
+        # Inside the guarded block so a Ctrl-C / SystemExit between acquire and
+        # the first spawn cannot leak the lease.
+        try:
+            lease.acquire()
+        except GPUBusyError as exc:
+            log(str(exc))
+            if on_progress:
+                on_progress("status:failed:gpu_busy")
+            raise BenchmarkError(str(exc)) from exc
+
+        proc = VLLMProcess(cfg, host=VLLM_HOST, port=VLLM_PORT)
         probe = probe_live_instance(VLLM_HOST, VLLM_PORT)
         previous_identity = probe.identity if probe.healthy else None
         occupant_pid = previous_identity.pid if previous_identity is not None else None
@@ -344,6 +373,11 @@ def _ensure_managed_vllm(
             start_token=getattr(proc, "start_token", None),
             launch_cmd=list(getattr(proc, "launch_cmd", None) or []) or None,
         )
+        # From here the child is owned: Stop / cancel_owned_children may stop
+        # exactly this one — including during the readiness / model-load wait.
+        register_owned(proc, lease, cfg.experiment_id)
+        # A Stop that landed while we were spawning found nothing to stop yet.
+        _abort_if_cancelled("after_spawn")
 
         if proc.log_path:
             log(f"  vLLM log → {proc.log_path}")
@@ -375,6 +409,9 @@ def _ensure_managed_vllm(
             )
 
         ready = proc.wait_ready_verbose(log)
+        # Stop pressed during the load window: the owned child was (or is now)
+        # stopped. Report a cancel, not a mystery crash/timeout, and never valid.
+        _abort_if_cancelled("during_startup_wait")
         if not ready:
             if on_progress:
                 on_progress("status:failed:startup")
@@ -466,8 +503,8 @@ def _ensure_managed_vllm(
                 f"child pid={bound_pid}; CLI knobs only in observed_params."
             ),
         )
-        # From here the child is owned: cancel/abort may stop exactly this one.
-        register_owned(proc, lease, cfg.experiment_id)
+        # Last gate before handing the child to the load phase.
+        _abort_if_cancelled("after_ready")
         return proc, actual, evidence
     except BenchmarkError:
         raise
@@ -476,10 +513,7 @@ def _ensure_managed_vllm(
         raise  # pragma: no cover
     except BaseException:
         # Ctrl-C / SystemExit while starting: never orphan the child we spawned.
-        try:
-            proc.stop()
-        finally:
-            lease.release()
+        _teardown()
         raise
 
 
@@ -611,7 +645,11 @@ def run_experiment(
                 # Child already stopped inside _ensure_managed_vllm.
                 reason = str(exc)
                 if on_progress:
-                    on_progress("status:failed:startup_or_identity")
+                    on_progress(
+                        "status:cancelled:startup"
+                        if isinstance(exc, TaskCancelled)
+                        else "status:failed:startup_or_identity"
+                    )
                 failed = _failed_result(mlflow_id, reason)
                 try:
                     log_experiment_result(failed)
@@ -636,12 +674,17 @@ def run_experiment(
         gpu_started = False
         gpu_summary = None
         load = None
+        cancel_stage = "during_load"
         try:
             try:
                 gpu.start()
                 gpu_started = True
             except Exception as gpu_exc:
                 log(f"GPU monitor unavailable ({gpu_exc}); util/mem will be n/a")
+            if cancel_requested():
+                # Stop landed after readiness but before traffic: do not run load.
+                cancel_stage = "before_load"
+                raise TaskCancelled(f"Cancelled {cfg.experiment_id} before load started")
             load = _run_load_with_cleanup_workaround(
                 cfg,
                 prompts,
@@ -649,21 +692,27 @@ def run_experiment(
                 stream_response=True,
                 cache_enabled=cfg.enable_prefix_caching,
             )
+            if cancel_requested():
+                # Stop landed while traffic ran; whatever came back is not a
+                # trustworthy measurement of the requested config. Never valid.
+                raise TaskCancelled(f"Cancelled {cfg.experiment_id} while load was running")
         except Exception as exc:
             if cancel_requested():
-                # Owned child was stopped mid-load by cancel_owned_children;
-                # record the attempt as cancelled, not as a mystery load failure.
+                # Owned child was stopped by cancel_owned_children (or the cancel
+                # gates above fired); record the attempt as cancelled, not as a
+                # mystery load failure.
+                stage = cancel_stage
                 if on_progress:
-                    on_progress("status:cancelled:during_load")
+                    on_progress(f"status:cancelled:{stage}")
                 failed = _failed_result(
                     mlflow_id,
-                    f"cancelled by user during load: {exc}",
+                    f"cancelled by user ({stage.replace('_', ' ')}): {exc}",
                     evidence=evidence,
                     actual=actual,
                 )
                 log_experiment_result(failed)
                 raise TaskCancelled(
-                    f"Cancelled {cfg.experiment_id} during load", result=failed
+                    f"Cancelled {cfg.experiment_id} {stage.replace('_', ' ')}", result=failed
                 ) from exc
             if on_progress:
                 on_progress("status:failed:load")

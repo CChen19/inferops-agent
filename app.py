@@ -92,9 +92,12 @@ async def on_start():
 async def on_stop():
     """User pressed Stop: stop only the managed vLLM this process spawned.
 
-    Sets the cancel flag so the running graph refuses to start another
-    experiment, then stops registered owned children and releases the GPU
-    lease. External / unknown services are never touched.
+    Sets the cancel flag first, so the running experiment fails closed at its
+    next cancel gate (after spawn, after readiness, before/after load) and no
+    further experiment starts. Then stops registered owned children — the
+    child is registered as soon as it is spawned, so a Stop during the model
+    load window aborts it — and releases the GPU lease. External / unknown
+    services are never touched.
     """
     request_cancel()
     reports = await asyncio.to_thread(cancel_owned_children, "user pressed stop")
@@ -109,11 +112,16 @@ async def on_stop():
                 f"  • pid={rep.get('pid')} experiment=`{rep.get('experiment_id')}` "
                 f"(GPU lease released: {rep.get('lease_released')})"
             )
-        lines.append("No other process was stopped.")
+        lines.append(
+            "That experiment is recorded as cancelled (never `valid`). "
+            "No other process was stopped, and no further experiment will start."
+        )
     else:
         lines = [
-            "**Cancelled.** No managed vLLM child was running; nothing was stopped. "
-            "The current experiment will not start."
+            "**Cancelled.** No InferOps-managed vLLM child was registered at this moment, "
+            "so no process was stopped. If an experiment is in flight it will abort at its "
+            "next cancel check (never `valid`) and stop its own child; no further "
+            "experiment will start. An external vLLM you run yourself is never touched."
         ]
     await cl.Message(content="\n".join(lines)).send()
 

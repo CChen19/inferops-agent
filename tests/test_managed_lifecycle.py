@@ -169,7 +169,8 @@ def test_lease_released_after_successful_run(monkeypatch, config, tmp_path):
             rec = ml.read_lease_record()
             assert rec is not None and rec.child_pid == 31 and rec.released is False
             assert not _lock_is_free()
-            assert ml.owned_pids() == []  # registered only after identity bind
+            # Owned from spawn onward so Stop can abort the model-load wait.
+            assert ml.owned_pids() == [31]
             return True
 
         def evidenced_actual_config(self):
@@ -396,6 +397,191 @@ def test_mid_load_cancel_stops_owned_child_and_releases_lock(monkeypatch, config
     assert ei.value.result is not None
     assert ei.value.result.status == ExperimentValidityStatus.FAILED
     assert "cancelled by user" in (ei.value.result.notes or "")
+    assert ml.owned_pids() == []
+    assert _lock_is_free()
+
+
+def _startup_proc_factory(pid: int, procs: list, *, on_wait_ready=None):
+    """VLLMProcess stand-in whose wait_ready_verbose runs an injected hook."""
+
+    class Proc(MockChild):
+        def __init__(self, cfg, host="127.0.0.1", port=8000):
+            super().__init__(pid, cfg.experiment_id)
+            self.cfg, self.host, self.port = cfg, host, port
+            self.log_path = None
+            self.start_token = "tok"
+            self.launch_cmd = []
+            self.wait_ready_calls = 0
+            procs.append(self)
+
+        def identity(self):
+            return InstanceIdentity(self.host, self.port, self._pid, self.start_token)
+
+        def start(self):
+            self.launch_cmd = vp._build_cmd(self.cfg, self.host, self.port)
+
+        def wait_ready_verbose(self, log_fn):
+            self.wait_ready_calls += 1
+            if on_wait_ready is not None:
+                return on_wait_ready(self)
+            return True
+
+        def evidenced_actual_config(self):
+            from inferops.tools.vllm_process import cli_evidenced_knobs
+
+            return cli_evidenced_knobs(self.cfg)
+
+        def oom_in_log(self):
+            return False
+
+        def is_crashed(self):
+            # A child Stop already terminated reads as crashed to the real class.
+            return self._pid is None
+
+    return Proc
+
+
+def test_stop_during_wait_ready_aborts_load_never_valid(monkeypatch, config):
+    """Stop pressed while vLLM is still loading the model (child spawned, not ready).
+
+    Before this slice the child was registered only after readiness, so Stop
+    found nothing, the load ran to completion and the row came back ``valid``.
+    """
+    _patch_common(monkeypatch)
+    monkeypatch.setattr(bench_runner, "probe_live_instance", lambda *a, **k: LiveProbe())
+    monkeypatch.setattr(
+        bench_runner,
+        "assert_listener_bound_to_child",
+        lambda **k: (_ for _ in ()).throw(AssertionError("must not bind after cancel")),
+    )
+    monkeypatch.setattr(
+        bench_runner,
+        "_run_load_with_cleanup_workaround",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("load must not run")),
+    )
+    killed: list[int] = []
+    monkeypatch.setattr(os, "kill", lambda pid, sig: killed.append(pid))
+    procs: list = []
+    stop_reports: list = []
+
+    def user_stops_while_loading(proc):
+        # Child is spawned and already owned; lease carries it.
+        assert ml.owned_pids() == [77]
+        rec = ml.read_lease_record()
+        assert rec is not None and rec.child_pid == 77 and rec.released is False
+        ml.request_cancel()
+        stop_reports.extend(ml.cancel_owned_children("user pressed stop"))  # app.on_stop
+        assert proc.pid is None  # our child was stopped by Stop itself
+        return False  # /health never came up because the child is gone
+
+    Proc = _startup_proc_factory(77, procs, on_wait_ready=user_stops_while_loading)
+    monkeypatch.setattr(bench_runner, "VLLMProcess", Proc)
+
+    progress: list[str] = []
+    with pytest.raises(bench_runner.TaskCancelled, match="during managed startup") as ei:
+        bench_runner.run_experiment(config, ["p"], on_progress=progress.append)
+
+    assert [r["pid"] for r in stop_reports] == [77]
+    assert stop_reports[0]["stopped"] is True and stop_reports[0]["lease_released"] is True
+    assert procs[0].wait_ready_calls == 1
+    assert procs[0].pid is None
+    assert killed == []  # no unregistered PID was ever signalled
+    assert "status:cancelled:during_startup_wait" in progress
+    assert "status:cancelled:startup" in progress
+    assert not any(p.startswith("status:failed:startup") for p in progress)
+    assert ei.value.result is not None
+    assert ei.value.result.status == ExperimentValidityStatus.FAILED
+    assert ei.value.result.status != ExperimentValidityStatus.VALID
+    assert ml.owned_pids() == []
+    assert _lock_is_free()
+
+
+def test_cancel_flag_during_wait_ready_without_stop_call_still_aborts(monkeypatch, config):
+    """Only the flag is set (e.g. Stop raced the spawn): startup itself stops the child."""
+    _patch_common(monkeypatch)
+    monkeypatch.setattr(bench_runner, "probe_live_instance", lambda *a, **k: LiveProbe())
+    monkeypatch.setattr(
+        bench_runner,
+        "_run_load_with_cleanup_workaround",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("load must not run")),
+    )
+    procs: list = []
+
+    def flag_only(proc):
+        ml.request_cancel()
+        return True  # child happens to become ready anyway
+
+    Proc = _startup_proc_factory(78, procs, on_wait_ready=flag_only)
+    monkeypatch.setattr(bench_runner, "VLLMProcess", Proc)
+    monkeypatch.setattr(bench_runner, "assert_listener_bound_to_child", lambda **k: 78)
+
+    with pytest.raises(bench_runner.TaskCancelled) as ei:
+        bench_runner.run_experiment(config, ["p"])
+    assert procs[0].stop_calls == 1 and procs[0].pid is None
+    assert ei.value.result is not None
+    assert ei.value.result.status != ExperimentValidityStatus.VALID
+    assert ml.owned_pids() == []
+    assert _lock_is_free()
+
+
+def test_cancel_after_ready_before_load_never_valid(monkeypatch, config, tmp_path):
+    """Stop lands after readiness/identity bind but before traffic: load must not run."""
+    _patch_common(monkeypatch)
+    monkeypatch.chdir(tmp_path)  # live_identity_*.json goes to tmp, not repo logs/
+    monkeypatch.setattr(bench_runner, "probe_live_instance", lambda *a, **k: LiveProbe())
+    monkeypatch.setattr(bench_runner, "assert_listener_bound_to_child", lambda **k: 79)
+    procs: list = []
+    Proc = _startup_proc_factory(79, procs)
+    monkeypatch.setattr(bench_runner, "VLLMProcess", Proc)
+
+    load_calls: list = []
+
+    def load_would_succeed(*a, **k):
+        load_calls.append(1)
+        raise AssertionError("load must not run after cancel")
+
+    monkeypatch.setattr(bench_runner, "_run_load_with_cleanup_workaround", load_would_succeed)
+
+    # Fire the cancel the moment startup hands the child over (before load).
+    real_gpu_monitor = bench_runner.GPUMonitor
+
+    class CancelOnMonitorStart(real_gpu_monitor):
+        def start(self):
+            ml.request_cancel()
+            ml.cancel_owned_children("user pressed stop")
+            raise RuntimeError("no GPU in CI")
+
+    monkeypatch.setattr(bench_runner, "GPUMonitor", CancelOnMonitorStart)
+
+    progress: list[str] = []
+    with pytest.raises(bench_runner.TaskCancelled, match="before load") as ei:
+        bench_runner.run_experiment(config, ["p"], on_progress=progress.append)
+
+    assert load_calls == []
+    assert "status:cancelled:before_load" in progress
+    assert procs[0].pid is None
+    assert ei.value.result is not None
+    assert ei.value.result.status == ExperimentValidityStatus.FAILED
+    assert "cancelled by user (before load)" in (ei.value.result.notes or "")
+    assert ml.owned_pids() == []
+    assert _lock_is_free()
+
+
+def test_ctrl_c_between_lease_acquire_and_spawn_releases_lock(monkeypatch, config):
+    """Signal after acquire() but before any spawn: lease must not leak."""
+    _patch_common(monkeypatch)
+
+    def probe_interrupted(*a, **k):
+        assert not _lock_is_free()  # lease is held at this point
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(bench_runner, "probe_live_instance", probe_interrupted)
+    procs: list = []
+    Proc = _startup_proc_factory(80, procs)
+    monkeypatch.setattr(bench_runner, "VLLMProcess", Proc)
+    with pytest.raises(KeyboardInterrupt):
+        bench_runner.run_experiment(config, ["p"])
+    assert procs[0].stop_calls == 1  # idempotent stop on a never-started child
     assert ml.owned_pids() == []
     assert _lock_is_free()
 
