@@ -72,6 +72,7 @@ def _observation_to_summary(
         e2e_p50_ms=observation.metrics.get("e2e_p50_ms"),
         bottleneck=observation.bottleneck,
         vs_baseline_pct=round(vs_baseline, 2) if vs_baseline is not None else None,
+        baseline_primary=baseline_primary,
         run_id=uuid.uuid4().hex,
         validity_status=observation.validity_status,
         mlflow_run_id=None,

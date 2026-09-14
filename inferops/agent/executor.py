@@ -374,6 +374,7 @@ def executor_node(state: AgentState) -> dict:
             e2e_p50_ms=bench_dict.get("e2e_p50_ms", 0.0),
             bottleneck=bottleneck,
             vs_baseline_pct=round(vs_from_compare, 2) if vs_from_compare is not None else None,
+            baseline_primary=baseline_primary,
             run_id=bench_dict.get("run_id") or "",
             validity_status=bench_dict.get("status") or "insufficient_evidence",
             mlflow_run_id=bench_dict.get("mlflow_run_id"),
