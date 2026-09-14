@@ -76,7 +76,7 @@ def main() -> None:
         "--mock",
         action="store_true",
         help=(
-            "Preset strategy simulation (random/greedy over ground-truth). "
+            "Fair protocol simulation (default/random/online_local_search). "
             "Does NOT invoke production build_graph / planner_node."
         ),
     )
@@ -124,7 +124,14 @@ def main() -> None:
         default=None,
         help="Previous eval JSON for regression gate",
     )
-    parser.add_argument("--gate-strategy", default="greedy_agent", help="Strategy to gate")
+    parser.add_argument(
+        "--gate-strategy",
+        default="online_local_search",
+        help=(
+            "Strategy to gate (mock default: online_local_search — honest local "
+            "search without clairvoyant GT peeking)"
+        ),
+    )
     parser.add_argument("--max-outcome-regression-pct", type=float, default=5.0)
     parser.add_argument("--min-composite-delta", type=float, default=-0.05)
     args = parser.parse_args()

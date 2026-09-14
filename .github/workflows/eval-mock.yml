@@ -48,7 +48,7 @@ jobs:
             --budget 2 \
             --seed 7 \
             --baseline-report tests/fixtures/ci_baseline.json \
-            --gate-strategy greedy_agent
+            --gate-strategy online_local_search
 
       - name: Run offline real-graph eval (fake LLM — no live OpenRouter)
         run: |

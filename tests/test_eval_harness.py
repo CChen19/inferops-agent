@@ -25,13 +25,19 @@ def test_run_mock_eval_scores_baseline_strategies():
     )
 
     assert report["commit_sha"] == "abc123"
-    assert set(report["strategies"]) == {"random_agent", "greedy_agent"}
-    assert len(report["strategies"]["greedy_agent"]) == 2
-    assert "mean_composite" in report["aggregates"]["greedy_agent"]
-    assert (
-        report["aggregates"]["greedy_agent"]["mean_composite"]
-        > report["aggregates"]["random_agent"]["mean_composite"]
-    )
+    assert set(report["strategies"]) == {"default", "random", "online_local_search"}
+    assert len(report["strategies"]["online_local_search"]) == 2
+    row = report["strategies"]["online_local_search"][0]
+    assert row["workload_name"] == "chat_short"
+    for field in (
+        "success_in_budget",
+        "first_valid_n",
+        "wasted_trials",
+        "n_paid",
+        "gap_pct",
+    ):
+        assert field in row
+    assert "mean_gap_pct" in report["aggregates"]["online_local_search"]
 
 
 def test_render_markdown_report_contains_dashboard_tables():
@@ -40,9 +46,10 @@ def test_render_markdown_report_contains_dashboard_tables():
     text = render_markdown_report(report)
 
     assert "# InferOps Eval Report" in text
-    assert "random_agent" in text
-    assert "greedy_agent" in text
-    assert "| Strategy | Mean gap %" in text
+    assert "online_local_search" in text
+    assert "default" in text
+    assert "| Strategy | Success | Mean gap %" in text
+    assert "Success | 1st valid | Gain | Wasted | Paid | Gap %" in text
     assert "Mock eval only" in text
     assert "not** real measured performance" in text
 
