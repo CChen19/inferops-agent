@@ -46,6 +46,7 @@ __all__ = [
     "run_real_graph_eval",
     "write_eval_outputs",
     "render_markdown_report",
+    "fixture_from_ground_truth",
     "MODE_REAL_GRAPH_OFFLINE",
     "MODE_REAL_GRAPH_LLM",
 ]
@@ -70,7 +71,7 @@ def run_mock_eval(
 
     for wl_name in names:
         gt = load_ground_truth(wl_name, ground_truth_dir)
-        fixture = _fixture_from_ground_truth(gt)
+        fixture = fixture_from_ground_truth(gt)
         policy = BudgetPolicy(total_slots=budget)
         wl = gt["workload_name"]
         runs = {
@@ -253,7 +254,7 @@ def render_markdown_report(report: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def _fixture_from_ground_truth(ground_truth: dict[str, Any]) -> HiddenResultFixture:
+def fixture_from_ground_truth(ground_truth: dict[str, Any]) -> HiddenResultFixture:
     """Build a fair-eval fixture; GT sweep rows lack SLO contract fields by default."""
     enriched = [
         {
@@ -266,6 +267,11 @@ def _fixture_from_ground_truth(ground_truth: dict[str, Any]) -> HiddenResultFixt
         for row in ground_truth.get("experiments", [])
     ]
     return HiddenResultFixture.from_rows(enriched)
+
+
+# Backward-compatible alias used by existing tests/callers.
+def _fixture_from_ground_truth(ground_truth: dict[str, Any]) -> HiddenResultFixture:
+    return fixture_from_ground_truth(ground_truth)
 
 
 def _strategy_run_to_row(
