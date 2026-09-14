@@ -35,20 +35,30 @@ or that search beat the planner at adoption.
 | Search arm observes 19.145 rps with `confirmed_gain: null` | **Proven live** (protocol score only; SHA `277167e`) |
 | SLO-invalid trial rejected while engine stays healthy | **Proven live** (`livefair_search_01`) |
 | Confirmation campaign on the live case | **Not proven** — best candidate was 3.77% < 5% threshold; campaign never ran |
-| Memory reducing wasted trials | **Not proven** — compatible-history / memory work is in flight or CPU-scoped; no live waste reduction shown |
+| Memory reducing wasted trials | **Not proven** — compatible-history / memory is CPU-scoped or still open (PR #64); no live waste reduction shown |
 | Agent vs search at adoption | **Not proven** — different claim levels and SHAs; no adoption winner |
 | Document citations | **Existence-only** — structured `(chunk_id, source, version)` match when retrieved; not semantic support |
 | Resume, citation gates, managed lifecycle, report precision | **Proven CPU** — merged tests/code; not new GPU measurements |
 
 Detail and citations for each row live in [`limits.md`](limits.md).
 
-## In flight — not claimed in this freeze
+## After the freeze (current master notes)
 
-- **PR #62 closeout** (resume copy / history attribution / index version /
-  hardware fingerprint): Opus eval **FAIL** on planner fingerprint wiring;
-  being fixed. Not part of the interview claim surface.
-- **Memory pre-experiment:** in flight, not done. Do not claim memory already
-  reduces wasted trials on live hardware.
+Interview claims stay pinned to **`2731bed`**. Later merges on master are
+recorded here so the pack does not go stale, but they are **not** part of the
+interview SHA and do not retarget the demo.
 
-Anything merged after `2731bed` is outside this freeze unless a later freeze
-doc says otherwise.
+| Item | Status on master |
+|---|---|
+| PR #63 interview freeze | Merged at `61374af` (docs that pinned `2731bed`) |
+| PR #62 closeout small-fixes | Merged at `5cb9e20` — resume copy / history attribution / index version / hardware fingerprint. **After** the freeze; not claimed in the interview SHA |
+| PR #64 memory pre-experiment | Still **OPEN**. Do not claim it merged, and do not claim memory already reduces wasted trials on live hardware |
+
+## Still not claimed
+
+- Memory reducing live wasted trials (PR #64 open; no live waste-reduction result).
+- Confirmation campaign on the live case (3.77% < 5%; never ran).
+- Agent vs search at adoption (exploratory compare only; `confirmed_gain` null).
+
+Anything else merged after `2731bed` is outside this freeze unless a later
+freeze doc says otherwise.
