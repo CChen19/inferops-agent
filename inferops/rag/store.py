@@ -9,6 +9,7 @@ from inferops.rag.chunker import Chunk
 
 _COLLECTION_NAME = "inferops_corpus"
 _DEFAULT_DB_PATH = "data/chroma"
+CORPUS_VERSION = "inferops-corpus-1"
 
 
 def _client(db_path: str = _DEFAULT_DB_PATH):
@@ -38,7 +39,8 @@ def build_index(
     ids = [f"chunk_{i}" for i in range(len(chunks))]
     documents = [c.text for c in chunks]
     metadatas: list[dict[str, Any]] = [
-        {"source": c.source, "section": c.section} for c in chunks
+        {"source": c.source, "section": c.section, "version": CORPUS_VERSION}
+        for c in chunks
     ]
 
     col.upsert(ids=ids, documents=documents, embeddings=embeddings, metadatas=metadatas)
@@ -50,7 +52,7 @@ def query(
     db_path: str = _DEFAULT_DB_PATH,
 ) -> list[dict[str, Any]]:
     """
-    Return top_k chunks as dicts with keys: text, source, section, score.
+    Return top_k chunks with their Chroma id, corpus version, text, source, section, and score.
 
     score is cosine distance (lower = more similar). Converted to similarity = 1 - distance.
     """
@@ -67,14 +69,17 @@ def query(
     )
 
     hits = []
+    ids = results["ids"][0]
     docs = results["documents"][0]
     metas = results["metadatas"][0]
     dists = results["distances"][0]
-    for doc, meta, dist in zip(docs, metas, dists):
+    for chunk_id, doc, meta, dist in zip(ids, docs, metas, dists):
         hits.append({
+            "chunk_id": chunk_id,
             "text": doc,
             "source": meta.get("source", ""),
             "section": meta.get("section", ""),
+            "version": meta.get("version", ""),
             "score": round(1.0 - dist, 4),
         })
     return hits

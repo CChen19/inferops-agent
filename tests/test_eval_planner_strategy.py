@@ -125,7 +125,11 @@ def test_planner_no_rag_skips_retrieval():
 def test_planner_rag_may_call_retrieval():
     fixture = _tiny_fixture()
     llm = ScriptedBottleneckLLM(default_bottleneck="scheduling-bound")
-    retrieval_context = "[source: test_doc] §Test\nstub chunk"
+    retrieval_context = (
+        "[source: test_doc] §Test\n"
+        "chunk_id=chunk_0 version=inferops-corpus-1\n"
+        "stub chunk"
+    )
     assert sources_from_context(retrieval_context)
 
     with (
@@ -148,6 +152,9 @@ def test_planner_rag_may_call_retrieval():
 
     mock_retrieve.assert_called()
     assert mock_citation_gate.call_args.args[2] == {"test_doc"}
+    assert mock_citation_gate.call_args.args[3] == {
+        ("chunk_0", "test_doc", "inferops-corpus-1")
+    }
     assert [record.kind for record in run.ledger.records] == ["baseline", "trial"]
 
 

@@ -20,9 +20,11 @@ class KnowledgeRetrieverInput(BaseModel):
 
 
 class RetrievedChunk(BaseModel):
+    chunk_id: str
     text: str
     source: str
     section: str
+    version: str
     score: float
 
 
@@ -38,7 +40,8 @@ def knowledge_retriever(inp: KnowledgeRetrieverInput) -> KnowledgeRetrieverOutpu
     Retrieve the most relevant knowledge chunks for a given query.
 
     Embeds the query with bge-base-zh-v1.5, searches the Chroma corpus index,
-    and returns the top-k chunks with their source document and section heading.
+    and returns the top-k chunks with their id, source document, section heading,
+    and corpus version.
     Returns index_empty=True (with no chunks) if the index has not been built yet.
 
     Use the returned chunks as grounding for hypothesis rationales. Each hypothesis

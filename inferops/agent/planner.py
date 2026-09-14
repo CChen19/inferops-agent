@@ -24,7 +24,12 @@ from inferops.agent.state import (
     is_duplicate,
     model_name_of,
 )
-from inferops.citations import sources_from_context, valid_structured_citations
+from inferops.citations import (
+    DocumentRef,
+    documents_from_context,
+    sources_from_context,
+    valid_structured_citations,
+)
 
 # ---------------------------------------------------------------------------
 # Prompt templates
@@ -214,9 +219,11 @@ def _validate_hypotheses(
     raw_hyps: list[dict],
     state: AgentState,
     available_sources: set[str] | None = None,
+    available_documents: set[DocumentRef] | None = None,
 ) -> list[dict]:
     """Filter out invalid hypotheses (wrong param, out-of-range, already tried)."""
     available_sources = available_sources or set()
+    available_documents = available_documents or set()
     citation_summaries = _citation_summaries(state)
     valid = []
     for h in raw_hyps:
@@ -256,7 +263,9 @@ def _validate_hypotheses(
         # below is authoritative for run/metric/value/source existence.
         if not re.search(r"\d+(\.\d+)?", rationale):
             continue
-        if not valid_structured_citations(h, citation_summaries, available_sources):
+        if not valid_structured_citations(
+            h, citation_summaries, available_sources, available_documents
+        ):
             continue
         h["param"] = param
         h["value"] = value
@@ -295,7 +304,11 @@ def _retrieve_knowledge(bottleneck: str, workload: str, top_k: int = 4) -> str:
             return "(knowledge index not built — run scripts/build_corpus.py)"
         lines = []
         for c in result.chunks:
-            lines.append(f"[source: {c.source}] §{c.section}\n{c.text[:300]}…")
+            lines.append(
+                f"[source: {c.source}] §{c.section}\n"
+                f"chunk_id={c.chunk_id} version={c.version}\n"
+                f"{c.text[:300]}…"
+            )
         return "\n\n".join(lines)
     except Exception:
         return "(knowledge retrieval unavailable)"
@@ -337,12 +350,17 @@ def planner_node(state: AgentState, llm) -> dict:
         workload=state["workload_name"],
     )
     available_sources = sources_from_context(knowledge_context)
+    available_documents = documents_from_context(knowledge_context)
     if available_sources:
         source_rationale_requirement = "a [source: <source>] tag from the knowledge context above"
         document_requirement = (
-            "The document source must exactly match a source shown in KNOWLEDGE CONTEXT."
+            "The document chunk_id, source, and version must exactly match one chunk shown "
+            "in KNOWLEDGE CONTEXT."
         )
-        document_example = ',\n        "document": {"source": "<doc>"}'
+        document_example = (
+            ',\n        "document": {"chunk_id": "<chunk>", "source": "<doc>", '
+            '"version": "<version>"}'
+        )
         rationale_example = "... metric=X.Y ... [source: <doc>] ..."
     else:
         source_rationale_requirement = (
@@ -397,7 +415,9 @@ def planner_node(state: AgentState, llm) -> dict:
         if not isinstance(raw_hyps, list):
             raise ValueError("hypotheses must be a list")
         analysis = data.get("analysis", "")
-        valid = _validate_hypotheses(raw_hyps, state, available_sources)
+        valid = _validate_hypotheses(
+            raw_hyps, state, available_sources, available_documents
+        )
         needs_retry = bool(raw_hyps) and len(valid) != len(raw_hyps)
     except (json.JSONDecodeError, ValueError):
         needs_retry = True
@@ -427,7 +447,9 @@ def planner_node(state: AgentState, llm) -> dict:
                 raise ValueError("hypotheses must be a list")
             analysis = data.get("analysis", "")
             response = retry_response
-            valid = _validate_hypotheses(raw_hyps, state, available_sources)
+            valid = _validate_hypotheses(
+                raw_hyps, state, available_sources, available_documents
+            )
         except (json.JSONDecodeError, ValueError):
             raw_hyps = []
             valid = []
