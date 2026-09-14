@@ -207,3 +207,22 @@ def test_wait_ready_still_times_out_without_cancel(config, monkeypatch):
     assert proc.wait_ready() is False
     elapsed = time.monotonic() - t0
     assert 0.5 <= elapsed < 2.0
+
+
+def test_wait_should_abort_binds_proc_once(config):
+    """stop() can null _proc on another thread; must not re-read self._proc for poll()."""
+    child = _FakeChild()
+    reads = {"n": 0}
+
+    class _RaceyProcVLLMProcess(VLLMProcess):
+        def __getattribute__(self, name):
+            if name == "_proc":
+                reads["n"] += 1
+                if reads["n"] == 1:
+                    return child
+                return None  # simulates stop() clearing _proc between former TOCTOU reads
+            return super().__getattribute__(name)
+
+    proc = _RaceyProcVLLMProcess(config, host="127.0.0.1", port=8000)
+    assert proc._wait_should_abort() is False
+    assert reads["n"] == 1

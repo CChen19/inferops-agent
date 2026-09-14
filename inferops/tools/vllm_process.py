@@ -536,9 +536,10 @@ class VLLMProcess:
 
     def _wait_should_abort(self) -> bool:
         """True when readiness polling is pointless: no child, dead child, or cancel."""
-        if self._proc is None:
+        proc = self._proc
+        if proc is None:
             return True  # never started or stop()-ed — nothing to become ready
-        if self._proc.poll() is not None:
+        if proc.poll() is not None:
             return True  # crashed during startup
         return cancel_requested()
 
