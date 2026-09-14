@@ -27,8 +27,13 @@ VALID_WORKLOADS = list(WORKLOAD_PRIMARY_METRIC.keys())
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run the inferops optimizer agent")
     parser.add_argument(
-        "--workload", required=True, choices=VALID_WORKLOADS,
+        "--workload", choices=VALID_WORKLOADS,
         help="Workload to optimize",
+    )
+    parser.add_argument(
+        "--resume-task",
+        default=None,
+        help="Resume a persisted confirmed task by task id",
     )
     parser.add_argument(
         "--llm", default="deepseek", choices=["deepseek", "claude"],
@@ -47,6 +52,8 @@ def main() -> None:
         help="LLM temperature (default: 0.3)",
     )
     args = parser.parse_args()
+    if not args.resume_task and not args.workload:
+        parser.error("--workload is required unless --resume-task is used")
 
     llm = make_llm(backend=args.llm, temperature=args.temperature)
     final_state = run_agent(
@@ -54,14 +61,16 @@ def main() -> None:
         llm=llm,
         max_experiments=args.budget,
         session_prefix=args.prefix,
+        resume_task_id=args.resume_task,
     )
 
-    primary = WORKLOAD_PRIMARY_METRIC[args.workload]
+    resolved_workload = final_state["workload_name"]
+    primary = WORKLOAD_PRIMARY_METRIC[resolved_workload]
     best = final_state.get("best_summary")
     baseline = final_state.get("baseline_summary")
 
     print("\n=== RESULT ===")
-    print(f"Workload:    {args.workload}")
+    print(f"Workload:    {resolved_workload}")
     print(f"LLM:         {args.llm}")
     print(f"Experiments: {len(final_state['tried_experiment_ids'])}")
     print(f"Stop reason: {final_state['stop_reason']}")

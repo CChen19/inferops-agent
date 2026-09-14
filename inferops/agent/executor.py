@@ -134,6 +134,7 @@ def _benchmark_input(
         session_id=state["session_prefix"],
         model_name=model_name_of(state),
         workload=task.workload if task is not None else None,
+        service_mode=task.service_mode.value if task is not None else None,
     )
 
 

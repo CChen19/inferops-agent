@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +17,17 @@ from inferops.schemas import (
 )
 
 _DEFAULT_DB = Path("inferops_memory.db")
+
+
+@dataclass(frozen=True)
+class TaskRecord:
+    task_id: str
+    session_prefix: str
+    thread_id: str
+    confirmed_task: dict[str, Any]
+    status: str
+    created_at: str
+    updated_at: str
 
 _CONTRACT_COLUMNS: tuple[tuple[str, str], ...] = (
     ("run_id", "TEXT"),
@@ -106,7 +118,100 @@ def init_db(db_path: Path = _DEFAULT_DB) -> None:
         """)
         _migrate_contract_columns(conn)
         _backfill_promotable(conn)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS tasks (
+                task_id          TEXT PRIMARY KEY,
+                session_prefix   TEXT NOT NULL,
+                thread_id        TEXT NOT NULL,
+                confirmed_task_json TEXT NOT NULL,
+                status           TEXT NOT NULL,
+                created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+        """)
         conn.commit()
+
+
+def save_task(
+    *,
+    task_id: str,
+    session_prefix: str,
+    thread_id: str,
+    confirmed_task: dict[str, Any],
+    status: str = "confirmed",
+    db_path: Path = _DEFAULT_DB,
+) -> TaskRecord:
+    """Create or update a resumable confirmed task without changing its identity."""
+    init_db(db_path)
+    payload = json.dumps(confirmed_task, sort_keys=True, separators=(",", ":"))
+    with _connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO tasks
+                (task_id, session_prefix, thread_id, confirmed_task_json, status)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(task_id) DO UPDATE SET
+                confirmed_task_json = excluded.confirmed_task_json,
+                status = excluded.status,
+                updated_at = datetime('now')
+            """,
+            (task_id, session_prefix, thread_id, payload, status),
+        )
+        conn.commit()
+    record = get_task(task_id, db_path=db_path)
+    assert record is not None
+    return record
+
+
+def get_task(task_id: str, db_path: Path = _DEFAULT_DB) -> TaskRecord | None:
+    """Load one persisted task by its stable task id."""
+    init_db(db_path)
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT task_id, session_prefix, thread_id, confirmed_task_json,
+                   status, created_at, updated_at
+            FROM tasks
+            WHERE task_id = ?
+            """,
+            (task_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    return TaskRecord(
+        task_id=row["task_id"],
+        session_prefix=row["session_prefix"],
+        thread_id=row["thread_id"],
+        confirmed_task=json.loads(row["confirmed_task_json"]),
+        status=row["status"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
+
+
+def update_task_status(
+    task_id: str,
+    status: str,
+    db_path: Path = _DEFAULT_DB,
+) -> TaskRecord | None:
+    """Update execution status while retaining the confirmed task payload."""
+    init_db(db_path)
+    with _connect(db_path) as conn:
+        conn.execute(
+            "UPDATE tasks SET status = ?, updated_at = datetime('now') WHERE task_id = ?",
+            (status, task_id),
+        )
+        conn.commit()
+    return get_task(task_id, db_path=db_path)
+
+
+def delete_task(task_id: str, db_path: Path = _DEFAULT_DB) -> bool:
+    """Delete one task row. Checkpoints and experiment rows are retained."""
+    init_db(db_path)
+    with _connect(db_path) as conn:
+        cursor = conn.execute("DELETE FROM tasks WHERE task_id = ?", (task_id,))
+        conn.commit()
+    return cursor.rowcount > 0
 
 
 def _config_hash(cfg: ExperimentConfig) -> str:

@@ -20,7 +20,7 @@ app = typer.Typer(
 
 @app.command()
 def agent(
-    workload: str = typer.Option(..., help="Workload to optimize."),
+    workload: Optional[str] = typer.Option(None, help="Workload to optimize."),
     llm: str = typer.Option("deepseek", help="Planner backend: deepseek or claude."),
     budget: int = typer.Option(8, help="Max vLLM experiments including baseline."),
     prefix: Optional[str] = typer.Option(None, help="Experiment ID prefix for this session."),
@@ -34,34 +34,49 @@ def agent(
     max_ttft_ms: Optional[float] = typer.Option(
         None, help="Hard TTFT p99 constraint in milliseconds."
     ),
+    service_mode: str = typer.Option(
+        "managed", help="vLLM lifecycle mode: managed or external."
+    ),
+    resume_task: Optional[str] = typer.Option(
+        None,
+        "--resume-task",
+        help="Resume a persisted confirmed task by task id.",
+    ),
 ) -> None:
     """Run the Plan-Execute-Reflect optimizer agent."""
     from inferops.agent.graph import make_llm, run_agent
     from inferops.agent.state import WORKLOAD_PRIMARY_METRIC
     from inferops.task import default_task_for_workload
 
-    valid = set(WORKLOAD_PRIMARY_METRIC)
-    if workload not in valid:
-        raise typer.BadParameter(f"Unknown workload '{workload}'. Valid: {', '.join(sorted(valid))}")
-
-    try:
-        task = default_task_for_workload(
-            workload,
-            budget,
-            model_name=model_name,
-            target_qps=target_qps,
-            max_ttft_ms=max_ttft_ms,
-        )
-    except ValueError as exc:
-        raise typer.BadParameter(str(exc)) from exc
+    task = None
+    if resume_task is None:
+        valid = set(WORKLOAD_PRIMARY_METRIC)
+        if workload is None:
+            raise typer.BadParameter("--workload is required unless --resume-task is used")
+        if workload not in valid:
+            raise typer.BadParameter(
+                f"Unknown workload '{workload}'. Valid: {', '.join(sorted(valid))}"
+            )
+        try:
+            task = default_task_for_workload(
+                workload,
+                budget,
+                model_name=model_name,
+                target_qps=target_qps,
+                max_ttft_ms=max_ttft_ms,
+                service_mode=service_mode,
+            )
+        except ValueError as exc:
+            raise typer.BadParameter(str(exc)) from exc
 
     model = make_llm(backend=llm, temperature=temperature)
     run_agent(
-        workload_name=task.workload.name,
+        workload_name=task.workload.name if task is not None else None,
         llm=model,
-        max_experiments=task.experiment_budget,
+        max_experiments=task.experiment_budget if task is not None else budget,
         session_prefix=prefix,
         task=task,
+        resume_task_id=resume_task,
     )
 
 
