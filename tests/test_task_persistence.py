@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import patch
 
 from langgraph.graph import END
@@ -14,6 +15,17 @@ from inferops.memory.db import delete_task, get_task, save_task, update_task_sta
 from inferops.schemas import ExperimentValidityStatus
 from inferops.task import default_task_for_workload
 from tests.test_config_application import _patch_common
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _assert_no_repo_root_sqlite() -> None:
+    for name in (
+        "inferops_memory.db",
+        "inferops_memory.db-wal",
+        "inferops_memory.db-shm",
+    ):
+        assert not (_REPO_ROOT / name).exists(), f"leaked {name} into repo root"
 
 
 def _baseline() -> dict:
@@ -67,6 +79,7 @@ def test_confirm_persist_has_stable_task_and_thread_ids(tmp_path):
     assert update_task_status(task.task_id, "completed", db_path=db_path).status == "completed"
     assert delete_task(task.task_id, db_path=db_path) is True
     assert get_task(task.task_id, db_path=db_path) is None
+    _assert_no_repo_root_sqlite()
 
 
 def test_new_checkpointer_instance_resumes_without_second_baseline(tmp_path):
@@ -147,6 +160,7 @@ def test_new_checkpointer_instance_resumes_without_second_baseline(tmp_path):
     assert benchmark_calls == ["benchmark"]
     assert final["experiments_remaining"] == 0
     assert get_task(task.task_id, db_path=db_path).status == "completed"
+    _assert_no_repo_root_sqlite()
 
 
 def test_external_task_mode_skips_managed_start_without_env(monkeypatch, config):
