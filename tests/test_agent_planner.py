@@ -70,8 +70,8 @@ def _retrieved_context():
     with patch(
         "inferops.agent.planner._retrieve_knowledge",
         return_value=(
-            "[source: vllm_scheduler] scheduler guidance\n\n"
-            "[source: chunked_prefill] chunked prefill guidance"
+            "[source: vllm_scheduler] §Scheduling\nscheduler guidance\n\n"
+            "[source: chunked_prefill] §Chunked prefill\nchunked prefill guidance"
         ),
     ):
         yield

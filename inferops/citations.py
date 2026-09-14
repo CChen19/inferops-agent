@@ -15,7 +15,7 @@ from typing import Any
 
 _SOURCE_TAG_RE = re.compile(r"\[source:\s*([^\]\r\n]+?)\s*\]", re.IGNORECASE)
 _CONTEXT_SOURCE_RE = re.compile(
-    r"^\[source:\s*([^\]\r\n]+?)\s*\]",
+    r"^\[source:\s*([^\]\r\n]+?)\s*\][ \t]+§[^\r\n]*$",
     re.IGNORECASE | re.MULTILINE,
 )
 _CITABLE_METRICS = frozenset(
