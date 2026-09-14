@@ -11,7 +11,7 @@ from inferops.agent.state import initial_state, is_duplicate
 from inferops.memory.db import save_result
 from inferops.memory.hardware import HardwareFingerprint
 from inferops.memory.history import CLAIM_LEVEL, _recover_param_value, query_compatible_history
-from inferops.schemas import ExperimentValidityStatus, HardwareInfo
+from inferops.schemas import ExperimentValidityStatus, HardwareInfo, compute_workload_hash
 from inferops.task import default_task_for_workload
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -29,6 +29,10 @@ _FP_OTHER: HardwareFingerprint = {
     "gpu_name": "NVIDIA A100-SXM4-40GB",
     "gpu_memory_total_gb": 40.0,
 }
+
+
+def _wl_hash(workload) -> str:
+    return compute_workload_hash(workload)
 
 
 def _assert_no_repo_root_sqlite() -> None:
@@ -73,6 +77,7 @@ def _row(
         "status": status,
         "notes": notes,
         "hardware": hardware if hardware is not None else _hw(model_name=cfg.model_name),
+        "workload_hash": compute_workload_hash(cfg.workload),
     }
     if throughput_rps is not None:
         update["throughput_rps"] = throughput_rps
@@ -127,6 +132,7 @@ def test_query_includes_compatible_prior_and_excludes_other_model_and_current(
         exclude_session_id="current_",
         db_path=db,
         current_fingerprint=_FP,
+        workload_hash=_wl_hash(workload),
     )
     run_ids = {r["run_id"] for r in rows}
     assert "run_prior_ok" in run_ids
@@ -183,6 +189,7 @@ def test_hardware_mismatch_and_unknown_excluded_from_ranking(result, workload, t
         exclude_session_id="now_",
         db_path=db,
         current_fingerprint=_FP,
+        workload_hash=_wl_hash(workload),
     )
     run_ids = {r["run_id"] for r in rows}
     assert run_ids == {"run_match"}
@@ -195,6 +202,7 @@ def test_hardware_mismatch_and_unknown_excluded_from_ranking(result, workload, t
             exclude_session_id="now_",
             db_path=db,
             current_fingerprint=None,
+            workload_hash=_wl_hash(workload),
         )
         == []
     )
@@ -242,6 +250,7 @@ def test_scan_reaches_older_compatible_row_past_newer_fingerprint_misses(
         db_path=db,
         top_k=1,
         current_fingerprint=_FP,
+        workload_hash=_wl_hash(workload),
     )
     assert [row["run_id"] for row in rows] == ["run_older_match"]
 
@@ -252,6 +261,7 @@ def test_scan_reaches_older_compatible_row_past_newer_fingerprint_misses(
         exclude_session_id="now_",
         db_path=db,
         current_fingerprint=incomplete_fingerprint,  # type: ignore[arg-type]
+        workload_hash=_wl_hash(workload),
     ) == []
     assert query_compatible_history(
         model_name=_MODEL,
@@ -259,6 +269,7 @@ def test_scan_reaches_older_compatible_row_past_newer_fingerprint_misses(
         exclude_session_id="now_",
         db_path=db,
         current_fingerprint=None,
+        workload_hash=_wl_hash(workload),
     ) == []
     _assert_no_repo_root_sqlite()
 
@@ -285,6 +296,7 @@ def test_multi_knob_diff_does_not_guess_param(result, workload, tmp_path):
         exclude_session_id="now_",
         db_path=db,
         current_fingerprint=_FP,
+        workload_hash=_wl_hash(workload),
     )
     assert len(rows) == 1
     assert rows[0]["param"] is None
@@ -331,6 +343,7 @@ def test_citing_history_run_id_as_metric_fails_this_session_gate(result, tmp_pat
         exclude_session_id="now_",
         db_path=db,
         current_fingerprint=_FP,
+        workload_hash=_wl_hash(workload),
     )
     assert any(r["run_id"] == "run_prior_metric" for r in history)
 
@@ -369,7 +382,7 @@ def test_citing_history_run_id_as_metric_fails_this_session_gate(result, tmp_pat
     _assert_no_repo_root_sqlite()
 
 
-def test_failed_history_pair_is_duplicate(result, workload, tmp_path):
+def test_lasting_oom_identical_full_config_is_duplicate(result, workload, tmp_path):
     db = tmp_path / "history.db"
     failed = _row(
         result,
@@ -390,11 +403,118 @@ def test_failed_history_pair_is_duplicate(result, workload, tmp_path):
         exclude_session_id="now_",
         db_path=db,
         current_fingerprint=_FP,
+        workload_hash=_wl_hash(workload),
     )
     state = initial_state("chat_short", "now_")
     state["compatible_history"] = history
+    # Identical full search config (defaults + max_num_seqs=256) is suppressed.
     assert is_duplicate(state, "max_num_seqs", 256) is True
     assert is_duplicate(state, "max_num_seqs", 64) is False
+    _assert_no_repo_root_sqlite()
+
+
+def test_timeout_history_does_not_suppress_same_candidate(result, workload, tmp_path):
+    db = tmp_path / "history.db"
+    timed_out = _row(
+        result,
+        experiment_id="prior_max_num_seqs_256",
+        session_id="prior_",
+        run_id="run_prior_timeout",
+        status=ExperimentValidityStatus.FAILED,
+        notes="vLLM not ready after startup timeout — spawn stalled",
+        model_name=_MODEL,
+        max_num_seqs=256,
+        max_num_batched_tokens=2048,
+        workload=workload,
+    )
+    save_result(timed_out, db_path=db)
+    history = query_compatible_history(
+        model_name=_MODEL,
+        workload_name="chat_short",
+        exclude_session_id="now_",
+        db_path=db,
+        current_fingerprint=_FP,
+        workload_hash=_wl_hash(workload),
+    )
+    assert history  # still a hint row for ranking
+    state = initial_state("chat_short", "now_")
+    state["compatible_history"] = history
+    assert is_duplicate(state, "max_num_seqs", 256) is False
+    _assert_no_repo_root_sqlite()
+
+
+def test_shared_knob_different_full_config_not_suppressed(result, workload, tmp_path):
+    """OOM on one full config must not blacklist a different config sharing a knob."""
+    db = tmp_path / "history.db"
+    failed = _row(
+        result,
+        experiment_id="prior_multi",
+        session_id="prior_",
+        run_id="run_prior_multi",
+        status=ExperimentValidityStatus.FAILED,
+        notes="CUDA out of memory",
+        model_name=_MODEL,
+        max_num_seqs=256,
+        max_num_batched_tokens=4096,
+        enable_chunked_prefill=True,
+        workload=workload,
+    )
+    save_result(failed, db_path=db)
+    history = query_compatible_history(
+        model_name=_MODEL,
+        workload_name="chat_short",
+        exclude_session_id="now_",
+        db_path=db,
+        current_fingerprint=_FP,
+        workload_hash=_wl_hash(workload),
+    )
+    state = initial_state("chat_short", "now_")
+    state["compatible_history"] = history
+    # Proposing only max_num_seqs=256 from defaults ≠ the multi-knob failure.
+    assert is_duplicate(state, "max_num_seqs", 256) is False
+    _assert_no_repo_root_sqlite()
+
+
+def test_workload_hash_mismatch_excluded_from_filter(result, workload, tmp_path):
+    db = tmp_path / "history.db"
+    failed = _row(
+        result,
+        experiment_id="prior_max_num_seqs_256",
+        session_id="prior_",
+        run_id="run_prior_other_hash",
+        status=ExperimentValidityStatus.FAILED,
+        notes="CUDA out of memory",
+        model_name=_MODEL,
+        max_num_seqs=256,
+        max_num_batched_tokens=2048,
+        workload=workload,
+    )
+    save_result(failed, db_path=db)
+    other = workload.model_copy(update={"concurrency": workload.concurrency + 8})
+    assert _wl_hash(other) != _wl_hash(workload)
+    assert (
+        query_compatible_history(
+            model_name=_MODEL,
+            workload_name="chat_short",
+            exclude_session_id="now_",
+            db_path=db,
+            current_fingerprint=_FP,
+            workload_hash=_wl_hash(other),
+        )
+        == []
+    )
+    # Missing hash → nothing ranked
+    assert (
+        query_compatible_history(
+            model_name=_MODEL,
+            workload_name="chat_short",
+            exclude_session_id="now_",
+            db_path=db,
+            current_fingerprint=_FP,
+            workload_hash=None,
+        )
+        == []
+    )
     _assert_no_repo_root_sqlite()
 
 
@@ -445,6 +565,7 @@ def test_planner_uses_state_fingerprint_without_env(
         monkeypatch.delenv(key, raising=False)
 
     db = tmp_path / "history.db"
+    task = default_task_for_workload("chat_short", 6, model_name=_MODEL)
     prior = _row(
         result,
         experiment_id="prior_max_num_batched_tokens_4096",
@@ -454,10 +575,9 @@ def test_planner_uses_state_fingerprint_without_env(
         model_name=_MODEL,
         max_num_batched_tokens=4096,
         max_num_seqs=128,
-        workload=workload,
+        workload=task.workload,
     )
     save_result(prior, db_path=db)
-    task = default_task_for_workload("chat_short", 6, model_name=_MODEL)
     state = initial_state(
         "chat_short",
         "now_",
@@ -515,6 +635,7 @@ def test_planner_incomplete_fingerprint_ranks_zero_history(
     )
 
     db = tmp_path / "history.db"
+    task = default_task_for_workload("chat_short", 6, model_name=_MODEL)
     prior = _row(
         result,
         experiment_id="prior_max_num_seqs_64",
@@ -523,10 +644,9 @@ def test_planner_incomplete_fingerprint_ranks_zero_history(
         status=ExperimentValidityStatus.VALID,
         model_name=_MODEL,
         max_num_seqs=64,
-        workload=workload,
+        workload=task.workload,
     )
     save_result(prior, db_path=db)
-    task = default_task_for_workload("chat_short", 6, model_name=_MODEL)
     state = initial_state(
         "chat_short",
         "now_",
@@ -618,6 +738,7 @@ def test_planner_prompt_includes_prior_history_and_does_not_cite_it(
     result, workload, tmp_path, monkeypatch
 ):
     db = tmp_path / "history.db"
+    task = default_task_for_workload("chat_short", 6, model_name=_MODEL)
     prior = _row(
         result,
         experiment_id="prior_max_num_batched_tokens_4096",
@@ -627,10 +748,9 @@ def test_planner_prompt_includes_prior_history_and_does_not_cite_it(
         model_name=_MODEL,
         max_num_batched_tokens=4096,
         max_num_seqs=128,
-        workload=workload,
+        workload=task.workload,
     )
     save_result(prior, db_path=db)
-    task = default_task_for_workload("chat_short", 6, model_name=_MODEL)
     state = initial_state(
         "chat_short",
         "now_",

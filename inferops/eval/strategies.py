@@ -96,7 +96,7 @@ def run_random_strategy(
         metric, direction = _metric_for(workload_name)
         if (
             current_obs is None
-            or (is_valid_observation(obs) and is_better(obs, current_obs, metric, direction))
+            or (is_valid_observation(obs, metric) and is_better(obs, current_obs, metric, direction))
         ):
             current_cfg, current_obs = config, obs
 
@@ -149,7 +149,7 @@ def run_online_local_search(
             break
         obs = fixture.observe(chosen)
         ledger.add(config=chosen, observation=obs, paid=True, kind="trial")
-        if is_valid_observation(obs) and is_better(obs, current_obs, metric, direction):
+        if is_valid_observation(obs, metric) and is_better(obs, current_obs, metric, direction):
             current_cfg, current_obs = chosen, obs
 
     run_score = score_run(ledger, workload_name=workload_name, gt_optimum=gt_optimum)

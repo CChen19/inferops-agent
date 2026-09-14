@@ -14,6 +14,7 @@ from inferops.eval.protocol import (
     RunScore,
     SLOPolicy,
     TrialLedger,
+    is_valid_observation,
     primary_value,
     row_to_observation,
     score_run,
@@ -144,6 +145,43 @@ def test_primary_value_missing_metric_fails_closed():
 def test_primary_value_non_finite_metric_fails_closed(bad):
     with pytest.raises(ValueError, match="not a finite number"):
         primary_value(_obs(throughput_rps=bad), "throughput_rps")
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [None, True, False, float("nan"), float("inf")],
+)
+def test_bad_primary_cannot_be_best_or_first_valid_n(bad):
+    ledger = TrialLedger(budget=BudgetPolicy(total_slots=3))
+    bad_obs = _obs(throughput_rps=bad)
+    good_obs = _obs(throughput_rps=12.0)
+    ledger.add(config={"max_num_batched_tokens": 2048}, observation=bad_obs, paid=True, kind="trial")
+    ledger.add(config={"max_num_batched_tokens": 4096}, observation=good_obs, paid=True, kind="trial")
+
+    assert is_valid_observation(bad_obs, "throughput_rps") is False
+    assert is_valid_observation(good_obs, "throughput_rps") is True
+    assert ledger.first_valid_n("throughput_rps", "max") == 2
+    best = ledger.best_valid("throughput_rps", "max")
+    assert best is not None
+    assert best[0]["max_num_batched_tokens"] == 4096
+    # Bad row remains in the ledger — not deleted to pretty the score.
+    assert len(ledger.records) == 2
+    assert ledger.records[0].observation is bad_obs
+
+
+def test_missing_primary_cannot_be_first_valid_n():
+    ledger = TrialLedger(budget=BudgetPolicy(total_slots=2))
+    missing = Observation(
+        metrics={},
+        validity_status="valid",
+        error_rate=0.0,
+        config_evidence=True,
+        bottleneck="unknown",
+    )
+    ledger.add(config={"x": 1}, observation=missing, paid=True, kind="trial")
+    assert ledger.first_valid_n("throughput_rps", "max") is None
+    assert ledger.best_valid("throughput_rps", "max") is None
+    assert len(ledger.records) == 1
 
 
 def test_score_run_reports_decomposed_fields_not_composite_only():

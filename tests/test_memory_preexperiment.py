@@ -12,6 +12,7 @@ from inferops.eval.memory_preexperiment import (
     WORKLOAD,
     configs_equal,
     eval_fingerprint,
+    eval_workload_hash,
     is_lasting_config_failure,
     load_prior_config_failures,
     meets_business_goal,
@@ -42,7 +43,14 @@ def test_lasting_config_failure_vs_transient():
         status="failed",
         notes="vLLM OOM during startup — CUDA out of memory",
     )
-    assert is_lasting_config_failure(status="invalid", notes="knob mismatch")
+    assert not is_lasting_config_failure(
+        status="invalid",
+        notes="actual config mismatch vs requested",
+    )
+    assert not is_lasting_config_failure(
+        status="insufficient_evidence",
+        notes="missing critical config evidence",
+    )
     assert not is_lasting_config_failure(
         status="failed",
         notes="vLLM not ready after startup timeout — spawn stalled",
@@ -50,6 +58,10 @@ def test_lasting_config_failure_vs_transient():
     assert not is_lasting_config_failure(
         status="failed",
         notes="connection refused during health poll",
+    )
+    assert is_lasting_config_failure(
+        status="failed",
+        notes="config validation rejected gpu_memory_utilization",
     )
 
 
@@ -90,6 +102,7 @@ def test_compatible_history_excludes_other_model(tmp_path):
         exclude_session_id="curr_",
         db_path=db,
         current_fingerprint=eval_fingerprint(MODEL),
+        workload_hash=eval_workload_hash(),
     )
     assert rows == []
     priors = load_prior_config_failures(
@@ -102,7 +115,7 @@ def test_compatible_history_excludes_other_model(tmp_path):
     _assert_no_repo_root_sqlite()
 
 
-def test_history_hint_skips_failed_param_value(tmp_path):
+def test_history_hint_skips_failed_full_config(tmp_path):
     db = tmp_path / "hint.db"
     seed_prior_failure(
         db,
@@ -116,11 +129,15 @@ def test_history_hint_skips_failed_param_value(tmp_path):
         exclude_session_id="curr_",
         db_path=db,
         current_fingerprint=eval_fingerprint(MODEL),
+        workload_hash=eval_workload_hash(),
     )
     assert rows
     assert is_history_failure(rows[0])
     assert should_skip_history_hint(BAD_CONFIG, rows)
     assert not should_skip_history_hint(GOAL_CONFIG, rows)
+    # Shared knob alone must not suppress a different full config.
+    near = dict(BAD_CONFIG, max_num_batched_tokens=4096)
+    assert not should_skip_history_hint(near, rows)
     _assert_no_repo_root_sqlite()
 
 
@@ -149,16 +166,16 @@ def test_irrelevant_memory_does_not_beat_a(tmp_path):
     _assert_no_repo_root_sqlite()
 
 
-def test_transient_timeout_not_lasting_blacklist_for_b(tmp_path):
+def test_transient_timeout_not_lasting_blacklist_for_b_and_c(tmp_path):
     sc = run_scenario("transient", ground_truth_dir=_GT, base_tmp=tmp_path / "trans")
     a, b, c = sc["groups"]["A"], sc["groups"]["B"], sc["groups"]["C"]
-    assert a["goal_met"] and b["goal_met"]
+    assert a["goal_met"] and b["goal_met"] and c["goal_met"]
     assert a["wasted_executions_before_goal"] == 0
     assert b["wasted_executions_before_goal"] == 0
+    assert c["wasted_executions_before_goal"] == 0
     assert b["rejected_without_execute"] == 0
-    # C uses broader is_history_failure(status=failed) — may wrongly filter the goal.
-    assert c["feasible_wrongly_filtered"] is True
-    assert c["goal_met"] is False
+    assert c["rejected_without_execute"] == 0
+    assert c["feasible_wrongly_filtered"] is False
     _assert_no_repo_root_sqlite()
 
 

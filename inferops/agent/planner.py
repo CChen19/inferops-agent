@@ -168,18 +168,20 @@ def _build_history_table(summaries: list[dict]) -> str:
 
 
 def _tried_pairs(summaries: list[dict], history_rows: list[dict] | None = None) -> str:
+    from inferops.memory.history import is_history_failure, normalize_search_config
+
     pairs = [
         f"  {s['param_changed']}={s['value_changed']}" for s in summaries if s.get("param_changed")
     ]
     for row in history_rows or []:
-        if row.get("param") is None:
+        if not is_history_failure(row):
             continue
-        status = str(row.get("status") or "").lower()
-        notes = str(row.get("notes") or "").lower()
-        if status in {"failed", "invalid", "oom"} or "oom" in notes or "out of memory" in notes:
-            pairs.append(
-                f"  {row['param']}={row['value']}  (prior session failure — do not retry)"
-            )
+        cfg = normalize_search_config(row.get("config") if isinstance(row.get("config"), dict) else {})
+        pairs.append(
+            "  full_config="
+            + ",".join(f"{k}={cfg[k]}" for k in cfg)
+            + "  (prior lasting config failure — identical full config only)"
+        )
     return "\n".join(pairs) if pairs else "  (none)"
 
 
@@ -187,16 +189,18 @@ def _prior_history_section(rows: list[dict]) -> str:
     if not rows:
         return ""
     lines = [
-        "PRIOR COMPATIBLE HISTORY (compatible = same model_name + workload_name "
+        "PRIOR COMPATIBLE HISTORY (compatible = same model_name + workload_hash "
         "+ hardware fingerprint [gpu_name, gpu_memory_total_gb, engine/vllm_version]. "
-        "Unknown or mismatched hardware is excluded from ranking.):",
+        "Unknown/mismatched hardware or workload_hash is excluded from ranking.):",
         "These run_ids are NOT this-run metric evidence; do not cite them as "
-        "citations.metric.run_id. They must not skip a confirmation campaign.",
+        "citations.metric.run_id. They must not skip a confirmation campaign. "
+        "Only lasting config failures of an identical full config suppress retries.",
     ]
     for row in rows:
         lines.append(
             f"  run_id={row.get('run_id') or ''} session_id={row.get('session_id') or ''} "
-            f"status={row.get('status') or ''} param={row.get('param')} value={row.get('value')} "
+            f"status={row.get('status') or ''} workload_hash={row.get('workload_hash') or ''} "
+            f"param={row.get('param')} value={row.get('value')} "
             f"throughput_rps={row.get('throughput_rps')} notes={row.get('notes') or ''} "
             f"claim_level={row.get('claim_level')}"
         )
@@ -341,20 +345,21 @@ def planner_node(state: AgentState, llm) -> dict:
     history_rows: list[dict] = []
     db_path = state.get("memory_db_path")
     model_name = model_name_of(state)
-    if db_path and model_name:
+    task = task_of(state)
+    if db_path and model_name and task is not None:
         from inferops.memory.hardware import (
             collect_hardware_info,
             fingerprint_from_hardware,
         )
         from inferops.memory.history import query_compatible_history
+        from inferops.schemas import compute_workload_hash
 
         # Prefer the run-start fingerprint (captured with probe_nvidia=True).
         current_fp = fingerprint_from_hardware(state.get("hardware_fingerprint"))
         if current_fp is None:
             # Resume / legacy checkpoint without a stored fingerprint: production
             # may probe nvidia-smi once. Tests inject state or monkeypatch collect.
-            task = task_of(state)
-            engine = task.engine.value if task is not None else "vllm"
+            engine = task.engine.value
             current_fp = fingerprint_from_hardware(
                 collect_hardware_info(
                     model_name=model_name,
@@ -368,6 +373,7 @@ def planner_node(state: AgentState, llm) -> dict:
             exclude_session_id=state["session_prefix"],
             db_path=db_path,
             current_fingerprint=current_fp,
+            workload_hash=compute_workload_hash(task.workload),
         )
     state = {**state, "compatible_history": history_rows}
 
