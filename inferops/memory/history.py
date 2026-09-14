@@ -30,6 +30,8 @@ _SEARCH_KNOBS = (
     "enable_prefix_caching",
 )
 _FAILURE_STATUSES = frozenset({"failed", "invalid", "oom"})
+_SCAN_PAGE_SIZE = 32
+_MAX_SCAN_ROWS = 512
 
 
 def is_history_failure(row: dict[str, Any]) -> bool:
@@ -94,63 +96,84 @@ def query_compatible_history(
     Different ``config_json.model_name`` values are incompatible and excluded.
     Mismatch or unknown hardware fingerprints are excluded from ranking /
     failure memory (they remain in SQLite for inspection via ``query_results``).
+    Candidate rows are paged newest-first until ``top_k`` matches are found,
+    the table is exhausted, or ``_MAX_SCAN_ROWS`` have been inspected.
     """
-    if not model_name or not workload_name:
+    if not model_name or not workload_name or top_k <= 0:
         return []
+    current_fingerprint = fingerprint_from_hardware(current_fingerprint)
+    if current_fingerprint is None:
+        return []
+
     path = Path(db_path)
     init_db(path)
-    with _connect(path) as conn:
-        rows = conn.execute(
-            """
-            SELECT experiment_id, workload_name, config_json, result_json,
-                   throughput_rps, run_id, status, session_id
-            FROM experiments
-            WHERE workload_name = ?
-              AND json_extract(config_json, '$.model_name') = ?
-              AND IFNULL(session_id, '') != ?
-            ORDER BY created_at DESC
-            LIMIT ?
-            """,
-            (workload_name, model_name, exclude_session_id, max(top_k * 4, 32)),
-        ).fetchall()
-
     out: list[dict[str, Any]] = []
-    for row in rows:
-        try:
-            config = json.loads(row["config_json"] or "{}")
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(config, dict):
-            continue
-        if config.get("model_name") != model_name:
-            continue
-        notes = ""
-        try:
-            result = json.loads(row["result_json"] or "{}")
-            if isinstance(result, dict):
-                notes = str(result.get("notes") or "")
-        except json.JSONDecodeError:
-            notes = ""
-        row_fp = fingerprint_from_hardware(_hardware_from_result_json(row["result_json"]))
-        if not fingerprints_compatible(current_fingerprint, row_fp):
-            continue
-        param, value = _recover_param_value(str(row["experiment_id"] or ""), config)
-        out.append(
-            {
-                "experiment_id": row["experiment_id"],
-                "workload_name": row["workload_name"],
-                "model_name": config.get("model_name"),
-                "param": param,
-                "value": value,
-                "status": row["status"],
-                "run_id": row["run_id"] or "",
-                "session_id": row["session_id"],
-                "throughput_rps": row["throughput_rps"],
-                "notes": notes,
-                "claim_level": CLAIM_LEVEL,
-                "hardware_fingerprint": dict(row_fp) if row_fp is not None else None,
-            }
-        )
-        if len(out) >= top_k:
-            break
+    scanned = 0
+    offset = 0
+    with _connect(path) as conn:
+        while len(out) < top_k and scanned < _MAX_SCAN_ROWS:
+            page_size = min(_SCAN_PAGE_SIZE, _MAX_SCAN_ROWS - scanned)
+            rows = conn.execute(
+                """
+                SELECT experiment_id, workload_name, config_json, result_json,
+                       throughput_rps, run_id, status, session_id
+                FROM experiments
+                WHERE workload_name = ?
+                  AND json_extract(config_json, '$.model_name') = ?
+                  AND IFNULL(session_id, '') != ?
+                ORDER BY created_at DESC, id DESC
+                LIMIT ? OFFSET ?
+                """,
+                (workload_name, model_name, exclude_session_id, page_size, offset),
+            ).fetchall()
+            if not rows:
+                break
+            scanned += len(rows)
+            offset += len(rows)
+
+            for row in rows:
+                try:
+                    config = json.loads(row["config_json"] or "{}")
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(config, dict):
+                    continue
+                if config.get("model_name") != model_name:
+                    continue
+                notes = ""
+                try:
+                    result = json.loads(row["result_json"] or "{}")
+                    if isinstance(result, dict):
+                        notes = str(result.get("notes") or "")
+                except json.JSONDecodeError:
+                    notes = ""
+                row_fp = fingerprint_from_hardware(
+                    _hardware_from_result_json(row["result_json"])
+                )
+                if not fingerprints_compatible(current_fingerprint, row_fp):
+                    continue
+                param, value = _recover_param_value(
+                    str(row["experiment_id"] or ""), config
+                )
+                out.append(
+                    {
+                        "experiment_id": row["experiment_id"],
+                        "workload_name": row["workload_name"],
+                        "model_name": config.get("model_name"),
+                        "param": param,
+                        "value": value,
+                        "status": row["status"],
+                        "run_id": row["run_id"] or "",
+                        "session_id": row["session_id"],
+                        "throughput_rps": row["throughput_rps"],
+                        "notes": notes,
+                        "claim_level": CLAIM_LEVEL,
+                        "hardware_fingerprint": dict(row_fp),
+                    }
+                )
+                if len(out) >= top_k:
+                    break
+
+            if len(rows) < page_size:
+                break
     return out

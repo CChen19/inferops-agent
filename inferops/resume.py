@@ -10,8 +10,10 @@ _RESUME_WITH_ID = re.compile(
     rf"^(?:resume(?:-task)?)\s+({_TASK_ID})\s*$",
     re.IGNORECASE,
 )
-_RESUME_COMMAND = re.compile(
-    r"^(?:resume(?:-task)?)(?:\s+\S+)?\s*$",
+# Bare resume only — extra tokens that are not a 12-hex id are not resume commands
+# (so "resume nope" can draft a task instead of the no-id error path).
+_RESUME_BARE_COMMAND = re.compile(
+    r"^(?:resume(?:-task)?)\s*$",
     re.IGNORECASE,
 )
 
@@ -43,11 +45,15 @@ def parse_resume_task_id(text: str) -> str | None:
 
 
 def is_resume_command(text: str) -> bool:
-    """True when the whole message is a resume request, with or without an id."""
+    """True for bare ``resume`` / ``resume-task``, or a valid 12-hex resume id.
+
+    Extra tokens that are not a 12-hex id (e.g. ``resume nope``) are not
+    resume commands — callers should treat them as ordinary chat.
+    """
     s = (text or "").strip()
     if parse_resume_task_id(s):
         return True
-    return bool(_RESUME_COMMAND.fullmatch(s))
+    return bool(_RESUME_BARE_COMMAND.fullmatch(s))
 
 
 def format_resume_help(task_id: str) -> str:
