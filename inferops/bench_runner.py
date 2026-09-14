@@ -3,12 +3,17 @@ Top-level benchmark orchestrator.
 
 Flow per experiment:
   1. Decide managed vs external vLLM lifecycle
-  2. Managed: if live knobs differ / identity unknown → restart with requested CLI
+  2. Managed: take the single-GPU lease (fail closed if another managed task
+     holds it); refuse a healthy port occupant we did not spawn (never stop
+     unknown services); otherwise start with the requested CLI
   3. Wait for /health, then bind readiness to NEW child PID (listener == child)
   4. Start GPU monitor + load
-  5. Stop GPU monitor / managed process
+  5. Stop GPU monitor / managed process, release the lease
   6. Build ExperimentResult with contract evidence
   7. Log to MLflow
+
+Stage C ownership: only the child registered via ``register_owned`` is ever
+stopped by cancel/abort. ``service_mode=external`` never spawns or stops.
 
 Week-1 item ②: healthy ≠ config applied. Never mark valid from health alone,
 config file alone, or performance delta alone.
@@ -49,6 +54,16 @@ from inferops.schemas import (
     resolve_git_sha,
 )
 from inferops.tools.gpu_monitor import GPUMonitor
+from inferops.tools.managed_lifecycle import (
+    ADOPT_STALE_ENV,
+    GPUBusyError,
+    GPULease,
+    adopt_stale_managed_allowed,
+    cancel_requested,
+    is_recorded_managed_child,
+    register_owned,
+    release_owned,
+)
 from inferops.tools.traffic import extract_percentiles, run_load
 from inferops.tools.vllm_process import (
     VLLMProcess,
@@ -127,6 +142,15 @@ class StartupTimeoutError(BenchmarkError):
     pass
 
 
+class TaskCancelled(BenchmarkError):
+    """User/graph cancelled the run. Hard control: executor must not recover it.
+
+    Raised before spawning (cancel already requested) or after a mid-load
+    stop of the owned child. ``result`` carries the failed row if one was
+    logged so the attempt stays auditable.
+    """
+
+
 def _run_load_with_cleanup_workaround(
     cfg: ExperimentConfig,
     prompts: list[str],
@@ -195,43 +219,96 @@ def _ensure_managed_vllm(
     log: Callable[[str], None],
     on_progress: Callable[[str], None] | None,
 ) -> tuple[VLLMProcess, dict, object]:
-    """Start/restart managed vLLM and bind health to the new child identity.
+    """Take the GPU lease, start managed vLLM, bind health to the new child identity.
 
-    Always terminates the spawned child before raising on failure so callers
-    never orphan a process when assignment has not yet completed.
+    Stage C ownership rules (fail closed, never valid on refusal):
+      * another live managed task holds the lease → ``BenchmarkError`` (gpu_busy)
+      * a healthy listener we did not spawn → refuse, do **not** stop it
+        (``unknown_occupant``); the only exception is a stale child recorded
+        by a crashed InferOps run when ``INFEROPS_ADOPT_STALE_MANAGED=1``
+      * any failure after spawn stops *our* child and releases the lease
+
+    On success the child is registered as owned (``register_owned``) so
+    cancel/abort can stop exactly it; the lease is released by
+    ``release_owned`` in ``run_experiment``.
 
     Returns (proc, actual_config, evidence).
     """
-    probe = probe_live_instance(VLLM_HOST, VLLM_PORT)
-    previous_identity = probe.identity if probe.healthy else None
-
-    if not probe.healthy:
-        reason = "fresh_start"
-    elif not knobs_match_requested(probe.observed_knobs, requested_cli):
-        reason = "healthy_knobs_differ_or_unknown"
-    elif previous_identity is None or previous_identity.pid is None:
-        reason = "healthy_identity_unknown"
-    else:
-        reason = "healthy_reapply_for_identity"
-
-    if on_progress:
-        on_progress(f"status:managed_lifecycle:{reason}")
+    sess = cfg.tags.get("session_id") or cfg.tags.get("session_prefix")
+    lease = GPULease(
+        host=VLLM_HOST,
+        port=VLLM_PORT,
+        experiment_id=cfg.experiment_id,
+        session_id=str(sess) if sess else None,
+    )
+    try:
+        lease.acquire()
+    except GPUBusyError as exc:
+        log(str(exc))
+        if on_progress:
+            on_progress("status:failed:gpu_busy")
+        raise BenchmarkError(str(exc)) from exc
 
     proc = VLLMProcess(cfg, host=VLLM_HOST, port=VLLM_PORT)
 
     def _abort(exc: Exception) -> None:
-        """Always kill the child we may have spawned, then re-raise."""
+        """Always kill the child we may have spawned, release the lease, re-raise."""
         try:
             proc.stop()
         except Exception:
             pass
+        finally:
+            lease.release()
         raise exc
 
     try:
+        probe = probe_live_instance(VLLM_HOST, VLLM_PORT)
+        previous_identity = probe.identity if probe.healthy else None
+        occupant_pid = previous_identity.pid if previous_identity is not None else None
+
+        if not probe.healthy:
+            reason = "fresh_start"
+        else:
+            adoptable = is_recorded_managed_child(
+                lease.previous_record,
+                listener_pid=occupant_pid,
+                cmdline=probe.cmdline,
+            )
+            if adoptable and adopt_stale_managed_allowed():
+                reason = "adopt_stale_managed_child"
+            else:
+                pid_s = str(occupant_pid) if occupant_pid is not None else "unknown"
+                knob_s = (
+                    "matching"
+                    if knobs_match_requested(probe.observed_knobs, requested_cli)
+                    else "different/unknown"
+                )
+                hint = (
+                    f" It matches a stale InferOps-managed child recorded in "
+                    f"{lease.path}; set {ADOPT_STALE_ENV}=1 to let InferOps stop "
+                    f"and relaunch it."
+                    if adoptable
+                    else ""
+                )
+                msg = (
+                    f"Port {VLLM_HOST}:{VLLM_PORT} is served by a process this task "
+                    f"did not start (pid={pid_s}, knobs {knob_s}). Refusing managed "
+                    f"start and NOT stopping it. Stop it yourself, or rerun with "
+                    f"service_mode=external to benchmark the existing server "
+                    f"as-is (insufficient_evidence).{hint}"
+                )
+                log(msg)
+                if on_progress:
+                    on_progress("status:failed:unknown_occupant")
+                _abort(BenchmarkError(msg))
+
+        if on_progress:
+            on_progress(f"status:managed_lifecycle:{reason}")
+
         if probe.healthy:
             log(
-                f"Managed restart required ({reason}): stopping occupant on "
-                f"{VLLM_HOST}:{VLLM_PORT} and relaunching with requested CLI"
+                f"Adopting stale InferOps child pid={occupant_pid} ({reason}): stopping "
+                f"it on {VLLM_HOST}:{VLLM_PORT} and relaunching with requested CLI"
             )
             if on_progress:
                 on_progress("status:restarting_managed_vllm")
@@ -252,11 +329,7 @@ def _ensure_managed_vllm(
                     )
                 )
             if proc.pid is None:
-                _abort(
-                    BenchmarkError(
-                        "Managed restart did not spawn a child after stop"
-                    )
-                )
+                _abort(BenchmarkError("Managed restart did not spawn a child after stop"))
         else:
             log(f"Starting vLLM ({cfg.model_name}) …")
             if on_progress:
@@ -264,6 +337,13 @@ def _ensure_managed_vllm(
             proc.start()
             if proc.pid is None:
                 _abort(BenchmarkError("Managed start produced no child PID"))
+
+        # Leave an ownership trail in the lock file while the child is alive.
+        lease.record_child(
+            child_pid=proc.pid,
+            start_token=getattr(proc, "start_token", None),
+            launch_cmd=list(getattr(proc, "launch_cmd", None) or []) or None,
+        )
 
         if proc.log_path:
             log(f"  vLLM log → {proc.log_path}")
@@ -275,11 +355,7 @@ def _ensure_managed_vllm(
         if sim_fail == "oom":
             if on_progress:
                 on_progress("status:failed:startup:simulated_oom")
-            _abort(
-                OOMError(
-                    f"INFEROPS_SIMULATE_STARTUP_FAILURE=oom — config: {cfg.experiment_id}"
-                )
-            )
+            _abort(OOMError(f"INFEROPS_SIMULATE_STARTUP_FAILURE=oom — config: {cfg.experiment_id}"))
         if sim_fail == "timeout":
             if on_progress:
                 on_progress("status:failed:startup:simulated_timeout")
@@ -303,19 +379,13 @@ def _ensure_managed_vllm(
             if on_progress:
                 on_progress("status:failed:startup")
             if proc.oom_in_log():
-                _abort(
-                    OOMError(f"vLLM OOM during startup — config: {cfg.experiment_id}")
-                )
+                _abort(OOMError(f"vLLM OOM during startup — config: {cfg.experiment_id}"))
             if proc.is_crashed():
                 _abort(
-                    BenchmarkError(
-                        f"vLLM crashed (exit {proc.exit_code()}) — see {proc.log_path}"
-                    )
+                    BenchmarkError(f"vLLM crashed (exit {proc.exit_code()}) — see {proc.log_path}")
                 )
             _abort(
-                StartupTimeoutError(
-                    f"vLLM not ready after startup timeout — see {proc.log_path}"
-                )
+                StartupTimeoutError(f"vLLM not ready after startup timeout — see {proc.log_path}")
             )
 
         # Bind health to the NEW managed child — never trust a stale listener.
@@ -340,16 +410,12 @@ def _ensure_managed_vllm(
             )
         if final_identity.pid != bound_pid:
             _abort(
-                BenchmarkError(
-                    f"Identity PID {final_identity.pid} != bound listener {bound_pid}"
-                )
+                BenchmarkError(f"Identity PID {final_identity.pid} != bound listener {bound_pid}")
             )
 
         # Emit / persist PID equality WHILE the managed child is still alive
         # (before load/teardown). Post-hoc `ss` after run_benchmark returns is useless.
-        equality_msg = (
-            f"status:pid_equality:listener={bound_pid}:child={final_identity.pid}"
-        )
+        equality_msg = f"status:pid_equality:listener={bound_pid}:child={final_identity.pid}"
         log(equality_msg)  # also forwards to on_progress
         _write_live_identity_probe(
             experiment_id=cfg.experiment_id,
@@ -400,12 +466,21 @@ def _ensure_managed_vllm(
                 f"child pid={bound_pid}; CLI knobs only in observed_params."
             ),
         )
+        # From here the child is owned: cancel/abort may stop exactly this one.
+        register_owned(proc, lease, cfg.experiment_id)
         return proc, actual, evidence
     except BenchmarkError:
         raise
     except Exception as exc:
         _abort(BenchmarkError(f"managed lifecycle error: {exc}"))
         raise  # pragma: no cover
+    except BaseException:
+        # Ctrl-C / SystemExit while starting: never orphan the child we spawned.
+        try:
+            proc.stop()
+        finally:
+            lease.release()
+        raise
 
 
 def run_experiment(
@@ -434,6 +509,13 @@ def run_experiment(
         console.print(f"  [dim]{msg}[/dim]")
         if on_progress:
             on_progress(msg)
+
+    if cancel_requested():
+        # Fail closed before touching the GPU / port / lease. No attempt row:
+        # nothing was started, so there is nothing to audit.
+        if on_progress:
+            on_progress("status:cancelled:before_start")
+        raise TaskCancelled(f"Cancelled before starting {cfg.experiment_id}: no vLLM was spawned.")
 
     init_mlflow(mlflow_experiment)
     requested = config_knobs(cfg)
@@ -507,10 +589,7 @@ def run_experiment(
         mlflow_id = run.info.run_id
 
         if external_vllm_mode(service_mode):
-            log(
-                f"External vLLM mode at "
-                f"{VLLM_HOST}:{VLLM_PORT} — not managing lifecycle"
-            )
+            log(f"External vLLM mode at {VLLM_HOST}:{VLLM_PORT} — not managing lifecycle")
             if on_progress:
                 on_progress("status:insufficient_evidence:external_health_only")
             evidence = external_unverified_evidence(host=VLLM_HOST, port=VLLM_PORT)
@@ -571,6 +650,21 @@ def run_experiment(
                 cache_enabled=cfg.enable_prefix_caching,
             )
         except Exception as exc:
+            if cancel_requested():
+                # Owned child was stopped mid-load by cancel_owned_children;
+                # record the attempt as cancelled, not as a mystery load failure.
+                if on_progress:
+                    on_progress("status:cancelled:during_load")
+                failed = _failed_result(
+                    mlflow_id,
+                    f"cancelled by user during load: {exc}",
+                    evidence=evidence,
+                    actual=actual,
+                )
+                log_experiment_result(failed)
+                raise TaskCancelled(
+                    f"Cancelled {cfg.experiment_id} during load", result=failed
+                ) from exc
             if on_progress:
                 on_progress("status:failed:load")
             failed = _failed_result(
@@ -583,7 +677,8 @@ def run_experiment(
                 gpu_summary = gpu.stop()
             if proc is not None:
                 log("Stopping vLLM …")
-                proc.stop()
+                # Stops only our registered child and releases the GPU lease.
+                release_owned(proc)
 
         assert load is not None
         ledger = getattr(load, "ledger", None)

@@ -55,6 +55,7 @@ from inferops.task import (
     task_from_mapping,
 )
 from inferops.tools.analyze_bottleneck import AnalyzeBottleneckInput, analyze_bottleneck
+from inferops.tools.managed_lifecycle import cancel_owned_children, clear_cancel
 
 console = Console()
 
@@ -62,6 +63,7 @@ console = Console()
 # ---------------------------------------------------------------------------
 # LLM factory
 # ---------------------------------------------------------------------------
+
 
 def make_llm(backend: str = "openrouter", temperature: float = 0.3):
     """
@@ -74,6 +76,7 @@ def make_llm(backend: str = "openrouter", temperature: float = 0.3):
     """
     if backend == "openrouter":
         from langchain_openai import ChatOpenAI
+
         return ChatOpenAI(
             model=os.getenv("OPENROUTER_MODEL", "deepseek/deepseek-chat"),
             api_key=os.environ["OPENROUTER_API_KEY"],
@@ -83,6 +86,7 @@ def make_llm(backend: str = "openrouter", temperature: float = 0.3):
         )
     elif backend == "deepseek":
         from langchain_openai import ChatOpenAI
+
         return ChatOpenAI(
             model="deepseek-chat",
             api_key=os.environ["DEEPSEEK_API_KEY"],
@@ -92,6 +96,7 @@ def make_llm(backend: str = "openrouter", temperature: float = 0.3):
         )
     elif backend == "claude":
         from langchain_anthropic import ChatAnthropic
+
         return ChatAnthropic(
             model="claude-sonnet-4-6",
             temperature=temperature,
@@ -99,14 +104,14 @@ def make_llm(backend: str = "openrouter", temperature: float = 0.3):
         )
     else:
         raise ValueError(
-            f"Unknown LLM backend '{backend}'. "
-            "Choose 'openrouter', 'deepseek', or 'claude'."
+            f"Unknown LLM backend '{backend}'. Choose 'openrouter', 'deepseek', or 'claude'."
         )
 
 
 # ---------------------------------------------------------------------------
 # Graph assembly
 # ---------------------------------------------------------------------------
+
 
 def session_thread_id(session_prefix: str) -> str:
     """Stable LangGraph thread_id derived from the session prefix."""
@@ -155,12 +160,12 @@ def build_graph(
     planner_with_llm = partial(planner_node, llm=llm)
 
     g = StateGraph(AgentState)
-    g.add_node("planner",   planner_with_llm)
-    g.add_node("executor",  executor_node)
+    g.add_node("planner", planner_with_llm)
+    g.add_node("executor", executor_node)
     g.add_node("reflector", reflector_node)
 
-    g.add_edge(START,      "planner")
-    g.add_edge("planner",  "executor")
+    g.add_edge(START, "planner")
+    g.add_edge("planner", "executor")
     g.add_edge("executor", "reflector")
     g.add_conditional_edges(
         "reflector",
@@ -179,6 +184,7 @@ def build_graph(
 # ---------------------------------------------------------------------------
 # Baseline helper
 # ---------------------------------------------------------------------------
+
 
 def _run_baseline(
     workload_name: str,
@@ -209,8 +215,10 @@ def _run_baseline(
             update={"experiment_id": eid}
         )
         from workloads.definitions import get_prompts
+
         prompts = get_prompts(workload)
         from inferops.bench_runner import BenchmarkError, run_experiment
+
         try:
             result = run_experiment(
                 base_cfg,
@@ -300,9 +308,7 @@ def prepare_initial_state(
         optimization_task=resolved.model_dump(mode="json"),
     )
     state["baseline_summary"] = baseline_summary
-    state["best_summary"] = (
-        baseline_summary if is_promotable_summary(baseline_summary) else None
-    )
+    state["best_summary"] = baseline_summary if is_promotable_summary(baseline_summary) else None
     state["experiment_summaries"] = [baseline_summary]
     state["tried_experiment_ids"] = [baseline_summary["experiment_id"]]
     state["current_bottleneck"] = baseline_bottleneck
@@ -312,8 +318,46 @@ def prepare_initial_state(
 
 
 # ---------------------------------------------------------------------------
+# Abort / cancel
+# ---------------------------------------------------------------------------
+
+
+def _is_user_cancel(exc: BaseException) -> bool:
+    return isinstance(exc, KeyboardInterrupt) or type(exc).__name__ == "TaskCancelled"
+
+
+def abort_agent_run(
+    task_id: str,
+    exc: BaseException | None,
+    *,
+    db_path: Path | str = Path("inferops_memory.db"),
+) -> list[dict[str, Any]]:
+    """Graph-level abort: stop only the managed children this process spawned.
+
+    Releases their GPU lease, records ``cancelled`` (user cancel / Ctrl-C) or
+    ``interrupted`` (any other failure) on the task, and prints exactly what
+    was stopped. Never resolves a PID from the port — unknown / external
+    services are untouched.
+    """
+    reason = f"agent aborted: {type(exc).__name__}" if exc is not None else "agent aborted"
+    reports = cancel_owned_children(reason)
+    for rep in reports:
+        console.print(
+            f"[yellow]Stopped owned managed vLLM pid={rep.get('pid')} "
+            f"(experiment={rep.get('experiment_id')}, lease_released="
+            f"{rep.get('lease_released')})[/yellow]"
+        )
+    if not reports:
+        console.print("[dim]No owned managed vLLM child to stop.[/dim]")
+    status = "cancelled" if exc is not None and _is_user_cancel(exc) else "interrupted"
+    update_task_status(task_id, status, db_path=Path(db_path))
+    return reports
+
+
+# ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
+
 
 def run_agent(
     workload_name: str | None,
@@ -391,10 +435,11 @@ def run_agent(
         )
 
     update_task_status(resolved_task.task_id, "running", db_path=db_file)
+    clear_cancel()
     try:
         final_state = graph.invoke(state, config)
-    except BaseException:
-        update_task_status(resolved_task.task_id, "interrupted", db_path=db_file)
+    except BaseException as exc:
+        abort_agent_run(resolved_task.task_id, exc, db_path=db_file)
         raise
 
     post_run = graph.get_state(config) if hasattr(graph, "get_state") else None
@@ -408,6 +453,7 @@ def run_agent(
 # ---------------------------------------------------------------------------
 # Display
 # ---------------------------------------------------------------------------
+
 
 def _print_run_summary(state: AgentState) -> None:
     primary = primary_metric_of(state)

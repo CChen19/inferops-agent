@@ -22,8 +22,10 @@ from inferops.schemas import (
 )
 
 # Control-flow signals that must never be treated as a successful tool result.
+# ``TaskCancelled`` (bench_runner) is a user/graph cancel: propagate so the
+# graph unwinds and ``run_agent`` / UI clean up owned processes.
 _HARD_CONTROL_NAMES = frozenset(
-    {"KeyboardInterrupt", "SystemExit", "GraphInterrupt", "NodeInterrupt"}
+    {"KeyboardInterrupt", "SystemExit", "GraphInterrupt", "NodeInterrupt", "TaskCancelled"}
 )
 
 # Receipt / ack loss after vLLM startup succeeded. Recover by id fact-check.
@@ -172,7 +174,11 @@ def unconfirmable_contract_result(
     stay None. No GPU numbers.
     """
     requested = config_knobs(config)
-    notes = reason if reason.startswith(INCOMPLETE_NOTE_PREFIX) else f"{INCOMPLETE_NOTE_PREFIX} {reason}"
+    notes = (
+        reason
+        if reason.startswith(INCOMPLETE_NOTE_PREFIX)
+        else f"{INCOMPLETE_NOTE_PREFIX} {reason}"
+    )
     status = derive_status(
         failed=False,
         evidence=None,

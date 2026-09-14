@@ -21,7 +21,12 @@ from typing import Any
 
 import httpx
 
-from inferops.schemas import MANAGED_CLI_EVIDENCED_KEYS, ExperimentConfig, config_knobs, managed_cli_actual_config
+from inferops.schemas import (
+    MANAGED_CLI_EVIDENCED_KEYS,
+    ExperimentConfig,
+    config_knobs,
+    managed_cli_actual_config,
+)
 
 DEFAULT_VLLM_PYTHON = "/home/chris/miniconda3/envs/vllm-dev/bin/python"
 DEFAULT_HOST = "127.0.0.1"
@@ -49,17 +54,28 @@ def cli_evidenced_knobs(cfg: ExperimentConfig) -> dict[str, Any]:
 
 def _build_cmd(cfg: ExperimentConfig, host: str, port: int) -> list[str]:
     cmd = [
-        get_vllm_python(), "-m", "vllm.entrypoints.openai.api_server",
-        "--model", cfg.model_name,
-        "--host", host,
-        "--port", str(port),
-        "--gpu-memory-utilization", str(cfg.gpu_memory_utilization),
-        "--max-num-seqs", str(cfg.max_num_seqs),
-        "--max-num-batched-tokens", str(cfg.max_num_batched_tokens),
-        "--max-model-len", str(cfg.max_model_len),
-        "--dtype", "auto",
+        get_vllm_python(),
+        "-m",
+        "vllm.entrypoints.openai.api_server",
+        "--model",
+        cfg.model_name,
+        "--host",
+        host,
+        "--port",
+        str(port),
+        "--gpu-memory-utilization",
+        str(cfg.gpu_memory_utilization),
+        "--max-num-seqs",
+        str(cfg.max_num_seqs),
+        "--max-num-batched-tokens",
+        str(cfg.max_num_batched_tokens),
+        "--max-model-len",
+        str(cfg.max_model_len),
+        "--dtype",
+        "auto",
         "--trust-remote-code",
-        "--served-model-name", "qwen",
+        "--served-model-name",
+        "qwen",
         "--kv-cache-metrics",  # expose kv cache utilization in /metrics
     ]
     if cfg.enforce_eager:
@@ -267,8 +283,19 @@ def probe_live_instance(host: str, port: int) -> LiveProbe:
     )
 
 
-def stop_port_occupant(host: str, port: int, timeout_s: float = 15.0) -> StopOccupantResult:
-    """Terminate the process listening on host:port.
+def stop_port_occupant(
+    host: str,
+    port: int,
+    timeout_s: float = 15.0,
+    *,
+    expected_pid: int | None = None,
+) -> StopOccupantResult:
+    """Terminate the process listening on host:port — only if it is ``expected_pid``.
+
+    Stage C ownership rule: never kill a PID the caller has not explicitly
+    identified. ``expected_pid=None`` or a listener that differs from it is a
+    refusal (``stop_attempted=False``, ``still_listening=True``) — the
+    occupant is left untouched.
 
     Returns whether something is still listening afterward. Callers MUST treat
     `still_listening=True` as stop failure and must not mark the run valid.
@@ -298,6 +325,14 @@ def stop_port_occupant(host: str, port: int, timeout_s: float = 15.0) -> StopOcc
             stop_attempted=False,
             still_listening=health_ok(host, port),
             listener_pid_after=None,
+        )
+    if expected_pid is None or pid != expected_pid:
+        # Not the process we were told we own — refuse, leave it running.
+        return StopOccupantResult(
+            previous_pid=pid,
+            stop_attempted=False,
+            still_listening=True,
+            listener_pid_after=pid,
         )
 
     try:
@@ -358,9 +393,7 @@ def assert_listener_bound_to_child(
         raise RuntimeError("managed child PID is unknown — cannot bind health to identity")
     listener_pid = probe_listener_pid(host, port)
     if listener_pid is None:
-        raise RuntimeError(
-            "listener PID unknown after health ready — cannot prove new identity"
-        )
+        raise RuntimeError("listener PID unknown after health ready — cannot prove new identity")
     if listener_pid != child_pid:
         raise RuntimeError(
             f"listener PID {listener_pid} != managed child PID {child_pid} "
@@ -433,18 +466,22 @@ class VLLMProcess:
         previous_identity: InstanceIdentity | None,
         stop_occupant: bool = True,
     ) -> StopOccupantResult:
-        """Stop any occupant / prior proc, then start fresh only if port is clear.
+        """Stop the identified occupant / prior proc, then start only if the port is clear.
 
-        If the occupant cannot be stopped (`still_listening=True`), this does
-        **not** spawn a new child (avoids orphans / racing the stale listener).
-        Caller must treat still_listening as failure — never valid.
+        The occupant is stopped only when ``previous_identity.pid`` names it
+        (``stop_port_occupant(expected_pid=...)``); an unidentified or
+        different listener is refused and left running. If the port is still
+        occupied (`still_listening=True`), this does **not** spawn a new
+        child (avoids orphans / racing the stale listener). Caller must treat
+        still_listening as failure — never valid.
         """
         self.pre_restart_identity = previous_identity
         if self._proc is not None:
             self.stop()
         stop_result = StopOccupantResult()
         if stop_occupant:
-            stop_result = stop_port_occupant(self.host, self.port)
+            expected = previous_identity.pid if previous_identity is not None else None
+            stop_result = stop_port_occupant(self.host, self.port, expected_pid=expected)
         self.last_stop_result = stop_result
         if stop_result.still_listening:
             return stop_result

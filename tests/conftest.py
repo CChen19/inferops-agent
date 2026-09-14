@@ -14,6 +14,7 @@ import pytest
 # capture, causing "ValueError: I/O operation on closed file" at teardown.
 # Replace the global tracer with a synchronous in-memory exporter for all tests.
 
+
 @pytest.fixture(scope="session", autouse=True)
 def _silence_otel():
     from opentelemetry import trace as otel_trace
@@ -28,6 +29,7 @@ def _silence_otel():
     otel_trace.set_tracer_provider(provider)
     obs._tracer = otel_trace.get_tracer("inferops-test")
 
+
 from inferops.schemas import (
     ExperimentConfig,
     ExperimentResult,
@@ -37,6 +39,26 @@ from inferops.schemas import (
     SchedulerPolicy,
     WorkloadSpec,
 )
+
+
+# ---------------------------------------------------------------------------
+# Stage C: isolate the single-GPU lease + owned-process registry per test
+# ---------------------------------------------------------------------------
+# The managed lock file must never land in the repo root or the real /tmp
+# lock; every test gets its own tmp_path lock and a clean owned registry.
+
+
+@pytest.fixture(autouse=True)
+def _isolate_gpu_lease(monkeypatch, tmp_path):
+    from inferops.tools import managed_lifecycle as ml
+
+    monkeypatch.setenv(ml.LOCK_PATH_ENV, str(tmp_path / "gpu.lock"))
+    monkeypatch.delenv(ml.ADOPT_STALE_ENV, raising=False)
+    ml.clear_cancel()
+    ml._owned.clear()
+    yield
+    ml.cancel_owned_children("test teardown")
+    ml.clear_cancel()
 
 
 @pytest.fixture
@@ -104,11 +126,13 @@ def result_b(config, workload) -> ExperimentResult:
         config_knobs,
     )
 
-    cfg_b = config.model_copy(update={
-        "experiment_id": "test_big_batch",
-        "max_num_batched_tokens": 4096,
-        "tags": {"variant": "big_batch"},
-    })
+    cfg_b = config.model_copy(
+        update={
+            "experiment_id": "test_big_batch",
+            "max_num_batched_tokens": 4096,
+            "tags": {"variant": "big_batch"},
+        }
+    )
     knobs = config_knobs(cfg_b)
     lp = LatencyPercentiles(p50=52.0, p90=62.0, p95=64.0, p99=66.0)
     e2e = LatencyPercentiles(p50=780.0, p90=820.0, p95=840.0, p99=870.0)
