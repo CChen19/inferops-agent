@@ -28,6 +28,7 @@ from inferops.schemas import (
     ConfigEvidence,
     ExperimentResult,
     ExperimentValidityStatus,
+    HardwareInfo,
     LatencyPercentiles,
     MANAGED_CLI_EVIDENCED_KEYS,
     actual_covers_requested,
@@ -208,6 +209,39 @@ def _assert_unified_gate_rejects_everywhere(
 # ---------------------------------------------------------------------------
 # Core gate / derive_status
 # ---------------------------------------------------------------------------
+
+def test_result_without_hardware_stays_none(config):
+    parsed = _make_failed_load_result(config)
+    assert parsed.hardware is None
+
+
+def test_result_preserves_complete_hardware(config):
+    hardware = HardwareInfo(
+        model_name=config.model_name,
+        engine=config.engine.value,
+        vllm_version="0.6.0",
+        gpu_name="NVIDIA GeForce RTX 3060 Laptop GPU",
+        gpu_memory_total_gb=6.0,
+    )
+    parsed = _make_failed_load_result(config, hardware=hardware)
+    assert parsed.hardware == hardware
+
+
+def test_incomplete_stored_hardware_dict_round_trips_without_fake_fields(config):
+    parsed = _make_failed_load_result(
+        config,
+        hardware={"model_name": "stored-model", "engine": "ollama"},
+    )
+    assert isinstance(parsed.hardware, HardwareInfo)
+    assert parsed.hardware.model_name == "stored-model"
+    assert parsed.hardware.engine == "ollama"
+    assert parsed.hardware.gpu_name is None
+    assert parsed.hardware.gpu_memory_total_gb is None
+    assert parsed.hardware.vllm_version is None
+
+    round_tripped = ExperimentResult.model_validate_json(parsed.model_dump_json())
+    assert round_tripped.hardware == parsed.hardware
+
 
 def test_legacy_result_defaults_to_insufficient_evidence(result):
     assert result.status == ExperimentValidityStatus.INSUFFICIENT_EVIDENCE
