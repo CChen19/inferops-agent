@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
-from inferops.citations import sources_from_context
+from inferops.citations import sources_from_context, valid_structured_citations
 from inferops.eval.planner_strategy import (
     run_fair_comparison,
     run_planner_no_rag_strategy,
@@ -128,11 +128,17 @@ def test_planner_rag_may_call_retrieval():
     retrieval_context = "[source: test_doc] §Test\nstub chunk"
     assert sources_from_context(retrieval_context)
 
-    with patch(
-        "inferops.agent.planner._retrieve_knowledge",
-        return_value=retrieval_context,
-    ) as mock_retrieve:
-        run_planner_rag_strategy(
+    with (
+        patch(
+            "inferops.agent.planner._retrieve_knowledge",
+            return_value=retrieval_context,
+        ) as mock_retrieve,
+        patch(
+            "inferops.agent.planner.valid_structured_citations",
+            wraps=valid_structured_citations,
+        ) as mock_citation_gate,
+    ):
+        run = run_planner_rag_strategy(
             fixture,
             BudgetPolicy(total_slots=2),
             workload_name="chat_short",
@@ -141,6 +147,8 @@ def test_planner_rag_may_call_retrieval():
         )
 
     mock_retrieve.assert_called()
+    assert mock_citation_gate.call_args.args[2] == {"test_doc"}
+    assert [record.kind for record in run.ledger.records] == ["baseline", "trial"]
 
 
 def test_planner_budget_policy_matches_other_strategies():
