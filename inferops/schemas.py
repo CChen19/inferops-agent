@@ -273,11 +273,6 @@ class ExperimentResult(BaseModel):
             self.requested_config = config_knobs(self.config)
         if not self.workload_hash:
             self.workload_hash = compute_workload_hash(self.config.workload)
-        if self.hardware is None:
-            self.hardware = HardwareInfo(
-                model_name=self.config.model_name,
-                engine=self.config.engine.value,
-            )
         if not self.run_id:
             # Stable across re-reads of the same legacy row (P2-6).
             self.run_id = stable_legacy_run_id(
