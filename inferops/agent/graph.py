@@ -325,6 +325,13 @@ def prepare_initial_state(
     state["started_at_s"] = time.time()
     if db_path is not None:
         state["memory_db_path"] = str(Path(db_path))
+        from inferops.memory.hardware import collect_hardware_info, fingerprint_from_hardware
+
+        hw = collect_hardware_info(
+            model_name=str(resolved.model_name or ""),
+            probe_nvidia=True,
+        )
+        state["hardware_fingerprint"] = fingerprint_from_hardware(hw)
     return state
 
 

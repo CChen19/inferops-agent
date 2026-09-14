@@ -341,12 +341,20 @@ def planner_node(state: AgentState, llm) -> dict:
     db_path = state.get("memory_db_path")
     model_name = model_name_of(state)
     if db_path and model_name:
-        from inferops.memory.hardware import collect_hardware_info, fingerprint_from_hardware
+        from inferops.memory.hardware import (
+            collect_hardware_info,
+            fingerprint_from_hardware,
+        )
         from inferops.memory.history import query_compatible_history
 
-        current_fp = fingerprint_from_hardware(
-            collect_hardware_info(model_name=model_name, probe_nvidia=False)
-        )
+        # Prefer the run-start fingerprint (captured with probe_nvidia=True).
+        current_fp = fingerprint_from_hardware(state.get("hardware_fingerprint"))
+        if current_fp is None:
+            # Resume / legacy checkpoint without a stored fingerprint: production
+            # may probe nvidia-smi once. Tests inject state or monkeypatch collect.
+            current_fp = fingerprint_from_hardware(
+                collect_hardware_info(model_name=model_name, probe_nvidia=True)
+            )
         history_rows = query_compatible_history(
             model_name=model_name,
             workload_name=state["workload_name"],

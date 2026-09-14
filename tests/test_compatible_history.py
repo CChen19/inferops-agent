@@ -375,6 +375,183 @@ def test_planner_skips_history_without_memory_db_path(monkeypatch):
     _assert_no_repo_root_sqlite()
 
 
+def test_planner_uses_state_fingerprint_without_env(
+    result, workload, tmp_path, monkeypatch
+):
+    """Default path: no env vars; injected run-start fingerprint ranks matching history."""
+    for key in ("INFEROPS_GPU_NAME", "INFEROPS_GPU_MEM_GB", "VLLM_VERSION"):
+        monkeypatch.delenv(key, raising=False)
+
+    db = tmp_path / "history.db"
+    prior = _row(
+        result,
+        experiment_id="prior_max_num_batched_tokens_4096",
+        session_id="prior_",
+        run_id="run_prior_wired",
+        status=ExperimentValidityStatus.VALID,
+        model_name=_MODEL,
+        max_num_batched_tokens=4096,
+        max_num_seqs=128,
+        workload=workload,
+    )
+    save_result(prior, db_path=db)
+    task = default_task_for_workload("chat_short", 6, model_name=_MODEL)
+    state = initial_state(
+        "chat_short",
+        "now_",
+        max_experiments=6,
+        optimization_task=task.model_dump(mode="json"),
+    )
+    state["memory_db_path"] = str(db)
+    state["hardware_fingerprint"] = dict(_FP)
+    state["baseline_summary"] = {
+        "experiment_id": "now_baseline",
+        "run_id": "run_baseline",
+        "param_changed": None,
+        "value_changed": None,
+        "throughput_rps": 14.96,
+        "tokens_per_second": 1916.0,
+        "ttft_p50_ms": 48.0,
+        "ttft_p99_ms": 69.0,
+        "e2e_p50_ms": 1015.0,
+        "bottleneck": "compute-bound",
+        "vs_baseline_pct": 0.0,
+    }
+    state["best_summary"] = state["baseline_summary"]
+    state["experiment_summaries"] = [state["baseline_summary"]]
+    state["current_bottleneck"] = "compute-bound"
+
+    # Fallback collect must not be required when state fingerprint is present.
+    def boom_collect(**kwargs):
+        raise AssertionError("must use state hardware_fingerprint, not collect")
+
+    monkeypatch.setattr("inferops.memory.hardware.collect_hardware_info", boom_collect)
+
+    llm = MagicMock()
+    resp = MagicMock()
+    resp.content = json.dumps({"analysis": "ok", "hypotheses": []})
+    resp.usage_metadata = {}
+    llm.invoke.return_value = resp
+    with patch(
+        "inferops.agent.planner._retrieve_knowledge",
+        return_value="[source: vllm_scheduler] §Scheduling\ntext",
+    ):
+        patch_out = planner_node(state, llm)
+
+    assert any(r["run_id"] == "run_prior_wired" for r in patch_out["compatible_history"])
+    _assert_no_repo_root_sqlite()
+
+
+def test_planner_incomplete_fingerprint_ranks_zero_history(
+    result, workload, tmp_path, monkeypatch
+):
+    for key in ("INFEROPS_GPU_NAME", "INFEROPS_GPU_MEM_GB", "VLLM_VERSION"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr(
+        "inferops.memory.hardware.collect_hardware_info",
+        lambda **kw: HardwareInfo(model_name=_MODEL, engine="vllm"),
+    )
+
+    db = tmp_path / "history.db"
+    prior = _row(
+        result,
+        experiment_id="prior_max_num_seqs_64",
+        session_id="prior_",
+        run_id="run_prior_hidden",
+        status=ExperimentValidityStatus.VALID,
+        model_name=_MODEL,
+        max_num_seqs=64,
+        workload=workload,
+    )
+    save_result(prior, db_path=db)
+    task = default_task_for_workload("chat_short", 6, model_name=_MODEL)
+    state = initial_state(
+        "chat_short",
+        "now_",
+        max_experiments=6,
+        optimization_task=task.model_dump(mode="json"),
+    )
+    state["memory_db_path"] = str(db)
+    state["hardware_fingerprint"] = None  # incomplete / unknown current
+    state["baseline_summary"] = {
+        "experiment_id": "now_baseline",
+        "run_id": "run_baseline",
+        "param_changed": None,
+        "value_changed": None,
+        "throughput_rps": 14.96,
+        "tokens_per_second": 1916.0,
+        "ttft_p50_ms": 48.0,
+        "ttft_p99_ms": 69.0,
+        "e2e_p50_ms": 1015.0,
+        "bottleneck": "compute-bound",
+        "vs_baseline_pct": 0.0,
+    }
+    state["best_summary"] = state["baseline_summary"]
+    state["experiment_summaries"] = [state["baseline_summary"]]
+    state["current_bottleneck"] = "compute-bound"
+
+    llm = MagicMock()
+    resp = MagicMock()
+    resp.content = json.dumps({"analysis": "ok", "hypotheses": []})
+    resp.usage_metadata = {}
+    llm.invoke.return_value = resp
+    with patch(
+        "inferops.agent.planner._retrieve_knowledge",
+        return_value="(knowledge index not built — run scripts/build_corpus.py)",
+    ):
+        patch_out = planner_node(state, llm)
+
+    assert patch_out["compatible_history"] == []
+    _assert_no_repo_root_sqlite()
+
+
+def test_prepare_initial_state_stores_hardware_fingerprint(tmp_path, monkeypatch):
+    from inferops.agent.graph import prepare_initial_state
+
+    monkeypatch.setenv("INFEROPS_GPU_NAME", _FP["gpu_name"])
+    monkeypatch.setenv("INFEROPS_GPU_MEM_GB", "6.0")
+    monkeypatch.setenv("VLLM_VERSION", _FP["vllm_version"])
+    monkeypatch.setattr(
+        "inferops.agent.graph._run_baseline",
+        lambda *a, **k: (
+            {
+                "experiment_id": "s_baseline",
+                "run_id": "r0",
+                "param_changed": None,
+                "value_changed": None,
+                "throughput_rps": 1.0,
+                "tokens_per_second": 1.0,
+                "ttft_p50_ms": 1.0,
+                "ttft_p99_ms": 1.0,
+                "e2e_p50_ms": 1.0,
+                "bottleneck": "compute-bound",
+                "vs_baseline_pct": 0.0,
+                "validity_status": "valid",
+                "has_config_evidence": True,
+                "promotable": True,
+                "failure_reason": "",
+                "error_rate": 0.0,
+                "mlflow_run_id": None,
+            },
+            "compute-bound",
+        ),
+    )
+    task = default_task_for_workload("chat_short", 3, model_name=_MODEL)
+    state = prepare_initial_state(
+        "chat_short",
+        "s_",
+        max_experiments=3,
+        task=task,
+        db_path=tmp_path / "mem.db",
+    )
+    assert state.get("memory_db_path")
+    fp = state.get("hardware_fingerprint")
+    assert isinstance(fp, dict)
+    assert fp["gpu_name"] == _FP["gpu_name"]
+    assert fp["vllm_version"] == _FP["vllm_version"]
+    _assert_no_repo_root_sqlite()
+
+
 def test_planner_prompt_includes_prior_history_and_does_not_cite_it(
     result, workload, tmp_path, monkeypatch
 ):
@@ -399,6 +576,7 @@ def test_planner_prompt_includes_prior_history_and_does_not_cite_it(
         optimization_task=task.model_dump(mode="json"),
     )
     state["memory_db_path"] = str(db)
+    state["hardware_fingerprint"] = dict(_FP)
     state["baseline_summary"] = {
         "experiment_id": "now_baseline",
         "run_id": "run_baseline",
@@ -415,10 +593,6 @@ def test_planner_prompt_includes_prior_history_and_does_not_cite_it(
     state["best_summary"] = state["baseline_summary"]
     state["experiment_summaries"] = [state["baseline_summary"]]
     state["current_bottleneck"] = "compute-bound"
-
-    monkeypatch.setenv("INFEROPS_GPU_NAME", _FP["gpu_name"])
-    monkeypatch.setenv("INFEROPS_GPU_MEM_GB", "6.0")
-    monkeypatch.setenv("VLLM_VERSION", _FP["vllm_version"])
 
     captured: dict[str, str] = {}
 

@@ -62,6 +62,22 @@ def _nvidia_smi_probe() -> tuple[str | None, float | None]:
     return name, mem_gb
 
 
+def resolve_vllm_version() -> str | None:
+    """Env ``VLLM_VERSION`` first; else installed package version; else None.
+
+    Never invent a version — incomplete fingerprints stay excluded from ranking.
+    """
+    env = (os.getenv("VLLM_VERSION") or "").strip()
+    if env:
+        return env
+    try:
+        from importlib.metadata import PackageNotFoundError, version
+
+        return version("vllm")
+    except Exception:
+        return None
+
+
 def collect_hardware_info(
     *,
     model_name: str = "",
@@ -78,7 +94,7 @@ def collect_hardware_info(
     return HardwareInfo(
         model_name=model_name,
         engine=engine,
-        vllm_version=os.getenv("VLLM_VERSION") or None,
+        vllm_version=resolve_vllm_version(),
         gpu_name=gpu_name,
         gpu_memory_total_gb=mem,
         cuda_version=os.getenv("CUDA_VERSION") or None,
