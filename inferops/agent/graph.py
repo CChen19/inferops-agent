@@ -15,9 +15,11 @@ Entry point: run_agent() — handles baseline, builds initial state, invokes gra
 from __future__ import annotations
 
 import os
+import sqlite3
 import time
 import uuid
 from functools import partial
+from pathlib import Path
 from typing import Any
 
 from langgraph.graph import END, START, StateGraph
@@ -37,14 +39,21 @@ from inferops.agent.state import (
     primary_metric_of,
     summary_from_result,
 )
+from inferops.memory.db import (
+    get_result_by_id,
+    get_task,
+    init_db,
+    save_result,
+    save_task,
+    update_task_status,
+)
+from inferops.schemas import is_promotable
 from inferops.task import (
     OptimizationTask,
     default_task_for_workload,
     require_confirmed,
     task_from_mapping,
 )
-from inferops.memory.db import get_result_by_id, init_db, save_result
-from inferops.schemas import is_promotable
 from inferops.tools.analyze_bottleneck import AnalyzeBottleneckInput, analyze_bottleneck
 
 console = Console()
@@ -89,7 +98,10 @@ def make_llm(backend: str = "openrouter", temperature: float = 0.3):
             max_tokens=1024,
         )
     else:
-        raise ValueError(f"Unknown LLM backend '{backend}'. Choose 'openrouter', 'deepseek', or 'claude'.")
+        raise ValueError(
+            f"Unknown LLM backend '{backend}'. "
+            "Choose 'openrouter', 'deepseek', or 'claude'."
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -102,16 +114,30 @@ def session_thread_id(session_prefix: str) -> str:
     return raw.rstrip("_") or raw or "inferops"
 
 
-def graph_invoke_config(session_prefix: str) -> dict[str, Any]:
+def graph_invoke_config(
+    session_prefix: str,
+    *,
+    thread_id: str | None = None,
+) -> dict[str, Any]:
     """RunnableConfig with a stable thread/session identity for checkpoint/resume."""
-    return {"configurable": {"thread_id": session_thread_id(session_prefix)}}
+    return {
+        "configurable": {
+            "thread_id": thread_id or session_thread_id(session_prefix),
+        }
+    }
 
 
-def production_checkpointer() -> Any:
-    """In-process MemorySaver. Production resume uses this + session thread_id."""
-    from langgraph.checkpoint.memory import MemorySaver
+def production_checkpointer(db_path: Path | str = Path("inferops_memory.db")) -> Any:
+    """Create a disk-backed LangGraph saver sharing the experiment SQLite DB."""
+    try:
+        from langgraph.checkpoint.sqlite import SqliteSaver
+    except ImportError as exc:  # pragma: no cover - dependency error is environment-specific
+        raise RuntimeError(
+            "Production resume requires the 'langgraph-checkpoint-sqlite' package"
+        ) from exc
 
-    return MemorySaver()
+    conn = sqlite3.connect(str(db_path), check_same_thread=False)
+    return SqliteSaver(conn)
 
 
 def build_graph(
@@ -122,7 +148,7 @@ def build_graph(
 ) -> Any:
     """Compile the StateGraph with the given LLM bound into the planner node.
 
-    Production ``run_agent`` passes a MemorySaver checkpointer and a stable
+    Production ``run_agent`` passes a SqliteSaver checkpointer and a stable
     ``thread_id``. Eval / unit assembly may omit the checkpointer so
     ``invoke(state)`` stays config-free.
     """
@@ -186,7 +212,14 @@ def _run_baseline(
         prompts = get_prompts(workload)
         from inferops.bench_runner import BenchmarkError, run_experiment
         try:
-            result = run_experiment(base_cfg, prompts, session_id=session_prefix)
+            result = run_experiment(
+                base_cfg,
+                prompts,
+                session_id=session_prefix,
+                service_mode=(
+                    resolved_task.service_mode.value if resolved_task is not None else None
+                ),
+            )
             save_result(result)
         except BenchmarkError as exc:
             if exc.result is not None:
@@ -283,12 +316,14 @@ def prepare_initial_state(
 # ---------------------------------------------------------------------------
 
 def run_agent(
-    workload_name: str,
+    workload_name: str | None,
     llm,
     max_experiments: int = 8,
     session_prefix: str | None = None,
     interrupt_before: list[str] | None = None,
     task: OptimizationTask | dict | None = None,
+    resume_task_id: str | None = None,
+    db_path: Path | str = Path("inferops_memory.db"),
 ) -> AgentState:
     """
     Run the optimizer agent on a workload.
@@ -298,24 +333,74 @@ def run_agent(
 
     Returns the final AgentState.
     """
-    init_db()
-    prefix = session_prefix or f"agent_{workload_name}_{uuid.uuid4().hex[:6]}_"
+    db_file = Path(db_path)
+    init_db(db_file)
+
+    stored = get_task(resume_task_id, db_path=db_file) if resume_task_id else None
+    if resume_task_id and stored is None:
+        raise ValueError(f"No persisted task found for task_id={resume_task_id!r}")
+
+    if stored is not None:
+        resolved_task = task_from_mapping(stored.confirmed_task)
+        assert resolved_task is not None
+        require_confirmed(resolved_task)
+        prefix = stored.session_prefix
+        thread_id = stored.thread_id
+        workload_name = resolved_task.workload.name
+        max_experiments = resolved_task.experiment_budget
+    else:
+        resolved_task = task_from_mapping(task)
+        if resolved_task is None:
+            if workload_name is None:
+                raise ValueError("workload_name is required for a new task")
+            resolved_task = default_task_for_workload(workload_name, max_experiments)
+        require_confirmed(resolved_task)
+        workload_name = resolved_task.workload.name
+        max_experiments = resolved_task.experiment_budget
+        prefix = session_prefix or f"agent_{workload_name}_{uuid.uuid4().hex[:6]}_"
+        thread_id = session_thread_id(prefix)
+        task_record = save_task(
+            task_id=resolved_task.task_id,
+            session_prefix=prefix,
+            thread_id=thread_id,
+            confirmed_task=resolved_task.model_dump(mode="json"),
+            status="confirmed",
+            db_path=db_file,
+        )
+        prefix = task_record.session_prefix
+        thread_id = task_record.thread_id
+
     console.rule(f"[bold cyan]Agent: {workload_name}[/]  prefix={prefix}")
 
-    # 1. Baseline + initial state. Baseline uses one experiment slot.
-    state = prepare_initial_state(
-        workload_name, prefix, max_experiments=max_experiments, task=task
-    )
-
-    # 2. Run graph — production checkpoint + stable thread/session identity.
+    # Build the graph before baseline so a persisted checkpoint can resume directly.
     graph = build_graph(
         llm,
-        checkpointer=production_checkpointer(),
+        checkpointer=production_checkpointer(db_file),
         interrupt_before=interrupt_before,
     )
-    final_state = graph.invoke(state, graph_invoke_config(prefix))
+    config = graph_invoke_config(prefix, thread_id=thread_id)
+    snapshot = graph.get_state(config) if hasattr(graph, "get_state") else None
+    has_checkpoint = bool(snapshot and snapshot.values)
+    state = None
+    if not has_checkpoint:
+        state = prepare_initial_state(
+            workload_name,
+            prefix,
+            max_experiments=max_experiments,
+            task=resolved_task,
+        )
 
-    # 3. Print summary
+    update_task_status(resolved_task.task_id, "running", db_path=db_file)
+    try:
+        final_state = graph.invoke(state, config)
+    except BaseException:
+        update_task_status(resolved_task.task_id, "interrupted", db_path=db_file)
+        raise
+
+    post_run = graph.get_state(config) if hasattr(graph, "get_state") else None
+    final_status = "running" if post_run and post_run.next else "completed"
+    update_task_status(resolved_task.task_id, final_status, db_path=db_file)
+
     _print_run_summary(final_state)
     return final_state
 

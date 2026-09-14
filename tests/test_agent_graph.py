@@ -35,7 +35,7 @@ def test_run_baseline_loads_existing_result(result):
     assert summary["validity_status"] == "insufficient_evidence"
 
 
-def test_run_agent_initializes_state_and_invokes_graph():
+def test_run_agent_initializes_state_and_invokes_graph(tmp_path):
     baseline = {
         "experiment_id": "sess_baseline",
         "param_changed": None,
@@ -73,6 +73,7 @@ def test_run_agent_initializes_state_and_invokes_graph():
             llm=object(),
             max_experiments=5,
             session_prefix="sess_",
+            db_path=tmp_path / "memory.db",
         )
 
     assert captured["state"]["experiments_remaining"] == 4

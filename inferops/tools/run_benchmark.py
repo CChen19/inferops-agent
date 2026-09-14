@@ -63,6 +63,10 @@ class RunBenchmarkInput(BaseModel):
             "up workload_name in the preset catalog."
         ),
     )
+    service_mode: str | None = Field(
+        default=None,
+        description="Confirmed task lifecycle mode: managed or external.",
+    )
 
 
 class RunBenchmarkOutput(BaseModel):
@@ -153,6 +157,7 @@ def run_benchmark(inp: RunBenchmarkInput) -> RunBenchmarkOutput:
                 patched,
                 prompts,
                 session_id=inp.session_id,
+                service_mode=inp.service_mode,
             )
         except BenchmarkError as exc:
             # P2-5: persist failed contract row so eval counts the attempt

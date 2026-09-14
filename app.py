@@ -21,9 +21,16 @@ load_dotenv()
 
 import chainlit as cl
 
-from inferops.agent.graph import build_graph, make_llm, prepare_initial_state
+from inferops.agent.graph import (
+    build_graph,
+    graph_invoke_config,
+    make_llm,
+    prepare_initial_state,
+    production_checkpointer,
+    session_thread_id,
+)
 from inferops.agent.intent import Intent, interpret_user_request
-from inferops.memory.db import init_db
+from inferops.memory.db import init_db, save_task, update_task_status
 from inferops.task import (
     ServiceControlMode,
     TaskStatus,
@@ -135,7 +142,18 @@ async def on_message(message: cl.Message):
     cl.user_session.set("pending_intent", None)
     cl.user_session.set("confirmed_task", task.model_dump(mode="json"))
 
+    session_prefix = f"ui_{uuid.uuid4().hex[:8]}_"
+    thread_id = session_thread_id(session_prefix)
+    save_task(
+        task_id=task.task_id,
+        session_prefix=session_prefix,
+        thread_id=thread_id,
+        confirmed_task=task.model_dump(mode="json"),
+        status="confirmed",
+    )
+
     if task.service_mode == ServiceControlMode.EXTERNAL and not await _vllm_is_running():
+        update_task_status(task.task_id, "blocked_external")
         await cl.Message(content=(
             "**External vLLM is not reachable.** This task is `external`, so "
             "InferOps will not start a managed server.\n\n"
@@ -148,7 +166,6 @@ async def on_message(message: cl.Message):
         return
 
     # Step 2: Run the agent with streaming step updates
-    session_prefix = f"ui_{uuid.uuid4().hex[:8]}_"
     t_start = time.time()
 
     try:
@@ -171,19 +188,32 @@ async def on_message(message: cl.Message):
                 f"  • bottleneck = `{baseline['bottleneck']}`"
             )).send()
 
-        graph = build_graph(llm)
+        graph = build_graph(llm, checkpointer=production_checkpointer())
+        config = graph_invoke_config(session_prefix, thread_id=thread_id)
+        update_task_status(task.task_id, "running")
         await cl.Message(content=(
             f"Starting optimization loop "
             f"(remaining experiments={state['experiments_remaining']})…"
         )).send()
 
-        async for mode, data in graph.astream(state, stream_mode=["updates", "values"]):
+        events = graph.stream(
+            state,
+            config,
+            stream_mode=["updates", "values"],
+        )
+        done = object()
+        while True:
+            item = await asyncio.to_thread(next, events, done)
+            if item is done:
+                break
+            mode, data = item
             if mode == "updates":
                 for node_name, patch in data.items():
                     await _handle_node_event(node_name, patch)
             elif mode == "values":
                 final_state = data
     except Exception as exc:
+        update_task_status(task.task_id, "failed")
         err = str(exc)
         # Surface a helpful message for the most common failure: vLLM not running
         if any(k in err for k in ("Connection refused", "vllm", "VLLM", "timed out", "OOM")):
@@ -196,6 +226,7 @@ async def on_message(message: cl.Message):
             await cl.Message(content=f"**Agent error:** `{err[:300]}`").send()
         return
 
+    update_task_status(task.task_id, "completed")
     elapsed = time.time() - t_start
 
     # Step 3: Final report

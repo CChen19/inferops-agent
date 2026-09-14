@@ -95,11 +95,14 @@ def _write_live_identity_probe(
     return path
 
 
-def external_vllm_mode() -> bool:
-    """Explicit external / shared server mode (opt-in).
+def external_vllm_mode(service_mode: str | None = None) -> bool:
+    """Return whether this run uses an external/shared server.
 
-    Health alone never selects this path — set INFEROPS_EXTERNAL_VLLM=1/true/yes.
+    A confirmed task's ``service_mode=external`` is authoritative. The
+    environment variable remains supported for legacy scripts.
     """
+    if service_mode is not None and service_mode.strip().lower() == "external":
+        return True
     return os.getenv("INFEROPS_EXTERNAL_VLLM", "").strip().lower() in {
         "1",
         "true",
@@ -411,6 +414,7 @@ def run_experiment(
     mlflow_experiment: str = "inferops",
     on_progress: Callable[[str], None] | None = None,
     session_id: str | None = None,
+    service_mode: str | None = None,
 ) -> ExperimentResult:
     """
     Run one full experiment: ensure vLLM config applied → benchmark → collect.
@@ -502,9 +506,9 @@ def run_experiment(
         status = ExperimentValidityStatus.INSUFFICIENT_EVIDENCE
         mlflow_id = run.info.run_id
 
-        if external_vllm_mode():
+        if external_vllm_mode(service_mode):
             log(
-                f"External vLLM mode (INFEROPS_EXTERNAL_VLLM) at "
+                f"External vLLM mode at "
                 f"{VLLM_HOST}:{VLLM_PORT} — not managing lifecycle"
             )
             if on_progress:
