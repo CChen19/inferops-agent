@@ -163,7 +163,7 @@ def test_planner_score_run_decomposed_fields():
     )
 
     assert set(run.score.keys()) == {
-        "success_in_budget",
+        "valid_result_in_budget",
         "first_valid_n",
         "confirmed_gain",
         "wasted_trials",

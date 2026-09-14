@@ -196,7 +196,7 @@ def run_all_strategies(
 
 def _score_dict(run_score: Any) -> dict[str, Any]:
     return {
-        "success_in_budget": run_score.success_in_budget,
+        "valid_result_in_budget": run_score.valid_result_in_budget,
         "first_valid_n": run_score.first_valid_n,
         "confirmed_gain": run_score.confirmed_gain,
         "wasted_trials": run_score.wasted_trials,

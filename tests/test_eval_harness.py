@@ -30,7 +30,7 @@ def test_run_mock_eval_scores_baseline_strategies():
     row = report["strategies"]["online_local_search"][0]
     assert row["workload_name"] == "chat_short"
     for field in (
-        "success_in_budget",
+        "valid_result_in_budget",
         "first_valid_n",
         "wasted_trials",
         "n_paid",
@@ -48,8 +48,8 @@ def test_render_markdown_report_contains_dashboard_tables():
     assert "# InferOps Eval Report" in text
     assert "online_local_search" in text
     assert "default" in text
-    assert "| Strategy | Success | Mean gap %" in text
-    assert "Success | 1st valid | Gain | Wasted | Paid | Gap %" in text
+    assert "| Strategy | Valid in budget | Mean gap %" in text
+    assert "Valid in budget | 1st valid | Gain | Wasted | Paid | Gap %" in text
     assert "Mock eval only" in text
     assert "not** real measured performance" in text
 

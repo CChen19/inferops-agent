@@ -191,11 +191,11 @@ def render_markdown_report(report: dict[str, Any]) -> str:
     ]
     if mode == "mock":
         lines += [
-            "| Strategy | Success | Mean gap % | Mean 1st valid | Wasted | Paid | Composite |",
+            "| Strategy | Valid in budget | Mean gap % | Mean 1st valid | Wasted | Paid | Composite |",
             "|---|---:|---:|---:|---:|---:|---:|",
         ]
         for name, agg in sorted(report.get("aggregates", {}).items()):
-            success_pct = agg.get("mean_success_in_budget", 0.0) * 100
+            success_pct = agg.get("mean_valid_result_in_budget", 0.0) * 100
             first_valid = agg.get("mean_first_valid_n")
             first_valid_s = f"{first_valid:.1f}" if first_valid is not None else "—"
             lines.append(
@@ -220,11 +220,11 @@ def render_markdown_report(report: dict[str, Any]) -> str:
             lines += [
                 f"### {name}",
                 "",
-                "| Workload | Success | 1st valid | Gain | Wasted | Paid | Gap % | Composite |",
+                "| Workload | Valid in budget | 1st valid | Gain | Wasted | Paid | Gap % | Composite |",
                 "|---|---:|---:|---:|---:|---:|---:|---:|",
             ]
             for row in rows:
-                success = "yes" if row.get("success_in_budget") else "no"
+                success = "yes" if row.get("valid_result_in_budget") else "no"
                 first_valid = row.get("first_valid_n")
                 first_valid_s = str(first_valid) if first_valid is not None else "—"
                 gain = row.get("confirmed_gain")
@@ -315,7 +315,7 @@ def _strategy_run_to_row(
         "primary_metric": metric,
         "ground_truth_value": gt_val,
         "agent_value": agent_val,
-        "success_in_budget": score["success_in_budget"],
+        "valid_result_in_budget": score["valid_result_in_budget"],
         "first_valid_n": score["first_valid_n"],
         "confirmed_gain": score["confirmed_gain"],
         "wasted_trials": score["wasted_trials"],
@@ -332,8 +332,8 @@ def _aggregate_protocol_rows(rows: list[dict[str, Any]]) -> dict[str, float | No
     n = len(rows)
     first_valid_vals = [r["first_valid_n"] for r in rows if r.get("first_valid_n") is not None]
     return {
-        "mean_success_in_budget": round(
-            sum(1.0 if r.get("success_in_budget") else 0.0 for r in rows) / n, 4
+        "mean_valid_result_in_budget": round(
+            sum(1.0 if r.get("valid_result_in_budget") else 0.0 for r in rows) / n, 4
         ),
         "mean_gap_pct": round(sum(r.get("gap_pct") or 0.0 for r in rows) / n, 2),
         "mean_first_valid_n": round(sum(first_valid_vals) / len(first_valid_vals), 1)
