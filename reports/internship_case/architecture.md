@@ -1,7 +1,7 @@
 # Architecture
 
 One pass through the system, in the order things actually happen. File
-references are to master at `25e159f` (after merged PRs #28–#30).
+references are to master at `1a119e7` (after merged PR #35).
 
 ## 1. Task confirmation (`inferops/task.py`)
 
@@ -78,8 +78,15 @@ managed child PID, or the run is never valid. A healthy listener this task did
 not spawn is treated as an unknown occupant and is not stopped. The sole
 recovery exception is a child strictly matched to a stale InferOps lease record,
 and even that stop-and-relaunch path is opt-in via
-`INFEROPS_ADOPT_STALE_MANAGED`; the default is off. Cancel and graph abort stop
-only children registered as owned by this process and release their leases.
+`INFEROPS_ADOPT_STALE_MANAGED`; the default is off.
+
+A managed child is registered as owned immediately when it is spawned, before
+readiness polling begins. Stop during model load therefore fails closed: the
+in-flight experiment is never valid, the owned child is stopped, and its lease
+is released (PR #32). Readiness polling also aborts when cancellation is
+requested or `stop()` has cleared the managed process, rather than continuing
+to poll a dead port until `STARTUP_TIMEOUT_S` (PR #35). These are merged code
+paths covered by deterministic CPU tests, not new GPU measurements.
 
 ## 5. Evidence and the promotion gate (`inferops/schemas.py`, `state.py`)
 
@@ -149,9 +156,6 @@ UI, so the UI cannot show a friendlier story than the file.
   eval recovery goldens still use in-memory `MemorySaver` fixtures.
 - The file lock serializes managed work on one GPU, but it does not make the
   hardware measurements more generalizable or eliminate run-to-run drift.
-- Stop during the vLLM model-load window remains an open gap: the UI stop path
-  has not yet been shown to abort that in-flight experiment as valid-prevention.
-  Do not describe this as fixed by the owned-child cancellation work.
 - Trials run sequentially on one GPU. Thermal and clock drift across a session
   are not measured or compensated.
 - Hardware scope is one RTX 3060 Laptop with 6 GB VRAM, so larger models and
