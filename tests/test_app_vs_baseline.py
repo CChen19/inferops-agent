@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from app import _format_all_experiments_table, _format_live_result_message
+from inferops.tools.final_report import (
+    _format_all_experiments_table,
+    _format_live_result_message,
+)
 
 
 def _summary(*, experiment_id: str, vs: float | None, rps: float = 18.931) -> dict:

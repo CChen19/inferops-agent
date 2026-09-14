@@ -29,6 +29,40 @@ def _fmt_vs_baseline(v: Any) -> str:
     return f"{_fmt_metric(v, '+')}%"
 
 
+def _format_live_result_message(s: dict[str, Any]) -> str:
+    """Per-trial result line. vs_baseline_pct prints at stored precision; None stays n/a."""
+    improvement = s.get("vs_baseline_pct")
+    if improvement is None:
+        icon = "➡️"
+    else:
+        icon = "✅" if improvement > 0 else ("➡️" if improvement == 0 else "⬇️")
+    return (
+        f"{icon} **Result:** `{s['experiment_id']}`\n"
+        f"  • throughput = **{s['throughput_rps']:.3f} RPS** "
+        f"({_fmt_vs_baseline(improvement)} vs baseline)\n"
+        f"  • TTFT p99 = {s['ttft_p99_ms']:.1f} ms\n"
+        f"  • bottleneck = `{s['bottleneck']}`"
+    )
+
+
+def _format_all_experiments_table(summaries: list[dict[str, Any]]) -> list[str]:
+    """All-experiments markdown table. Missing vs stays n/a — never +0.0%."""
+    lines = [
+        "| Experiment | param | value | rps | ttft_p99 | bottleneck | vs_baseline |",
+        "|---|---|---|---|---|---|---|",
+    ]
+    for s in summaries:
+        lines.append(
+            f"| `{s['experiment_id']}` | {s.get('param_changed') or 'baseline'} "
+            f"| {s.get('value_changed', '')} "
+            f"| {_fmt_metric(s.get('throughput_rps'), '.3f')} "
+            f"| {_fmt_metric(s.get('ttft_p99_ms'), '.1f')}ms "
+            f"| {s.get('bottleneck', 'unknown')} "
+            f"| {_fmt_vs_baseline(s.get('vs_baseline_pct'))} |"
+        )
+    return lines
+
+
 class FinalReportInput(BaseModel):
     workload_name: str = Field(description="Workload that was optimized")
     session_prefix: str = Field(description="Experiment ID prefix for this session")
