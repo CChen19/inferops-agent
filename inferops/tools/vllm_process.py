@@ -555,12 +555,14 @@ class VLLMProcess:
                 return True
 
     def is_crashed(self) -> bool:
-        return self._proc is not None and self._proc.poll() is not None
+        proc = self._proc
+        return proc is not None and proc.poll() is not None
 
     def exit_code(self) -> int | None:
-        if self._proc is None:
+        proc = self._proc
+        if proc is None:
             return None
-        return self._proc.poll()
+        return proc.poll()
 
     def oom_in_log(self) -> bool:
         if self.log_path is None or not self.log_path.exists():

@@ -209,8 +209,8 @@ def test_wait_ready_still_times_out_without_cancel(config, monkeypatch):
     assert 0.5 <= elapsed < 2.0
 
 
-def test_wait_should_abort_binds_proc_once(config):
-    """stop() can null _proc on another thread; must not re-read self._proc for poll()."""
+def _racey_proc(config):
+    """First _proc read is a live child; later reads are None (stop() on another thread)."""
     child = _FakeChild()
     reads = {"n": 0}
 
@@ -223,6 +223,25 @@ def test_wait_should_abort_binds_proc_once(config):
                 return None  # simulates stop() clearing _proc between former TOCTOU reads
             return super().__getattribute__(name)
 
-    proc = _RaceyProcVLLMProcess(config, host="127.0.0.1", port=8000)
+    return _RaceyProcVLLMProcess(config, host="127.0.0.1", port=8000), reads
+
+
+def test_wait_should_abort_binds_proc_once(config):
+    """stop() can null _proc on another thread; must not re-read self._proc for poll()."""
+    proc, reads = _racey_proc(config)
     assert proc._wait_should_abort() is False
+    assert reads["n"] == 1
+
+
+def test_is_crashed_binds_proc_once(config):
+    """stop() can null _proc on another thread; must not re-read self._proc for poll()."""
+    proc, reads = _racey_proc(config)
+    assert proc.is_crashed() is False
+    assert reads["n"] == 1
+
+
+def test_exit_code_binds_proc_once(config):
+    """stop() can null _proc on another thread; must not re-read self._proc for poll()."""
+    proc, reads = _racey_proc(config)
+    assert proc.exit_code() is None
     assert reads["n"] == 1
