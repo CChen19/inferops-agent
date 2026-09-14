@@ -11,7 +11,7 @@
     <p class="hero-description">
       Automated, evidence-based serving optimization for local vLLM deployments.
       InferOps explores parameter spaces under concurrency limits, enforces TTFT/TPOT SLOs,
-      and recommends keeping the baseline configuration whenever measured improvements are not statistically reliable.
+      and recommends keeping the baseline configuration whenever evidence is noisy, inconclusive, or fails the confirmation gate (no_reliable_improvement).
     </p>
   </section>
 
@@ -108,7 +108,7 @@
         <!-- Step 4: Optimization Loop Container -->
         <rect x="644" y="20" width="186" height="265" rx="14" fill="url(#loopGrad)" stroke="#6366f1" stroke-width="1.5" stroke-dasharray="4 2"/>
         <text x="658" y="44" font-family="'Inter', sans-serif" font-size="12" font-weight="700" fill="#a5b4fc">Optimization Loop</text>
-        <text x="790" y="44" font-family="'JetBrains Mono', monospace" font-size="10" fill="#818cf8">&infin;</text>
+        <text x="762" y="44" font-family="'JetBrains Mono', monospace" font-size="9.5" fill="#818cf8">budget N</text>
 
         <!-- 4a: Plan -->
         <rect x="654" y="54" width="166" height="58" rx="8" fill="#090d1a" stroke="#312e81"/>
@@ -146,11 +146,11 @@
         
         <rect x="881" y="126" width="114" height="42" rx="5" fill="#061a12" stroke="#10b981" stroke-opacity="0.4"/>
         <text x="887" y="141" font-family="'JetBrains Mono', monospace" font-size="9" font-weight="600" fill="#34d399">&#10003; Promote Best</text>
-        <text x="887" y="156" font-family="'Inter', sans-serif" font-size="8.5" fill="#a7f3d0">Reliable improvement</text>
+        <text x="887" y="156" font-family="'Inter', sans-serif" font-size="8.5" fill="#a7f3d0">Confirmed gain / SLO ok</text>
 
         <rect x="881" y="174" width="114" height="42" rx="5" fill="#111827" stroke="#374151"/>
         <text x="887" y="189" font-family="'JetBrains Mono', monospace" font-size="9" font-weight="600" fill="#9ca3af">&#8212; Keep Baseline</text>
-        <text x="887" y="204" font-family="'Inter', sans-serif" font-size="8.5" fill="#6b7280">Inconclusive / SLO fail</text>
+        <text x="887" y="204" font-family="'Inter', sans-serif" font-size="8.5" fill="#6b7280">Inconclusive / no gain</text>
 
         <text x="883" y="238" font-family="'Inter', sans-serif" font-size="9.5" fill="#6ee7b7">Final Report + Citations</text>
 
@@ -159,7 +159,7 @@
         <rect x="30" y="312" width="24" height="24" rx="4" fill="#38bdf8" fill-opacity="0.1"/>
         <text x="42" y="328" font-family="'JetBrains Mono', monospace" font-size="11" fill="#38bdf8" text-anchor="middle">&#128190;</text>
         <text x="64" y="325" font-family="'Inter', sans-serif" font-size="11.5" font-weight="600" fill="#e2e8f0">SQLite Session Checkpoint (<code style="font-family:'JetBrains Mono'; color:#38bdf8; font-size:11px;">inferops_memory.db</code>)</text>
-        <text x="64" y="338" font-family="'Inter', sans-serif" font-size="10" fill="#64748b">Persistent state snapshotting &middot; Fully resumable via <code style="font-family:'JetBrains Mono'; color:#cbd5e1; font-size:10px;">resume &lt;task_id&gt;</code> &middot; Fail-closed process group tracking</text>
+        <text x="64" y="338" font-family="'Inter', sans-serif" font-size="10" fill="#64748b">Session state written after steps &middot; Fully resumable via resume &lt;task_id&gt; &middot; Fail-closed process tracking</text>
       </svg>
     </div>
   </section>
@@ -179,7 +179,7 @@
         <div class="pillar-icon">&#9878;&#65039;</div>
         <h3 class="pillar-title">Evidence Gate (Keep-Baseline)</h3>
         <p class="pillar-desc">
-          Candidate parameters must reliably improve throughput while strictly respecting TTFT and TPOT SLOs. If improvements are noisy or inconclusive, InferOps recommends keeping the baseline.
+          Candidate parameters must beat the baseline on the confirmation protocol without breaching TTFT or TPOT SLOs. If evidence is noisy, inconclusive, or fails confirmation (<code>no_reliable_improvement</code>), InferOps keeps the baseline.
         </p>
       </div>
 
@@ -195,7 +195,7 @@
         <div class="pillar-icon">&#128190;</div>
         <h3 class="pillar-title">Checkpointed &amp; Resumable</h3>
         <p class="pillar-desc">
-          Every state transition and hypothesis evaluation is persisted to SQLite. Interrupted or paused runs can be resumed anytime with <code>resume &lt;task_id&gt;</code>.
+          Session state is written to SQLite after steps; interrupted or paused runs can be resumed anytime with <code>resume &lt;task_id&gt;</code>.
         </p>
       </div>
     </div>
