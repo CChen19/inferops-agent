@@ -127,7 +127,7 @@ def test_planner_rag_may_call_retrieval():
 
     with patch(
         "inferops.agent.planner._retrieve_knowledge",
-        return_value="[source: test_doc] stub chunk",
+        return_value="[source: test_doc] §Test\nstub chunk",
     ) as mock_retrieve:
         run_planner_rag_strategy(
             fixture,
