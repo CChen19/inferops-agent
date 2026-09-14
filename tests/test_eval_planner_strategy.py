@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
+from inferops.citations import sources_from_context
 from inferops.eval.planner_strategy import (
     run_fair_comparison,
     run_planner_no_rag_strategy,
@@ -124,10 +125,12 @@ def test_planner_no_rag_skips_retrieval():
 def test_planner_rag_may_call_retrieval():
     fixture = _tiny_fixture()
     llm = ScriptedBottleneckLLM(default_bottleneck="scheduling-bound")
+    retrieval_context = "[source: test_doc] §Test\nstub chunk"
+    assert sources_from_context(retrieval_context)
 
     with patch(
         "inferops.agent.planner._retrieve_knowledge",
-        return_value="[source: test_doc] §Test\nstub chunk",
+        return_value=retrieval_context,
     ) as mock_retrieve:
         run_planner_rag_strategy(
             fixture,
