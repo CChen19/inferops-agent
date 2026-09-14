@@ -7,7 +7,7 @@ Tool call chain per hypothesis:
   1. propose_config_patch  — validates param/value against safe ranges
   2. run_benchmark         — starts vLLM, runs load, persists result to DB
   3. analyze_bottleneck    — classifies bottleneck from the stored result
-  4. compare_experiments   — bootstrap CI vs baseline
+  4. compare_experiments   — point delta vs baseline (bootstrap CI when raw latency samples exist)
 
 Offline / real-graph eval may inject stubs ONLY at tool boundaries via
 `tool_boundary_overrides` (including confirmation `run_arm`) — production

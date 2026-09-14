@@ -203,7 +203,38 @@ def default_error_constraint(max_error_rate: float = DEFAULT_MAX_ERROR_RATE) -> 
 # Build / validate
 # ---------------------------------------------------------------------------
 
-def _apply_workload_overrides(workload: WorkloadSpec, overrides: dict[str, Any]) -> WorkloadSpec:
+def _explicit_positive_int(name: str, value: Any, *, lo: int, hi: int) -> int:
+    """Require a real int in [lo, hi]. Reject bools and non-integer numbers."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(
+            f"{name} must be an explicit integer in [{lo}, {hi}] "
+            f"(got {type(value).__name__}={value!r})"
+        )
+    if value < lo or value > hi:
+        raise ValueError(f"{name}={value} is outside the supported range [{lo}, {hi}]")
+    return value
+
+
+def _max_model_len_ceiling() -> int:
+    """Reuse run_benchmark safe max_model_len upper bound (not a new magic number)."""
+    from inferops.tools.run_benchmark import _SAFE_RANGES
+
+    return int(_SAFE_RANGES["max_model_len"][1])
+
+
+def _default_engine_max_model_len() -> int:
+    """ExperimentConfig.max_model_len default (same as make_configs)."""
+    from inferops.schemas import ExperimentConfig
+
+    return int(ExperimentConfig.model_fields["max_model_len"].default)
+
+
+def _apply_workload_overrides(
+    workload: WorkloadSpec,
+    overrides: dict[str, Any],
+    *,
+    max_model_len: int | None = None,
+) -> WorkloadSpec:
     update: dict[str, Any] = {}
     if overrides.get("concurrency") is not None:
         conc = int(overrides["concurrency"])
@@ -215,16 +246,30 @@ def _apply_workload_overrides(workload: WorkloadSpec, overrides: dict[str, Any])
         if n < 1 or n > 500:
             raise ValueError(f"num_requests={n} is outside the supported range [1, 500]")
         update["num_requests"] = n
+    # WorkloadSpec.ge=1; upper bound = run_benchmark safe max_model_len max (4096).
+    len_lo = 1
+    len_hi = _max_model_len_ceiling()
     if overrides.get("input_len") is not None:
-        update["input_len"] = int(overrides["input_len"])
+        update["input_len"] = _explicit_positive_int(
+            "input_len", overrides["input_len"], lo=len_lo, hi=len_hi
+        )
     if overrides.get("output_len") is not None:
-        update["output_len"] = int(overrides["output_len"])
+        update["output_len"] = _explicit_positive_int(
+            "output_len", overrides["output_len"], lo=len_lo, hi=len_hi
+        )
     # Arrival rate is recorded on WorkloadSpec but is NOT a scheduler today.
     if overrides.get("offered_rps") is not None:
         update["rps"] = float(overrides["offered_rps"])
     if not update:
         return workload
-    return workload.model_copy(update=update)
+    merged = workload.model_copy(update=update)
+    engine_cap = max_model_len if max_model_len is not None else _default_engine_max_model_len()
+    total = merged.input_len + merged.output_len
+    if total > engine_cap:
+        raise ValueError(
+            f"input_len+output_len={total} exceeds engine max_model_len={engine_cap}"
+        )
+    return merged
 
 
 def build_optimization_task(

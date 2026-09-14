@@ -119,17 +119,20 @@ def tool_analyze_bottleneck(experiment_id: str) -> dict:
 @tool
 def tool_compare_experiments(experiment_id_a: str, experiment_id_b: str, metric: str = "throughput_rps", n_bootstrap: int = 2000) -> dict:
     """
-    Compare two experiments using bootstrap confidence intervals.
+    Compare two experiments on a metric (point delta; bootstrap CI when raw samples exist).
 
-    Use after running a variant to determine if the improvement is real or noise.
-    A result is statistically significant when the CI does not straddle zero.
+    Latency with raw_ttft_ms / raw_e2e_ms: bootstrap CI over this run's request
+    samples (not repeated-run CI). A result is statistically significant when that
+    CI does not straddle zero. Throughput aggregates and latency without raw
+    samples return CI unavailable (ci_* null, significant=false) — never synthesized.
 
     Args:
         experiment_id_a: Baseline experiment ID.
         experiment_id_b: Candidate experiment ID.
         metric: One of throughput_rps, tokens_per_second, ttft_p50_ms, ttft_p99_ms,
                 e2e_p50_ms, e2e_p99_ms.
-        n_bootstrap: Bootstrap iterations (200–10000, default 2000).
+        n_bootstrap: Bootstrap iterations (200–10000, default 2000); used only when
+            raw latency samples are present.
     """
     out = compare_experiments(CompareExperimentsInput(experiment_id_a=experiment_id_a, experiment_id_b=experiment_id_b, metric=metric, n_bootstrap=n_bootstrap))
     return out.model_dump()
