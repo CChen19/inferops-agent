@@ -248,11 +248,11 @@ async def on_message(message: cl.Message):
         return
     if is_resume_command(text):
         await cl.Message(
-            content=(
-                "**Cannot resume.** Need a 12-character task id.\n\n"
+            content=format_resume_failure(
+                "validation",
+                "Need a 12-character hex task id. "
                 "Use `resume <task_id>` in chat or "
-                "`inferops agent --resume-task <task_id>` in the CLI. "
-                "No GPU budget was spent."
+                "`inferops agent --resume-task <task_id>` in the CLI.",
             )
         ).send()
         return
