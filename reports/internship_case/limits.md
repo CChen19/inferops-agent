@@ -36,16 +36,17 @@ are not bugs to be hidden in an interview, they are the scope boundary.
 | Eval RAG stub must parse via production sources | PR #40: `tests/test_eval_planner_strategy.py` asserts `sources_from_context` on the RAG stub context; tests only, not a GPU measurement |
 | Summaries persist the vs-baseline denominator | PR #42: `ExperimentSummary.baseline_primary` stores the denominator used for `vs_baseline_pct`; `summary_from_result` writes it, including `0.0` when the gain is left `None`; CPU tests, not a rewrite of the live case artifact |
 | Experiment Log prints stored vs-baseline and TTFT p99 | PR #44: `write_final_report` prints `vs_baseline_pct` at stored precision (`+3.77%`, not `+3.8%`) and includes a `ttft_p99` column; CPU tests, not a new GPU report |
-| `pid` and `stop()` bind the child handle once | PR #43: `pid` and `stop()` bind `proc = self._proc` once so a racing `stop()` cannot AttributeError; `test_pid_binds_proc_once` and `test_stop_binds_proc_once` in `tests/test_vllm_process.py`; CPU tests, not a live GPU timing |
+| `pid` and `stop()` bind the child handle once | PR #43: `pid` and `stop()` bind `proc = self._proc` once so a racing `stop()` cannot AttributeError; PR #52 extends `test_stop_binds_proc_once` to assert that the bound `FakeChild` was terminated, covering the existing production `stop()` behavior; CPU tests, not a live GPU timing |
 | Production checkpointer closes the SQLite connection | PR #45: `production_checkpointer` is a context manager that closes the `SqliteSaver` connection; `test_production_checkpointer_closes_connection` in `tests/test_agent_graph.py`; `run_eval` session test uses `cwd=tmp_path` so the default db cannot leak into the worktree; eval goldens stay `MemorySaver` / disk-free |
 | RAG eval test asserts parsed available sources | PR #46: RAG eval wraps `valid_structured_citations` and asserts `args[2] == {"test_doc"}`; ledger is `[baseline, trial]`; tests only |
-| Readiness health GET is bounded by `CANCEL_CHECK_S` | PR #48: `wait_ready_verbose` uses `httpx.get(..., timeout=CANCEL_CHECK_S)` (0.25 s), not 3 s; `health_ok()` remains a separate one-shot with `timeout_s=2.0`; CPU tests, not a live GPU timing |
+| Readiness health GET is bounded by `CANCEL_CHECK_S` | PR #48: `wait_ready_verbose` uses `httpx.get(..., timeout=CANCEL_CHECK_S)` (0.25 s), not 3 s; Cancel/Stop does not interrupt an in-flight GET, `_wait_should_abort()` is checked between polls, and the timeout only caps abort-recognition delay; `health_ok()` remains a separate one-shot with `timeout_s=2.0`; CPU tests, not a live GPU timing |
+| SQLite WAL/SHM sidecars stay untracked | PR #51: `.gitignore` includes `inferops_memory.db-wal` and `inferops_memory.db-shm`; repo hygiene, not a runtime or GPU claim |
 | Compare fails closed on a zero baseline denominator | PR #49: `compare_experiments._delta_pct` raises `ValueError` if baseline `sa == 0` instead of inventing `0.0%`; executor records compare as `tool_unavailable` and leaves `vs_baseline_pct` as `None`; CPU tests |
 | Executive Summary prints stored vs-baseline precision | PR #50: Best observed change uses `_fmt_vs_baseline` (e.g. `+3.77%`), same as the Experiment Log; missing stays `n/a`, never `+0.0%`; CPU tests, not a rewrite of the live case artifact |
 | Stale-child adoption is not automatic | `INFEROPS_ADOPT_STALE_MANAGED` is opt-in and defaults off; adoption also requires the stale lease record, child PID, dead owner, and recorded argv checks to match |
 
 These rows describe code paths, deterministic CPU tests, and repo hygiene
-merged on master at `8a9d53f`. They are not additional RTX 3060 trials and add
+merged on master at `ca8e3fb`. They are not additional RTX 3060 trials and add
 no throughput, latency, or `confirmed_gain` result.
 
 ## Known limits
@@ -140,7 +141,8 @@ observe-after-pick protocol score), no adoption-level winner can be declared.
 - CLI/UI vs-baseline sites in `app.py`, `graph.py`, `executor.py`, and
   `scripts/run_agent.py` still format as `+:.1f`. Those are not covered by
   PR #50.
+- Cancel/Stop cannot interrupt an in-flight readiness GET. Abort state is
+  checked between polls; `CANCEL_CHECK_S` only caps how long that GET can delay
+  recognition of the abort.
 - A remote `VLLM_HOST` whose RTT exceeds `CANCEL_CHECK_S` (0.25 s) would never
   succeed `wait_ready`.
-- `.gitignore` covers `inferops_memory.db` but not the SQLite `-wal`/`-shm`
-  sidecars.
