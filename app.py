@@ -61,21 +61,21 @@ from inferops.tools.managed_lifecycle import (
 )
 
 _WELCOME = """\
-# InferOps — vLLM tuning assistant
+# InferOps — vLLM Tuning Assistant
 
 Describe a serving goal. I will draft a task, wait for your confirmation, then
 run a bounded set of experiments and tell you whether a change is worth adopting.
 
-I will **not** silently swap your model or workload. Unsupported requests are
-rejected or sent back for clarification before any GPU budget is spent.
+> **Safety Gate:** I will **not** silently swap your model or workload. Unsupported requests are
+> rejected or sent back for clarification before any GPU budget is spent.
 
 **Examples:**
 - *"I have Qwen2.5-1.5B on RTX 3060, chat scenario, target QPS=10, TTFT p99 under 200ms"*
 - *"Long document QA, concurrency=4, keep TTFT p99 <= 400ms"*
 - *"High concurrency short outputs, 32 users, maximize throughput"*
 
-Target QPS is a **measured throughput goal**. Offered arrival-rate scheduling
-is not implemented (load is concurrency-limited).
+*Note: Target QPS is a **measured throughput goal**. Offered arrival-rate scheduling
+is not implemented (load is concurrency-limited).*
 
 Type your scenario to begin, or `resume <task_id>` to continue a saved task.
 """
