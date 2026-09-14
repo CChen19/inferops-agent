@@ -20,6 +20,8 @@ from inferops.agent.graph import (
     production_checkpointer,
     run_agent,
 )
+from inferops.schemas import HardwareInfo, InferenceEngine
+from inferops.task import default_task_for_workload
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _SQLITE_LEAKS = (
@@ -124,6 +126,47 @@ def test_production_checkpointer_closes_connection(tmp_path, monkeypatch):
         assert conn.execute("SELECT 1").fetchone()[0] == 1
     with pytest.raises(sqlite3.ProgrammingError, match="closed"):
         conn.execute("SELECT 1")
+    _assert_no_repo_root_sqlite()
+
+
+def test_prepare_initial_state_passes_confirmed_task_engine_to_fingerprint(
+    tmp_path, monkeypatch
+):
+    captured = {}
+
+    def fake_collect_hardware_info(**kwargs):
+        captured.update(kwargs)
+        return HardwareInfo(
+            model_name=kwargs["model_name"],
+            engine=kwargs["engine"],
+        )
+
+    monkeypatch.setattr(
+        "inferops.memory.hardware.collect_hardware_info",
+        fake_collect_hardware_info,
+    )
+    task = default_task_for_workload("chat_short", 2).model_copy(
+        update={"engine": InferenceEngine.OLLAMA}
+    )
+    baseline = {"experiment_id": "sess_baseline", "promotable": False}
+
+    with patch(
+        "inferops.agent.graph._run_baseline",
+        return_value=(baseline, "compute-bound"),
+    ):
+        state = prepare_initial_state(
+            "chat_short",
+            "sess_",
+            task=task,
+            db_path=tmp_path / "memory.db",
+        )
+
+    assert captured == {
+        "model_name": task.model_name,
+        "engine": "ollama",
+        "probe_nvidia": True,
+    }
+    assert state["hardware_fingerprint"] is None
     _assert_no_repo_root_sqlite()
 
 
