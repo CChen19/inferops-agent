@@ -1,7 +1,8 @@
 """Compatible prior-session experiment hints for the planner.
 
-Compatibility is ``model_name`` + ``workload_name`` only. Experiment rows do
-not store a hardware SKU, so this module does not match GPU SKU.
+Compatibility is model + workload + hardware fingerprint. Rows with a
+mismatched or unknown fingerprint stay in SQLite for inspection but are
+excluded from planner ranking and failure-memory duplicate suppression.
 
 Returned rows are ``claim_level=prior_session_hint``. They must never be
 treated as this-run metric evidence and must not skip confirmation.
@@ -10,12 +11,16 @@ treated as this-run metric evidence and must not skip confirmation.
 from __future__ import annotations
 
 import json
-import re
 from pathlib import Path
 from typing import Any
 
 from inferops.memory.db import _connect, init_db
-from inferops.schemas import ExperimentConfig
+from inferops.memory.hardware import (
+    HardwareFingerprint,
+    fingerprint_from_hardware,
+    fingerprints_compatible,
+)
+from inferops.schemas import ExperimentConfig, HardwareInfo
 
 CLAIM_LEVEL = "prior_session_hint"
 _SEARCH_KNOBS = (
@@ -40,23 +45,13 @@ def _knob_default(key: str) -> Any:
     return ExperimentConfig.model_fields[key].default
 
 
-def _coerce_knob(key: str, raw: str) -> Any:
-    default = _knob_default(key)
-    text = re.sub(r"_r\d+$", "", raw)
-    if isinstance(default, bool):
-        lowered = text.strip().lower()
-        if lowered in ("true", "1", "yes"):
-            return True
-        if lowered in ("false", "0", "no"):
-            return False
-        return default
-    try:
-        return type(default)(text)
-    except (TypeError, ValueError):
-        return text
+def _recover_param_value(_experiment_id: str, config: dict[str, Any]) -> tuple[str | None, Any]:
+    """Recover the single search-knob that differs from ExperimentConfig defaults.
 
-
-def _recover_param_value(experiment_id: str, config: dict[str, Any]) -> tuple[str | None, Any]:
+    Exactly one differing search knob → that (param, value).
+    Zero or more than one → (None, None). Never guess from experiment_id tokens
+    or pick an arbitrary diffs[0], so multi-knob rows cannot suppress an untried pair.
+    """
     diffs: list[tuple[str, Any]] = []
     for key in _SEARCH_KNOBS:
         if key not in config:
@@ -65,11 +60,23 @@ def _recover_param_value(experiment_id: str, config: dict[str, Any]) -> tuple[st
             diffs.append((key, config[key]))
     if len(diffs) == 1:
         return diffs[0]
-    for key in _SEARCH_KNOBS:
-        token = f"_{key}_"
-        if token in experiment_id:
-            return key, _coerce_knob(key, experiment_id.split(token, 1)[1])
-    return (diffs[0] if diffs else (None, None))
+    return (None, None)
+
+
+def _hardware_from_result_json(result_json: str) -> HardwareInfo | None:
+    try:
+        result = json.loads(result_json or "{}")
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(result, dict):
+        return None
+    raw = result.get("hardware")
+    if not isinstance(raw, dict):
+        return None
+    try:
+        return HardwareInfo.model_validate(raw)
+    except Exception:
+        return None
 
 
 def query_compatible_history(
@@ -79,11 +86,14 @@ def query_compatible_history(
     exclude_session_id: str,
     db_path: Path | str,
     top_k: int = 8,
+    current_fingerprint: HardwareFingerprint | None = None,
 ) -> list[dict[str, Any]]:
-    """Return prior-session rows that match model + workload.
+    """Return prior-session rows that match model + workload + hardware.
 
     Rows from ``exclude_session_id`` (the current session) are omitted.
     Different ``config_json.model_name`` values are incompatible and excluded.
+    Mismatch or unknown hardware fingerprints are excluded from ranking /
+    failure memory (they remain in SQLite for inspection via ``query_results``).
     """
     if not model_name or not workload_name:
         return []
@@ -101,7 +111,7 @@ def query_compatible_history(
             ORDER BY created_at DESC
             LIMIT ?
             """,
-            (workload_name, model_name, exclude_session_id, top_k),
+            (workload_name, model_name, exclude_session_id, max(top_k * 4, 32)),
         ).fetchall()
 
     out: list[dict[str, Any]] = []
@@ -121,6 +131,9 @@ def query_compatible_history(
                 notes = str(result.get("notes") or "")
         except json.JSONDecodeError:
             notes = ""
+        row_fp = fingerprint_from_hardware(_hardware_from_result_json(row["result_json"]))
+        if not fingerprints_compatible(current_fingerprint, row_fp):
+            continue
         param, value = _recover_param_value(str(row["experiment_id"] or ""), config)
         out.append(
             {
@@ -135,6 +148,9 @@ def query_compatible_history(
                 "throughput_rps": row["throughput_rps"],
                 "notes": notes,
                 "claim_level": CLAIM_LEVEL,
+                "hardware_fingerprint": dict(row_fp) if row_fp is not None else None,
             }
         )
+        if len(out) >= top_k:
+            break
     return out

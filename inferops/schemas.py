@@ -183,6 +183,8 @@ class HardwareInfo(BaseModel):
     engine: str = "vllm"
     vllm_version: str | None = None
     gpu_name: str | None = None
+    # Total GPU VRAM capacity in GiB — not utilization / used memory.
+    gpu_memory_total_gb: float | None = None
     cuda_version: str | None = None
 
 

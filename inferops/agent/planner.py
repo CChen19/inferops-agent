@@ -186,8 +186,9 @@ def _prior_history_section(rows: list[dict]) -> str:
     if not rows:
         return ""
     lines = [
-        "PRIOR COMPATIBLE HISTORY (compatible = same model_name + workload_name, "
-        "other session_id only. GPU SKU is not stored on experiment rows and is not matched.):",
+        "PRIOR COMPATIBLE HISTORY (compatible = same model_name + workload_name "
+        "+ hardware fingerprint [gpu_name, gpu_memory_total_gb, engine/vllm_version]. "
+        "Unknown or mismatched hardware is excluded from ranking.):",
         "These run_ids are NOT this-run metric evidence; do not cite them as "
         "citations.metric.run_id. They must not skip a confirmation campaign.",
     ]
@@ -300,6 +301,11 @@ def _retrieve_knowledge(bottleneck: str, workload: str, top_k: int = 4) -> str:
 
         query = f"{bottleneck} optimization {workload} vLLM"
         result = knowledge_retriever(KnowledgeRetrieverInput(query=query, top_k=top_k))
+        if result.index_incompatible:
+            msg = result.message or (
+                "knowledge index version is incompatible — rebuild with scripts/build_corpus.py"
+            )
+            return f"({msg})"
         if result.index_empty or not result.chunks:
             return "(knowledge index not built — run scripts/build_corpus.py)"
         lines = []
@@ -335,13 +341,26 @@ def planner_node(state: AgentState, llm) -> dict:
     db_path = state.get("memory_db_path")
     model_name = model_name_of(state)
     if db_path and model_name:
+        from inferops.memory.hardware import (
+            collect_hardware_info,
+            fingerprint_from_hardware,
+        )
         from inferops.memory.history import query_compatible_history
 
+        # Prefer the run-start fingerprint (captured with probe_nvidia=True).
+        current_fp = fingerprint_from_hardware(state.get("hardware_fingerprint"))
+        if current_fp is None:
+            # Resume / legacy checkpoint without a stored fingerprint: production
+            # may probe nvidia-smi once. Tests inject state or monkeypatch collect.
+            current_fp = fingerprint_from_hardware(
+                collect_hardware_info(model_name=model_name, probe_nvidia=True)
+            )
         history_rows = query_compatible_history(
             model_name=model_name,
             workload_name=state["workload_name"],
             exclude_session_id=state["session_prefix"],
             db_path=db_path,
+            current_fingerprint=current_fp,
         )
     state = {**state, "compatible_history": history_rows}
 

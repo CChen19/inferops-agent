@@ -43,7 +43,6 @@ from inferops.schemas import (
     ExperimentConfig,
     ExperimentResult,
     ExperimentValidityStatus,
-    HardwareInfo,
     LatencyPercentiles,
     config_knobs,
     compute_workload_hash,
@@ -559,12 +558,12 @@ def run_experiment(
     sess = session_id or cfg.tags.get("session_id") or cfg.tags.get("session_prefix")
     sess_str = str(sess) if sess else None
 
-    hardware = HardwareInfo(
+    from inferops.memory.hardware import collect_hardware_info
+
+    hardware = collect_hardware_info(
         model_name=cfg.model_name,
         engine=cfg.engine.value,
-        vllm_version=os.getenv("VLLM_VERSION"),
-        gpu_name=os.getenv("INFEROPS_GPU_NAME"),
-        cuda_version=os.getenv("CUDA_VERSION"),
+        probe_nvidia=True,
     )
 
     tags = {

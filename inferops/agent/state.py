@@ -94,6 +94,9 @@ class AgentState(TypedDict):
     # Stage D: compatible prior-session hints (omitted unless a run sets db_path)
     memory_db_path: NotRequired[str]
     compatible_history: NotRequired[list[dict[str, Any]]]
+    # Captured once at run start when db_path is set; planner must prefer this
+    # over a second env-only collect that would drop all history.
+    hardware_fingerprint: NotRequired[dict[str, Any] | None]
 
 
 # ---------------------------------------------------------------------------
