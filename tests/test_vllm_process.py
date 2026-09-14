@@ -1,7 +1,14 @@
-"""Unit tests for vLLM subprocess command construction."""
+"""Unit tests for vLLM subprocess command construction and readiness wait."""
 
 from __future__ import annotations
 
+import threading
+import time
+
+import httpx
+
+from inferops.tools import managed_lifecycle as ml
+from inferops.tools import vllm_process as vp
 from inferops.tools.vllm_process import (
     DEFAULT_VLLM_PYTHON,
     StopOccupantResult,
@@ -29,11 +36,13 @@ def test_get_vllm_python_uses_inferops_env(monkeypatch):
 
 def test_build_cmd_uses_config_and_env_python(config, monkeypatch):
     monkeypatch.setenv("INFEROPS_VLLM_PYTHON", "/opt/vllm/bin/python")
-    cfg = config.model_copy(update={
-        "enable_chunked_prefill": True,
-        "enable_prefix_caching": True,
-        "enforce_eager": True,
-    })
+    cfg = config.model_copy(
+        update={
+            "enable_chunked_prefill": True,
+            "enable_prefix_caching": True,
+            "enforce_eager": True,
+        }
+    )
 
     cmd = _build_cmd(cfg, "127.0.0.1", 9000)
 
@@ -52,11 +61,13 @@ def test_build_cmd_uses_config_and_env_python(config, monkeypatch):
 
 def test_parse_vllm_cli_knobs_roundtrip(config, monkeypatch):
     monkeypatch.setenv("INFEROPS_VLLM_PYTHON", "/opt/vllm/bin/python")
-    cfg = config.model_copy(update={
-        "enable_chunked_prefill": False,
-        "enable_prefix_caching": True,
-        "enforce_eager": True,
-    })
+    cfg = config.model_copy(
+        update={
+            "enable_chunked_prefill": False,
+            "enable_prefix_caching": True,
+            "enforce_eager": True,
+        }
+    )
     cmd = _build_cmd(cfg, "127.0.0.1", 8000)
     parsed = parse_vllm_cli_knobs(cmd)
     evidenced = cli_evidenced_knobs(cfg)
@@ -82,3 +93,117 @@ def test_restart_after_stop_skips_start_when_still_listening(config, monkeypatch
     assert result.still_listening is True
     assert started["n"] == 0
     assert proc.pid is None
+
+
+# ---------------------------------------------------------------------------
+# wait_ready_verbose: must exit promptly on Stop / cancel, never wait out the
+# startup timeout polling a dead port. CPU-only: fake child + no real HTTP.
+# ---------------------------------------------------------------------------
+
+
+class _FakeChild:
+    """Popen stand-in: alive until terminate()/kill(), never binds a port."""
+
+    def __init__(self, pid: int = 4242, exit_code: int | None = None):
+        self.pid = pid
+        self._exit_code = exit_code
+        self.terminated = False
+
+    def poll(self):
+        return self._exit_code
+
+    def terminate(self):
+        self.terminated = True
+        self._exit_code = -15
+
+    def kill(self):
+        self.terminated = True
+        self._exit_code = -9
+
+    def wait(self, timeout=None):
+        return self._exit_code
+
+
+def _never_ready(monkeypatch, timeout_s: float = 6.0) -> None:
+    """Health never answers; startup timeout shrunk so a regression fails fast."""
+    monkeypatch.setattr(vp, "STARTUP_TIMEOUT_S", timeout_s)
+
+    def _refused(*a, **k):
+        raise httpx.ConnectError("connection refused")
+
+    monkeypatch.setattr(vp.httpx, "get", _refused)
+
+
+def _proc_with_fake_child(config, exit_code: int | None = None) -> VLLMProcess:
+    proc = VLLMProcess(config, host="127.0.0.1", port=8000)
+    proc._proc = _FakeChild(exit_code=exit_code)
+    return proc
+
+
+def test_wait_ready_returns_true_when_health_answers(config, monkeypatch):
+    proc = _proc_with_fake_child(config)
+    monkeypatch.setattr(vp, "STARTUP_TIMEOUT_S", 6)
+    monkeypatch.setattr(vp.httpx, "get", lambda *a, **k: httpx.Response(200))
+    assert proc.wait_ready() is True
+
+
+def test_wait_ready_returns_false_immediately_when_never_started(config, monkeypatch):
+    _never_ready(monkeypatch)
+    proc = VLLMProcess(config, host="127.0.0.1", port=8000)
+    t0 = time.monotonic()
+    assert proc.wait_ready() is False
+    assert time.monotonic() - t0 < 1.0
+
+
+def test_wait_ready_returns_false_promptly_when_child_crashed(config, monkeypatch):
+    _never_ready(monkeypatch)
+    proc = _proc_with_fake_child(config, exit_code=1)
+    t0 = time.monotonic()
+    assert proc.wait_ready() is False
+    assert time.monotonic() - t0 < 1.0
+    assert proc.is_crashed() is True
+
+
+def test_wait_ready_exits_promptly_on_cancel_flag(config, monkeypatch):
+    """Cancel flag alone (no stop() call yet) must break the wait well before timeout."""
+    _never_ready(monkeypatch, timeout_s=6.0)
+    proc = _proc_with_fake_child(config)
+    timer = threading.Timer(0.5, ml.request_cancel)
+    timer.start()
+    try:
+        t0 = time.monotonic()
+        ready = proc.wait_ready_verbose(None)
+        elapsed = time.monotonic() - t0
+    finally:
+        timer.cancel()
+    assert ready is False
+    assert elapsed < 2.0, f"wait_ready waited {elapsed:.2f}s after cancel"
+
+
+def test_wait_ready_exits_promptly_after_stop_clears_proc(config, monkeypatch):
+    """stop() sets _proc=None; the loop must treat that as 'nothing to wait for'."""
+    _never_ready(monkeypatch, timeout_s=6.0)
+    proc = _proc_with_fake_child(config)
+    child = proc._proc
+    timer = threading.Timer(0.5, proc.stop)
+    timer.start()
+    try:
+        t0 = time.monotonic()
+        ready = proc.wait_ready_verbose(None)
+        elapsed = time.monotonic() - t0
+    finally:
+        timer.cancel()
+    assert ready is False
+    assert child.terminated is True
+    assert proc.pid is None
+    assert elapsed < 2.0, f"wait_ready waited {elapsed:.2f}s after stop()"
+
+
+def test_wait_ready_still_times_out_without_cancel(config, monkeypatch):
+    """No cancel / no stop: the loop still honours the (shrunk) startup timeout."""
+    _never_ready(monkeypatch, timeout_s=0.6)
+    proc = _proc_with_fake_child(config)
+    t0 = time.monotonic()
+    assert proc.wait_ready() is False
+    elapsed = time.monotonic() - t0
+    assert 0.5 <= elapsed < 2.0

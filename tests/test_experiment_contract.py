@@ -955,9 +955,11 @@ def test_oom_run_benchmark_executor_final_report_e2e(config, tmp_path, tmp_db, m
     assert "OOM" in text
 
 
-def test_run_experiment_zero_success_not_promotable(config):
+def test_run_experiment_zero_success_not_promotable(config, monkeypatch, tmp_path):
     """Nice-to-have: successful=0 after load → failed / not promotable."""
     from types import SimpleNamespace
+
+    monkeypatch.chdir(tmp_path)  # live_identity_*.json goes to tmp, not repo logs/
 
     from inferops.metrics.ledger import (
         RequestLedger,

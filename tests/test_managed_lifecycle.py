@@ -340,8 +340,9 @@ def test_run_experiment_refuses_to_spawn_after_cancel(monkeypatch, config):
     assert _lock_is_free()
 
 
-def test_mid_load_cancel_stops_owned_child_and_releases_lock(monkeypatch, config):
+def test_mid_load_cancel_stops_owned_child_and_releases_lock(monkeypatch, config, tmp_path):
     """Stop button during load: owned child stopped once, lease freed, row = cancelled."""
+    monkeypatch.chdir(tmp_path)  # live_identity_*.json goes to tmp, not repo logs/
     _patch_common(monkeypatch)
     monkeypatch.setattr(bench_runner, "probe_live_instance", lambda *a, **k: LiveProbe())
     monkeypatch.setattr(bench_runner, "assert_listener_bound_to_child", lambda **k: 55)
