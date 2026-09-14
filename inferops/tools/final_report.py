@@ -110,7 +110,7 @@ def write_final_report(inp: FinalReportInput) -> FinalReportOutput:
             status = inp.best_summary.get("validity_status", "insufficient_evidence")
             lines += [
                 f"Best observed change vs baseline: "
-                f"**{f'{raw_imp:+.1f}%' if raw_imp is not None else 'n/a'}** "
+                f"**{_fmt_vs_baseline(raw_imp)}** "
                 f"(validity=`{status}`). Decision below is authoritative.",
                 "",
                 f"- **Baseline:** `{inp.baseline_summary['experiment_id']}`  "
