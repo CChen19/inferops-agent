@@ -14,6 +14,7 @@ from inferops.eval.protocol import (
     RunScore,
     SLOPolicy,
     TrialLedger,
+    primary_value,
     row_to_observation,
     score_run,
 )
@@ -113,6 +114,36 @@ def test_missing_error_rate_fails_slo():
     result = SLOPolicy.check(obs)
     assert result["ok"] is False
     assert result["reason"] == "error_rate_missing_fail_closed"
+
+
+def _obs(**metrics) -> Observation:
+    return Observation(
+        metrics=dict(metrics),
+        validity_status="valid",
+        error_rate=0.0,
+        config_evidence=True,
+        bottleneck="unknown",
+    )
+
+
+def test_primary_value_returns_finite_metric():
+    assert primary_value(_obs(throughput_rps=12.5), "throughput_rps") == 12.5
+    assert primary_value(_obs(throughput_rps=7), "throughput_rps") == 7.0
+
+
+def test_primary_value_missing_metric_fails_closed():
+    """Absent metric must raise — never invent 0.0."""
+    with pytest.raises(ValueError, match="missing primary metric"):
+        primary_value(_obs(), "throughput_rps")
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [None, "12.5", True, False, float("nan"), float("inf"), float("-inf")],
+)
+def test_primary_value_non_finite_metric_fails_closed(bad):
+    with pytest.raises(ValueError, match="not a finite number"):
+        primary_value(_obs(throughput_rps=bad), "throughput_rps")
 
 
 def test_score_run_reports_decomposed_fields_not_composite_only():
