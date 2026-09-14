@@ -1,12 +1,23 @@
+[project]
+# Whether to enable telemetry (default: true)
+enable_telemetry = false
+
 [UI]
 # Name of the assistant
 name = "InferOps"
+description = "Local vLLM Serving Optimization & Experiment-Decision Engine"
 
 # Default theme mode
 default_theme = "dark"
 
-# Custom stylesheet for InferOps theme
+# Wide layout for modern full-width landing page & composer
+layout = "wide"
+default_sidebar_state = "closed"
+chat_settings_location = "message_composer"
+
+# Custom stylesheet and client script
 custom_css = "/public/theme.css"
+custom_js = "/public/custom.js"
 
 # Custom logo and avatar URLs
 logo_file_url = "/public/logo_dark.svg"
@@ -21,5 +32,14 @@ alert_style = "classic"
 # Confirm when creating new chat
 confirm_new_chat = true
 
+[features]
+unsafe_allow_html = true
+user_message_markdown = true
+assistant_message_autoscroll = false
+auto_tag_thread = true
+edit_message = true
+allow_thread_sharing = false
+favorites = false
+
 [meta]
-generated_by = "2.11.1"
+generated_by = "2.12.0"

@@ -60,29 +60,30 @@ from inferops.tools.managed_lifecycle import (
     request_cancel,
 )
 
-_WELCOME = """\
-# InferOps — vLLM Tuning Assistant
-
-Describe a serving goal. I will draft a task, wait for your confirmation, then
-run a bounded set of experiments and tell you whether a change is worth adopting.
-
-> **Safety Gate:** I will **not** silently swap your model or workload. Unsupported requests are
-> rejected or sent back for clarification before any GPU budget is spent.
-
-**Examples:**
-- *"I have Qwen2.5-1.5B on RTX 3060, chat scenario, target QPS=10, TTFT p99 under 200ms"*
-- *"Long document QA, concurrency=4, keep TTFT p99 <= 400ms"*
-- *"High concurrency short outputs, 32 users, maximize throughput"*
-
-*Note: Target QPS is a **measured throughput goal**. Offered arrival-rate scheduling
-is not implemented (load is concurrency-limited).*
-
-Type your scenario to begin, or `resume <task_id>` to continue a saved task.
-"""
-
 _LLM_BACKEND = os.getenv("INFEROPS_LLM", "openrouter")
 _VLLM_HOST = os.getenv("VLLM_HOST", "127.0.0.1")
 _VLLM_PORT = int(os.getenv("VLLM_PORT", "8000"))
+
+
+@cl.set_starters
+async def set_starters():
+    return [
+        cl.Starter(
+            label="Chat Low-Latency",
+            message="I have Qwen2.5-1.5B on RTX 3060, chat scenario, target QPS=10, TTFT p99 under 200ms",
+            icon="/public/favicon.svg",
+        ),
+        cl.Starter(
+            label="Long Document QA",
+            message="Long document QA, concurrency=4, keep TTFT p99 <= 400ms",
+            icon="/public/favicon.svg",
+        ),
+        cl.Starter(
+            label="High Concurrency",
+            message="High concurrency short outputs, 32 users, maximize throughput",
+            icon="/public/favicon.svg",
+        ),
+    ]
 
 
 async def _vllm_is_running() -> bool:
@@ -99,7 +100,6 @@ async def _vllm_is_running() -> bool:
 @cl.on_chat_start
 async def on_start():
     init_db()
-    await cl.Message(content=_WELCOME).send()
 
 
 @cl.on_stop
