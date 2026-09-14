@@ -3,7 +3,7 @@
 # Usage:
 #   ./scripts/start_vllm.sh [0.5B|1.5B]
 #
-# Uses INFEROPS_VLLM_PYTHON / VLLM_PYTHON when set; otherwise the vllm-dev conda env.
+# Requires INFEROPS_VLLM_PYTHON (or VLLM_PYTHON) — no machine-local fallback.
 # Set VLLM_GPU_MEM to override the model default when Windows/WSL already uses VRAM.
 #
 # RTX 3060 Laptop GPU = 6 GB — safe headroom:
@@ -36,7 +36,11 @@ esac
 HOST="${VLLM_HOST:-127.0.0.1}"
 PORT="${VLLM_PORT:-8000}"
 GPU_MEM="${VLLM_GPU_MEM:-${GPU_MEM}}"
-VLLM_PYTHON_BIN="${INFEROPS_VLLM_PYTHON:-${VLLM_PYTHON:-/home/chris/miniconda3/envs/vllm-dev/bin/python}}"
+VLLM_PYTHON_BIN="${INFEROPS_VLLM_PYTHON:-${VLLM_PYTHON:-}}"
+if [[ -z "${VLLM_PYTHON_BIN}" ]]; then
+  echo "Set INFEROPS_VLLM_PYTHON to the vLLM Python interpreter (VLLM_PYTHON also accepted)." >&2
+  exit 1
+fi
 
 echo "[inferops] Starting vLLM ${MODEL_SIZE} on ${HOST}:${PORT}"
 echo "  python:                ${VLLM_PYTHON_BIN}"

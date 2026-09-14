@@ -73,6 +73,7 @@ def _patch_common(monkeypatch):
 
     monkeypatch.setattr(bench_runner, "mlflow_run", lambda **k: _Ctx())
     monkeypatch.delenv("INFEROPS_EXTERNAL_VLLM", raising=False)
+    monkeypatch.setenv("INFEROPS_VLLM_PYTHON", "/opt/vllm/bin/python")
 
 
 def _dead_pid() -> int:
@@ -103,7 +104,8 @@ def _record_stale_managed_child(monkeypatch, child_pid: int, launch_cmd=None) ->
     monkeypatch.setenv(ml.ADOPT_STALE_ENV, "1")
 
 
-def test_parse_and_match_cli_knobs(config):
+def test_parse_and_match_cli_knobs(config, monkeypatch):
+    monkeypatch.setenv("INFEROPS_VLLM_PYTHON", "/opt/vllm/bin/python")
     cmd = vp._build_cmd(config, "127.0.0.1", 8000)
     parsed = parse_vllm_cli_knobs(cmd)
     requested = cli_evidenced_knobs(config)

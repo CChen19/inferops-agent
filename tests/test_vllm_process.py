@@ -6,11 +6,11 @@ import threading
 import time
 
 import httpx
+import pytest
 
 from inferops.tools import managed_lifecycle as ml
 from inferops.tools import vllm_process as vp
 from inferops.tools.vllm_process import (
-    DEFAULT_VLLM_PYTHON,
     StopOccupantResult,
     VLLMProcess,
     _build_cmd,
@@ -20,11 +20,12 @@ from inferops.tools.vllm_process import (
 )
 
 
-def test_get_vllm_python_defaults_to_conda_path(monkeypatch):
+def test_get_vllm_python_raises_when_unset(monkeypatch):
     monkeypatch.delenv("INFEROPS_VLLM_PYTHON", raising=False)
     monkeypatch.delenv("VLLM_PYTHON", raising=False)
 
-    assert get_vllm_python() == DEFAULT_VLLM_PYTHON
+    with pytest.raises(RuntimeError, match="INFEROPS_VLLM_PYTHON"):
+        get_vllm_python()
 
 
 def test_get_vllm_python_uses_inferops_env(monkeypatch):
@@ -32,6 +33,13 @@ def test_get_vllm_python_uses_inferops_env(monkeypatch):
     monkeypatch.setenv("VLLM_PYTHON", "/ignored/python")
 
     assert get_vllm_python() == "/opt/vllm/bin/python"
+
+
+def test_get_vllm_python_uses_vllm_env(monkeypatch):
+    monkeypatch.delenv("INFEROPS_VLLM_PYTHON", raising=False)
+    monkeypatch.setenv("VLLM_PYTHON", "/opt/vllm-alt/bin/python")
+
+    assert get_vllm_python() == "/opt/vllm-alt/bin/python"
 
 
 def test_build_cmd_uses_config_and_env_python(config, monkeypatch):

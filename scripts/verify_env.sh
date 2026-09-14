@@ -20,18 +20,19 @@ echo ""
 nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader \
   && ok "NVIDIA GPU detected" || fail "nvidia-smi failed — is the NVIDIA driver loaded?"
 
-# 2. CUDA from Python (vllm-dev conda env)
-CONDA_PYTHON="${INFEROPS_VLLM_PYTHON:-${VLLM_PYTHON:-/home/chris/miniconda3/envs/vllm-dev/bin/python}}"
-[[ -x "$CONDA_PYTHON" ]] || fail "vLLM Python not executable: $CONDA_PYTHON"
-"$CONDA_PYTHON" -c "
+# 2. CUDA from Python (requires INFEROPS_VLLM_PYTHON or VLLM_PYTHON)
+VLLM_PYTHON_BIN="${INFEROPS_VLLM_PYTHON:-${VLLM_PYTHON:-}}"
+[[ -n "$VLLM_PYTHON_BIN" ]] || fail "Set INFEROPS_VLLM_PYTHON to the vLLM Python interpreter (VLLM_PYTHON also accepted)"
+[[ -x "$VLLM_PYTHON_BIN" ]] || fail "vLLM Python not executable: $VLLM_PYTHON_BIN"
+"$VLLM_PYTHON_BIN" -c "
 import torch
 assert torch.cuda.is_available(), 'CUDA not available'
 print(f'  torch {torch.__version__}, CUDA {torch.version.cuda}, device: {torch.cuda.get_device_name(0)}')
-" && ok "CUDA available via torch" || fail "torch.cuda not available in vllm-dev env"
+" && ok "CUDA available via torch" || fail "torch.cuda not available in vLLM Python env"
 
 # 3. vLLM
-"$CONDA_PYTHON" -c "import vllm; print(f'  vllm {vllm.__version__}')" \
-  && ok "vLLM importable" || fail "vLLM import failed in vllm-dev env"
+"$VLLM_PYTHON_BIN" -c "import vllm; print(f'  vllm {vllm.__version__}')" \
+  && ok "vLLM importable" || fail "vLLM import failed in vLLM Python env"
 
 # 4. LangGraph (uv venv)
 UV_PYTHON="$PROJECT_ROOT/.venv/bin/python"
