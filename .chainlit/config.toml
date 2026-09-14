@@ -1,0 +1,25 @@
+[UI]
+# Name of the assistant
+name = "InferOps"
+
+# Default theme mode
+default_theme = "dark"
+
+# Custom stylesheet for InferOps theme
+custom_css = "/public/theme.css"
+
+# Custom logo and avatar URLs
+logo_file_url = "/public/logo_dark.svg"
+default_avatar_file_url = "/public/avatars/inferops.svg"
+
+# Chain of Thought display mode
+cot = "full"
+
+# Alert box style
+alert_style = "classic"
+
+# Confirm when creating new chat
+confirm_new_chat = true
+
+[meta]
+generated_by = "2.11.1"
