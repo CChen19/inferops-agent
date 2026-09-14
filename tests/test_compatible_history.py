@@ -201,6 +201,68 @@ def test_hardware_mismatch_and_unknown_excluded_from_ranking(result, workload, t
     _assert_no_repo_root_sqlite()
 
 
+def test_scan_reaches_older_compatible_row_past_newer_fingerprint_misses(
+    result, workload, tmp_path
+):
+    db = tmp_path / "history.db"
+    older_match = _row(
+        result,
+        experiment_id="older_match_max_num_seqs_64",
+        session_id="older_match_",
+        run_id="run_older_match",
+        status=ExperimentValidityStatus.VALID,
+        model_name=_MODEL,
+        max_num_seqs=64,
+        workload=workload,
+    )
+    save_result(older_match, db_path=db)
+
+    # More than the former LIMIT 32, inserted later so id DESC makes them newer.
+    for i in range(40):
+        incompatible = _row(
+            result,
+            experiment_id=f"newer_a100_{i}_max_num_seqs_64",
+            session_id=f"newer_a100_{i}_",
+            run_id=f"run_newer_a100_{i}",
+            status=ExperimentValidityStatus.VALID,
+            model_name=_MODEL,
+            max_num_seqs=64,
+            workload=workload,
+            hardware=_hw(
+                gpu_name="NVIDIA A100-SXM4-40GB",
+                gpu_memory_total_gb=40.0,
+            ),
+        )
+        save_result(incompatible, db_path=db)
+
+    rows = query_compatible_history(
+        model_name=_MODEL,
+        workload_name="chat_short",
+        exclude_session_id="now_",
+        db_path=db,
+        top_k=1,
+        current_fingerprint=_FP,
+    )
+    assert [row["run_id"] for row in rows] == ["run_older_match"]
+
+    incomplete_fingerprint = {"gpu_name": _FP["gpu_name"]}
+    assert query_compatible_history(
+        model_name=_MODEL,
+        workload_name="chat_short",
+        exclude_session_id="now_",
+        db_path=db,
+        current_fingerprint=incomplete_fingerprint,  # type: ignore[arg-type]
+    ) == []
+    assert query_compatible_history(
+        model_name=_MODEL,
+        workload_name="chat_short",
+        exclude_session_id="now_",
+        db_path=db,
+        current_fingerprint=None,
+    ) == []
+    _assert_no_repo_root_sqlite()
+
+
 def test_multi_knob_diff_does_not_guess_param(result, workload, tmp_path):
     db = tmp_path / "history.db"
     # Two non-default knobs; experiment_id lacks _max_num_seqs_ token.

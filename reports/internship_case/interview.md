@@ -52,7 +52,7 @@ interview SHA and do not retarget the demo.
 |---|---|
 | PR #63 interview freeze | Merged at `61374af` (docs that pinned `2731bed`) |
 | PR #62 closeout small-fixes | Merged at `5cb9e20` — resume copy / history attribution / index version / hardware fingerprint. **After** the freeze; not claimed in the interview SHA |
-| PR #65 interview note for #62 | Merged (docs hygiene after freeze) |
+| PR #65 interview note for #62 | Merged at `287297f` (docs hygiene after freeze) |
 | PR #64 memory pre-experiment | Merged at `cec13ef` — **After** the freeze; CPU fixture result only; **not** part of the interview claim surface |
 
 ### PR #64 CPU pre-experiment (honest result only)
