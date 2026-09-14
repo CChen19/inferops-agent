@@ -43,10 +43,11 @@ are not bugs to be hidden in an interview, they are the scope boundary.
 | SQLite WAL/SHM sidecars stay untracked | PR #51: `.gitignore` includes `inferops_memory.db-wal` and `inferops_memory.db-shm`; repo hygiene, not a runtime or GPU claim |
 | Compare fails closed on a zero baseline denominator | PR #49: `compare_experiments._delta_pct` raises `ValueError` if baseline `sa == 0` instead of inventing `0.0%`; executor records compare as `tool_unavailable` and leaves `vs_baseline_pct` as `None`; CPU tests |
 | Executive Summary prints stored vs-baseline precision | PR #50: Best observed change uses `_fmt_vs_baseline` (e.g. `+3.77%`), same as the Experiment Log; missing stays `n/a`, never `+0.0%`; CPU tests, not a rewrite of the live case artifact |
+| Remaining `vs_baseline_pct` printers preserve stored precision | PR #54: Chainlit live-result and all-experiments displays use tested helpers from `inferops.tools.final_report`; graph run summary, executor completion, and `scripts/run_agent.py` result print `+3.77%` rather than `+3.8%`; missing is `n/a` or `unavailable`, never invented `+0.0%`; CPU tests, not a new GPU report |
 | Stale-child adoption is not automatic | `INFEROPS_ADOPT_STALE_MANAGED` is opt-in and defaults off; adoption also requires the stale lease record, child PID, dead owner, and recorded argv checks to match |
 
 These rows describe code paths, deterministic CPU tests, and repo hygiene
-merged on master at `ca8e3fb`. They are not additional RTX 3060 trials and add
+merged on master at `19ad450`. They are not additional RTX 3060 trials and add
 no throughput, latency, or `confirmed_gain` result.
 
 ## Known limits
@@ -138,9 +139,15 @@ observe-after-pick protocol score), no adoption-level winner can be declared.
 - Ledgers stay in each run's own `logs/` directory and are not committed
   (`.gitignore` also ignores `logs/*.json`, PR #38), so full re-audit requires
   access to the original machine.
-- CLI/UI vs-baseline sites in `app.py`, `graph.py`, `executor.py`, and
-  `scripts/run_agent.py` still format as `+:.1f`. Those are not covered by
-  PR #50.
+- `_fmt_vs_baseline` has separate copies in `planner.py` and
+  `final_report.py`. They agree for reachable float/`None` inputs today, but
+  could silently diverge later.
+- CI tests the Chainlit-facing helpers in `final_report.py`, not the `app.py`
+  call sites because Chainlit is absent from the dev environment; a future
+  local re-round at an app call site could escape CI.
+- `eval/runner.py` and `scripts/run_comparison.py` retain one-decimal formatting
+  for `gap_pct` / `vs_default`; those are different metrics, not
+  `vs_baseline_pct` regressions.
 - Cancel/Stop cannot interrupt an in-flight readiness GET. Abort state is
   checked between polls; `CANCEL_CHECK_S` only caps how long that GET can delay
   recognition of the abort.
