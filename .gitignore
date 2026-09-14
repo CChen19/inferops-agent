@@ -14,6 +14,8 @@ uv.lock
 mlruns/
 mlruns.db
 inferops_memory.db
+inferops_memory.db-wal
+inferops_memory.db-shm
 
 # RAG vector store (built locally via scripts/build_corpus.py)
 data/chroma/
