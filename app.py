@@ -34,7 +34,9 @@ from inferops.agent.graph import (
 from inferops.agent.intent import Intent, interpret_user_request
 from inferops.memory.db import get_task, init_db, save_task, update_task_status
 from inferops.resume import (
+    ResumeValidationError,
     format_reflector_update,
+    format_resume_failure,
     format_resume_help,
     is_resume_command,
     parse_resume_task_id,
@@ -181,11 +183,10 @@ async def _run_resumed_task(llm, resume_task_id: str) -> None:
     stored = get_task(resume_task_id)
     if stored is None:
         await cl.Message(
-            content=(
-                f"**Cannot resume.** No persisted task found for "
-                f"`{resume_task_id}`.\n\n"
-                f"{format_resume_help(resume_task_id)} "
-                "No GPU budget was spent."
+            content=format_resume_failure(
+                "validation",
+                f"No persisted task found for `{resume_task_id}`. "
+                f"{format_resume_help(resume_task_id)}",
             )
         ).send()
         return
@@ -207,10 +208,12 @@ async def _run_resumed_task(llm, resume_task_id: str) -> None:
             llm,
             resume_task_id=resume_task_id,
         )
+    except ResumeValidationError as exc:
+        await cl.Message(content=format_resume_failure("validation", str(exc))).send()
+        return
     except ValueError as exc:
-        await cl.Message(
-            content=f"**Cannot resume.** {exc}\n\nNo GPU budget was spent."
-        ).send()
+        # Post-start ValueError — baseline/graph may already have run.
+        await cl.Message(content=format_resume_failure("runtime", str(exc))).send()
         return
     except Exception as exc:
         err = str(exc)

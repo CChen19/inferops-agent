@@ -16,6 +16,15 @@ _RESUME_COMMAND = re.compile(
 )
 
 
+class ResumeValidationError(ValueError):
+    """Resume failed before any baseline / graph work — no GPU budget spent.
+
+    Raised only for pre-execution checks (missing task, unconfirmed dump).
+    Failures after ``prepare_initial_state`` or ``graph.invoke`` must stay
+    ordinary exceptions so the UI does not claim "no GPU was spent".
+    """
+
+
 def parse_resume_task_id(text: str) -> str | None:
     """Return a 12-hex task id from a resume chat line, or None.
 
@@ -47,6 +56,21 @@ def format_resume_help(task_id: str) -> str:
     return (
         f"Resume later with `resume {tid}` in chat, "
         f"or `inferops agent --resume-task {tid}` in the CLI."
+    )
+
+
+def format_resume_failure(kind: str, detail: str) -> str:
+    """Honest resume-failure copy. Only ``validation`` may claim no GPU spend."""
+    text = (detail or "").strip() or "unknown error"
+    if kind == "validation":
+        return (
+            f"**Cannot resume.** {text}\n\n"
+            "No GPU budget was spent."
+        )
+    return (
+        f"**Resume failed.** {text}\n\n"
+        "The run may already have executed (baseline or graph work may have "
+        "started). Check the task record — do not assume no GPU was spent."
     )
 
 

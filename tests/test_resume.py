@@ -1,13 +1,26 @@
-"""CPU tests for resume parsing and reflector status text. Do not import app."""
+"""CPU tests for resume parsing, reflector status, and resume failure honesty.
+
+Do not import app (CI has no chainlit).
+"""
 
 from __future__ import annotations
 
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from inferops.agent.graph import run_agent
 from inferops.resume import (
+    ResumeValidationError,
     format_reflector_update,
+    format_resume_failure,
     format_resume_help,
     is_resume_command,
     parse_resume_task_id,
 )
+from inferops.memory.db import save_task
+from inferops.task import confirm_task, default_task_for_workload
 
 
 def test_parse_resume_prefix_forms():
@@ -48,6 +61,15 @@ def test_format_resume_help_names_cli_and_chat():
     assert "inferops agent" in text
 
 
+def test_format_resume_failure_validation_vs_runtime():
+    validation = format_resume_failure("validation", "No persisted task found")
+    runtime = format_resume_failure("runtime", "boom during invoke")
+    assert "No GPU budget was spent" in validation
+    assert "No GPU budget was spent" not in runtime
+    assert "may already have executed" in runtime
+    assert "task record" in runtime.lower()
+
+
 def test_format_reflector_update_distinguishes_actions():
     cont = format_reflector_update("continue", streak=2)
     rem = format_reflector_update("remeasure", streak=1)
@@ -70,3 +92,63 @@ def test_format_reflector_update_does_not_collapse_to_continuing():
         assert action in text.lower()
         if action != "continue":
             assert "continuing" not in text.lower()
+
+
+def test_run_agent_missing_resume_id_raises_resume_validation(tmp_path):
+    llm = MagicMock()
+    with pytest.raises(ResumeValidationError, match="No persisted task"):
+        run_agent(
+            None,
+            llm,
+            resume_task_id="abcdabcdabcd",
+            db_path=tmp_path / "memory.db",
+        )
+
+
+def test_run_agent_post_start_valueerror_is_not_resume_validation(tmp_path, monkeypatch):
+    """After checkpointer / invoke, ValueError must not become ResumeValidationError."""
+    db = tmp_path / "memory.db"
+    task = confirm_task(default_task_for_workload("chat_short", 2))
+    save_task(
+        task_id=task.task_id,
+        session_prefix="resume_",
+        thread_id="resume",
+        confirmed_task=task.model_dump(mode="json"),
+        status="confirmed",
+        db_path=db,
+    )
+
+    class _FakeGraph:
+        def get_state(self, config):
+            snap = MagicMock()
+            snap.values = {"already": True}  # skip prepare_initial_state
+            snap.next = ()
+            return snap
+
+        def invoke(self, state, config):
+            raise ValueError("simulated post-start failure")
+
+    monkeypatch.setattr(
+        "inferops.agent.graph.build_graph",
+        lambda *a, **k: _FakeGraph(),
+    )
+    monkeypatch.setattr(
+        "inferops.agent.graph.production_checkpointer",
+        lambda *a, **k: _NullCtx(),
+    )
+
+    llm = MagicMock()
+    with pytest.raises(ValueError, match="simulated post-start") as ei:
+        run_agent(None, llm, resume_task_id=task.task_id, db_path=db)
+    assert not isinstance(ei.value, ResumeValidationError)
+    msg = format_resume_failure("runtime", str(ei.value))
+    assert "No GPU budget was spent" not in msg
+    assert "may already have executed" in msg
+
+
+class _NullCtx:
+    def __enter__(self):
+        return MagicMock()
+
+    def __exit__(self, *exc):
+        return False

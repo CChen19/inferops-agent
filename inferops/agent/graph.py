@@ -325,6 +325,13 @@ def prepare_initial_state(
     state["started_at_s"] = time.time()
     if db_path is not None:
         state["memory_db_path"] = str(Path(db_path))
+        from inferops.memory.hardware import collect_hardware_info, fingerprint_from_hardware
+
+        hw = collect_hardware_info(
+            model_name=str(resolved.model_name or ""),
+            probe_nvidia=True,
+        )
+        state["hardware_fingerprint"] = fingerprint_from_hardware(hw)
     return state
 
 
@@ -388,17 +395,24 @@ def run_agent(
 
     Returns the final AgentState.
     """
+    from inferops.resume import ResumeValidationError
+
     db_file = Path(db_path)
     init_db(db_file)
 
     stored = get_task(resume_task_id, db_path=db_file) if resume_task_id else None
     if resume_task_id and stored is None:
-        raise ValueError(f"No persisted task found for task_id={resume_task_id!r}")
+        raise ResumeValidationError(
+            f"No persisted task found for task_id={resume_task_id!r}"
+        )
 
     if stored is not None:
         resolved_task = task_from_mapping(stored.confirmed_task)
         assert resolved_task is not None
-        require_confirmed(resolved_task)
+        try:
+            require_confirmed(resolved_task)
+        except ValueError as exc:
+            raise ResumeValidationError(str(exc)) from exc
         prefix = stored.session_prefix
         thread_id = stored.thread_id
         workload_name = resolved_task.workload.name
@@ -428,6 +442,7 @@ def run_agent(
     console.rule(f"[bold cyan]Agent: {workload_name}[/]  prefix={prefix}")
 
     # Build the graph before baseline so a persisted checkpoint can resume directly.
+    # After this point, ValueError must NOT become ResumeValidationError.
     with production_checkpointer(db_file) as checkpointer:
         graph = build_graph(
             llm,
