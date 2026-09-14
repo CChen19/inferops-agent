@@ -23,7 +23,6 @@ import chainlit as cl
 
 from inferops.agent.graph import build_graph, make_llm, prepare_initial_state
 from inferops.agent.intent import Intent, interpret_user_request
-from inferops.agent.state import WORKLOAD_PRIMARY_METRIC, primary_metric_of
 from inferops.memory.db import init_db
 from inferops.task import (
     ServiceControlMode,
@@ -260,9 +259,6 @@ async def _send_final_report(
     best = state.get("best_summary")
     baseline = state.get("baseline_summary")
     summaries = state.get("experiment_summaries", [])
-    metric = primary_metric_of(state) if state.get("optimization_task") else (
-        WORKLOAD_PRIMARY_METRIC.get(workload_name, "throughput_rps")
-    )
     report_path = ""
     task_dump = state.get("optimization_task")
 
@@ -276,6 +272,7 @@ async def _send_final_report(
             citations=_collect_citations(state),
             output_path=f"reports/{session_prefix}final_report.md",
             optimization_task=task_dump,
+            stop_reason=str(state.get("stop_reason") or ""),
         ))
         report_path = out.output_path
     except Exception as exc:
@@ -292,29 +289,28 @@ async def _send_final_report(
         f"**Report file:** `{report_path}`",
         "",
     ]
+    from inferops.decision import build_decision, render_decision_markdown
+    from inferops.task import format_task_conditions_markdown, task_from_mapping
+
     if task_dump:
-        from inferops.task import format_task_conditions_markdown, task_from_mapping
         task_obj = task_from_mapping(task_dump)
         if task_obj is not None:
             lines += format_task_conditions_markdown(task_obj)
 
-    if baseline and best:
-        improvement = best.get("vs_baseline_pct", 0)
-        icon = "🟢" if improvement > 5 else "🟡" if improvement > 0 else "🔴"
-        lines += [
-            "### Result",
-            "",
-            f"| | Baseline | Best found | Improvement |",
-            f"|---|---|---|---|",
-            f"| `{metric}` | {baseline.get(metric, baseline.get('throughput_rps', 0)):.3f} "
-            f"| {best.get(metric, best.get('throughput_rps', 0)):.3f} "
-            f"| {icon} {improvement:+.1f}% |",
-            f"| TTFT p99 | {baseline['ttft_p99_ms']:.1f}ms "
-            f"| {best['ttft_p99_ms']:.1f}ms | — |",
-            "",
-            f"**Best config experiment:** `{best['experiment_id']}`",
-            "",
-        ]
+    decision = build_decision(
+        baseline_summary=baseline,
+        best_summary=best,
+        experiment_summaries=summaries,
+        optimization_task=task_dump,
+        stop_reason=str(state.get("stop_reason") or ""),
+    )
+    lines += render_decision_markdown(decision)
+    lines.append("")
+
+    def _fmt(v: Any, spec: str) -> str:
+        if v is None:
+            return "n/a"
+        return format(float(v), spec)
 
     if summaries:
         lines += [
@@ -327,15 +323,12 @@ async def _send_final_report(
             lines.append(
                 f"| `{s['experiment_id']}` | {s.get('param_changed') or 'baseline'} "
                 f"| {s.get('value_changed', '')} "
-                f"| {s['throughput_rps']:.3f} "
-                f"| {s['ttft_p99_ms']:.1f}ms "
-                f"| {s['bottleneck']} "
-                f"| {s['vs_baseline_pct']:+.1f}% |"
+                f"| {_fmt(s.get('throughput_rps'), '.3f')} "
+                f"| {_fmt(s.get('ttft_p99_ms'), '.1f')}ms "
+                f"| {s.get('bottleneck', 'unknown')} "
+                f"| {_fmt(s.get('vs_baseline_pct'), '+.1f')}"
+                f"{'%' if s.get('vs_baseline_pct') is not None else ''} |"
             )
-
-    stop_reason = state.get("stop_reason", "")
-    if stop_reason:
-        lines += ["", f"**Stop reason:** {stop_reason}"]
 
     await cl.Message(content="\n".join(lines)).send()
 
