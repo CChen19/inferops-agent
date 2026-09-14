@@ -30,38 +30,40 @@ def _contract_rows(rows: list[dict]) -> list[dict]:
 
 def _tiny_fixture() -> HiddenResultFixture:
     """Default + unread high-score row + planner-target row (chunked prefill)."""
-    rows = _contract_rows([
-        {
-            "max_num_batched_tokens": 2048,
-            "enable_chunked_prefill": False,
-            "enable_prefix_caching": False,
-            "throughput_rps": 10.0,
-            "tokens_per_second": 1000.0,
-            "ttft_p99_ms": 210.0,
-            "e2e_p50_ms": 1000.0,
-            "bottleneck": "scheduling-bound",
-        },
-        {
-            "max_num_batched_tokens": 4096,
-            "enable_chunked_prefill": False,
-            "enable_prefix_caching": False,
-            "throughput_rps": 99.0,
-            "tokens_per_second": 9000.0,
-            "ttft_p99_ms": 50.0,
-            "e2e_p50_ms": 500.0,
-            "bottleneck": "compute-bound",
-        },
-        {
-            "max_num_batched_tokens": 2048,
-            "enable_chunked_prefill": True,
-            "enable_prefix_caching": False,
-            "throughput_rps": 12.0,
-            "tokens_per_second": 1200.0,
-            "ttft_p99_ms": 180.0,
-            "e2e_p50_ms": 950.0,
-            "bottleneck": "scheduling-bound",
-        },
-    ])
+    rows = _contract_rows(
+        [
+            {
+                "max_num_batched_tokens": 2048,
+                "enable_chunked_prefill": False,
+                "enable_prefix_caching": False,
+                "throughput_rps": 10.0,
+                "tokens_per_second": 1000.0,
+                "ttft_p99_ms": 210.0,
+                "e2e_p50_ms": 1000.0,
+                "bottleneck": "scheduling-bound",
+            },
+            {
+                "max_num_batched_tokens": 4096,
+                "enable_chunked_prefill": False,
+                "enable_prefix_caching": False,
+                "throughput_rps": 99.0,
+                "tokens_per_second": 9000.0,
+                "ttft_p99_ms": 50.0,
+                "e2e_p50_ms": 500.0,
+                "bottleneck": "compute-bound",
+            },
+            {
+                "max_num_batched_tokens": 2048,
+                "enable_chunked_prefill": True,
+                "enable_prefix_caching": False,
+                "throughput_rps": 12.0,
+                "tokens_per_second": 1200.0,
+                "ttft_p99_ms": 180.0,
+                "e2e_p50_ms": 950.0,
+                "bottleneck": "scheduling-bound",
+            },
+        ]
+    )
     return HiddenResultFixture.from_rows(rows)
 
 
@@ -86,11 +88,13 @@ def test_planner_observes_only_after_pick_not_unread_high_score():
     assert trial.config["max_num_batched_tokens"] != 4096
 
     tried = {fixture.search_space.config_key(r.config) for r in run.ledger.records}
-    high_key = fixture.search_space.config_key({
-        "max_num_batched_tokens": 4096,
-        "enable_chunked_prefill": False,
-        "enable_prefix_caching": False,
-    })
+    high_key = fixture.search_space.config_key(
+        {
+            "max_num_batched_tokens": 4096,
+            "enable_chunked_prefill": False,
+            "enable_prefix_caching": False,
+        }
+    )
     assert high_key not in tried
 
 
@@ -113,7 +117,8 @@ def test_planner_no_rag_skips_retrieval():
 
     mock_retrieve.assert_not_called()
     assert run.strategy_name == "planner_no_rag"
-    assert len(run.ledger.records) >= 1
+    assert len(run.ledger.records) == 2
+    assert [record.kind for record in run.ledger.records] == ["baseline", "trial"]
 
 
 def test_planner_rag_may_call_retrieval():
@@ -192,9 +197,10 @@ def test_run_fair_comparison_includes_planner_strategies():
 
 def test_planner_no_build_graph_or_benchmark():
     fixture = _tiny_fixture()
-    with patch("inferops.agent.graph.build_graph") as mock_build, patch(
-        "inferops.eval.real_graph.StubBenchmarkRecorder"
-    ) as mock_stub:
+    with (
+        patch("inferops.agent.graph.build_graph") as mock_build,
+        patch("inferops.eval.real_graph.StubBenchmarkRecorder") as mock_stub,
+    ):
         run_planner_rag_strategy(
             fixture,
             BudgetPolicy(total_slots=2),

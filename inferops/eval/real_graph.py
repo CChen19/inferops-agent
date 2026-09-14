@@ -14,7 +14,7 @@ import os
 import re
 import tempfile
 import uuid
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -33,6 +33,7 @@ from inferops.agent.state import (
     initial_state,
     is_promotable_summary,
 )
+from inferops.citations import sources_from_context
 from inferops.eval.judge import judge_trajectory
 from inferops.eval.metrics import (
     EfficiencyMetrics,
@@ -58,7 +59,11 @@ from inferops.schemas import (
     config_knobs,
     is_promotable,
 )
-from inferops.tools.propose_config import ProposeConfigInput, ProposeConfigOutput, propose_config_patch
+from inferops.tools.propose_config import (
+    ProposeConfigInput,
+    ProposeConfigOutput,
+    propose_config_patch,
+)
 from inferops.tools.run_benchmark import RunBenchmarkInput, RunBenchmarkOutput
 
 # Params the production planner / propose / run_benchmark allow.
@@ -137,6 +142,21 @@ def _scoped_memory_db(db_path: Path | None) -> Iterator[None]:
 # Scripted / fake LLM (offline deterministic)
 # ---------------------------------------------------------------------------
 
+SCRIPTED_KNOWLEDGE_CONTEXT = """\
+[source: chunked_prefill] §Scheduler
+Chunked prefill is a scheduler tuning option.
+
+[source: paged_attention] §KV cache
+Paged attention manages KV-cache blocks.
+
+[source: prefix_caching] §Prefix cache
+Prefix caching can reuse shared prompt prefixes.
+
+[source: vllm_scheduler] §Batching
+The scheduler controls batching and sequence concurrency.\
+"""
+
+
 def _hyp_json(analysis: str, hyps: list[dict[str, Any]]) -> str:
     return json.dumps({"analysis": analysis, "hypotheses": hyps})
 
@@ -169,78 +189,137 @@ class ScriptedBottleneckLLM:
             "compute-bound": [
                 _hyp_json(
                     "rps=15.0 with compute-bound bottleneck; raise batch tokens.",
-                    [{
-                        "param": "max_num_batched_tokens",
-                        "value": 4096,
-                        "rationale": (
-                            "rps=15.0 is below ceiling under compute-bound; "
-                            "larger batches saturate GPU [source: vllm_scheduler]"
-                        ),
-                    }],
+                    [
+                        {
+                            "param": "max_num_batched_tokens",
+                            "value": 4096,
+                            "rationale": (
+                                "rps=15.0 is below ceiling under compute-bound; "
+                                "larger batches saturate GPU [source: vllm_scheduler]"
+                            ),
+                        }
+                    ],
                 ),
                 _hyp_json(
                     "rps still compute-bound; try higher seq concurrency.",
-                    [{
-                        "param": "max_num_seqs",
-                        "value": 256,
-                        "rationale": (
-                            "rps=15.0 with concurrency headroom; "
-                            "more seqs [source: vllm_scheduler]"
-                        ),
-                    }],
+                    [
+                        {
+                            "param": "max_num_seqs",
+                            "value": 256,
+                            "rationale": (
+                                "rps=15.0 with concurrency headroom; "
+                                "more seqs [source: vllm_scheduler]"
+                            ),
+                        }
+                    ],
                 ),
             ],
             "scheduling-bound": [
                 _hyp_json(
                     "TTFT p99=210ms under scheduling-bound; enable chunked prefill.",
-                    [{
-                        "param": "enable_chunked_prefill",
-                        "value": True,
-                        "rationale": (
-                            "TTFT p99=210ms variance indicates scheduling-bound; "
-                            "chunked prefill interleaves decode [source: chunked_prefill]"
-                        ),
-                    }],
+                    [
+                        {
+                            "param": "enable_chunked_prefill",
+                            "value": True,
+                            "rationale": (
+                                "TTFT p99=210ms variance indicates scheduling-bound; "
+                                "chunked prefill interleaves decode [source: chunked_prefill]"
+                            ),
+                        }
+                    ],
                 ),
                 _hyp_json(
                     "still scheduling-bound; try prefix caching.",
-                    [{
-                        "param": "enable_prefix_caching",
-                        "value": True,
-                        "rationale": (
-                            "TTFT p99=210ms; prefix reuse helps queueing "
-                            "[source: prefix_caching]"
-                        ),
-                    }],
+                    [
+                        {
+                            "param": "enable_prefix_caching",
+                            "value": True,
+                            "rationale": (
+                                "TTFT p99=210ms; prefix reuse helps queueing "
+                                "[source: prefix_caching]"
+                            ),
+                        }
+                    ],
                 ),
             ],
             "memory-bound": [
                 _hyp_json(
                     "memory-bound; reduce concurrent sequences.",
-                    [{
-                        "param": "max_num_seqs",
-                        "value": 64,
-                        "rationale": (
-                            "rps=12.0 with memory-bound pressure; "
-                            "fewer seqs reduces KV [source: paged_attention]"
-                        ),
-                    }],
+                    [
+                        {
+                            "param": "max_num_seqs",
+                            "value": 64,
+                            "rationale": (
+                                "rps=12.0 with memory-bound pressure; "
+                                "fewer seqs reduces KV [source: paged_attention]"
+                            ),
+                        }
+                    ],
                 ),
             ],
             "kv-bound": [
                 _hyp_json(
                     "kv-bound; try prefix caching.",
-                    [{
-                        "param": "enable_prefix_caching",
-                        "value": True,
-                        "rationale": (
-                            "e2e_p50=1200ms under kv-bound; "
-                            "prefix caching reuses KV [source: prefix_caching]"
-                        ),
-                    }],
+                    [
+                        {
+                            "param": "enable_prefix_caching",
+                            "value": True,
+                            "rationale": (
+                                "e2e_p50=1200ms under kv-bound; "
+                                "prefix caching reuses KV [source: prefix_caching]"
+                            ),
+                        }
+                    ],
                 ),
             ],
         }
+
+    @staticmethod
+    def _ground_response(content: str, user_text: str) -> str:
+        """Attach citations using only evidence visible in this invocation."""
+        data = json.loads(content)
+        hypotheses = data.get("hypotheses", [])
+        if not hypotheses:
+            return content
+
+        metric_match = re.search(
+            r"run_id=(\S+)\s+rps=([+-]?(?:\d+(?:\.\d*)?|\.\d+))",
+            user_text,
+        )
+        sources = sorted(sources_from_context(user_text))
+        if metric_match is None:
+            # Production validation must reject this response when the eval
+            # prompt itself has no citable metric.
+            return content
+
+        run_id, raw_value = metric_match.groups()
+        source = sources[0] if sources else None
+        for hypothesis in hypotheses:
+            rationale = str(hypothesis.get("rationale", ""))
+            if source is None:
+                hypothesis["rationale"] = re.sub(
+                    r"\s*\[source:\s*[^\]\r\n]+?\s*\]",
+                    "",
+                    rationale,
+                    flags=re.IGNORECASE,
+                )
+            else:
+                hypothesis["rationale"] = re.sub(
+                    r"\[source:\s*[^\]\r\n]+?\s*\]",
+                    f"[source: {source}]",
+                    rationale,
+                    flags=re.IGNORECASE,
+                )
+            hypothesis["citations"] = {
+                "metric": {
+                    "run_id": run_id,
+                    "metric": "throughput_rps",
+                    "value": float(raw_value),
+                }
+            }
+            if source is not None:
+                hypothesis["citations"]["document"] = {"source": source}
+        return json.dumps(data)
 
     def invoke(self, messages: list[Any], **kwargs: Any) -> AIMessage:
         self.call_count += 1
@@ -259,14 +338,18 @@ class ScriptedBottleneckLLM:
             bottleneck = match.group(1).strip()
 
         if self.inject_illegal:
-            content = json.dumps({
-                "analysis": "rps=15.0; attempting an out-of-policy knob.",
-                "hypotheses": [{
-                    "param": "tensor_parallel_size",
-                    "value": 8,
-                    "rationale": "rps=15.0; illegal TP=8 [source: vllm_scheduler]",
-                }],
-            })
+            content = json.dumps(
+                {
+                    "analysis": "rps=15.0; attempting an out-of-policy knob.",
+                    "hypotheses": [
+                        {
+                            "param": "tensor_parallel_size",
+                            "value": 8,
+                            "rationale": "rps=15.0; illegal TP=8 [source: vllm_scheduler]",
+                        }
+                    ],
+                }
+            )
         else:
             queue = self._queues.get(bottleneck) or self._queues[self.default_bottleneck]
             if queue:
@@ -276,6 +359,7 @@ class ScriptedBottleneckLLM:
                     f"no remaining distinct hypotheses for {bottleneck}",
                     [],
                 )
+        content = self._ground_response(content, user_text)
         return AIMessage(content=content)
 
 
@@ -353,6 +437,7 @@ def _llm_boundary_label(llm: Any, mode: str = "") -> str:
 # Stub benchmark at tool boundary
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class StubBenchmarkRecorder:
     """Records every run_benchmark call; never touches real vLLM."""
@@ -370,11 +455,13 @@ class StubBenchmarkRecorder:
                 raise AssertionError(
                     f"Illegal param reached stub benchmark: {key}={inp.config_patch[key]}"
                 )
-        self.calls.append({
-            "experiment_id": inp.experiment_id,
-            "config_patch": dict(inp.config_patch),
-            "workload_name": inp.workload_name,
-        })
+        self.calls.append(
+            {
+                "experiment_id": inp.experiment_id,
+                "config_patch": dict(inp.config_patch),
+                "workload_name": inp.workload_name,
+            }
+        )
 
         overrides = dict(self.outcome_overrides.get(inp.experiment_id, {}))
         # Infer metrics from patch when no explicit override
@@ -592,6 +679,7 @@ def make_promotable_baseline_summary(
 # Core runner
 # ---------------------------------------------------------------------------
 
+
 def require_llm_credentials(backend: str = "openrouter") -> None:
     """Fail loudly when real-LLM mode lacks credentials (never silent pass)."""
     required = {
@@ -643,9 +731,20 @@ def run_real_planner_on_workload(
         state["current_bottleneck"] = bottleneck
         state["experiments_remaining"] = max(0, budget - 1)
 
-        # Eval-scoped Reflect wrapper only — production reflector_node heuristics
-        # stay untouched on master.
-        with patch("inferops.agent.graph.reflector_node", _eval_scoped_reflector):
+        # Eval-scoped wrappers only — production nodes and citation validation
+        # stay untouched. Scripted runs receive deterministic retrieved chunks.
+        retrieval_context = (
+            patch(
+                "inferops.agent.planner._retrieve_knowledge",
+                return_value=SCRIPTED_KNOWLEDGE_CONTEXT,
+            )
+            if isinstance(llm, ScriptedBottleneckLLM)
+            else nullcontext()
+        )
+        with (
+            patch("inferops.agent.graph.reflector_node", _eval_scoped_reflector),
+            retrieval_context,
+        ):
             graph = build_graph(llm)
             with tool_boundary_overrides(
                 run_benchmark_fn=recorder,
@@ -738,6 +837,7 @@ def run_real_graph_eval(
         require_llm_credentials(llm_backend)
         if llm is None:
             from inferops.agent.graph import make_llm
+
             llm = mark_live_llm(make_llm(backend=llm_backend, temperature=0.0))
         else:
             # Caller-supplied llm: only "live" if already trusted-marked.

@@ -36,7 +36,7 @@ from inferops.agent.reflector import reflector_node
 from inferops.agent.state import initial_state
 from inferops.bench_runner import BenchmarkError, OOMError
 from inferops.eval.measurement_goldens import promotable_stub_result
-from inferops.eval.real_graph import ScriptedBottleneckLLM
+from inferops.eval.real_graph import SCRIPTED_KNOWLEDGE_CONTEXT, ScriptedBottleneckLLM
 from inferops.metrics import DEFAULT_MIN_PAIRS, RepeatArm, RepeatPhase, is_confirmed_promotable
 from inferops.metrics.ledger import RunConditions
 from inferops.schemas import ExperimentValidityStatus, derive_status, is_promotable
@@ -120,6 +120,7 @@ def _best_identity(summary: Any) -> tuple[Any, Any]:
         return (None, None)
     return (summary.get("experiment_id"), summary.get("run_id"))
 
+
 CONDITIONS = RunConditions(
     workload_name="chat_short",
     num_requests=10,
@@ -157,8 +158,7 @@ class RecoveryGateResult:
             "### Recovery golden gate",
             "",
             f"- **passed**: `{self.passed}`",
-            f"- **gpu_status**: `{self.gpu_status}` "
-            "(GPU-not-run is not a pass by itself)",
+            f"- **gpu_status**: `{self.gpu_status}` (GPU-not-run is not a pass by itself)",
             f"- **tune_tip**: `{TUNE_TIP_SHA[:7]}`",
             f"- **cases**: {len(self.cases)}",
             "",
@@ -189,9 +189,7 @@ def load_catalog(root: str | Path | None = None) -> dict[str, Any]:
     path = fixture_dir(root) / "catalog.json"
     data = json.loads(path.read_text(encoding="utf-8"))
     if data.get("schema") != GOLDEN_SCHEMA:
-        raise ValueError(
-            f"golden catalog schema {data.get('schema')!r} is not {GOLDEN_SCHEMA!r}"
-        )
+        raise ValueError(f"golden catalog schema {data.get('schema')!r} is not {GOLDEN_SCHEMA!r}")
     return data
 
 
@@ -229,15 +227,12 @@ def _refuse_invented_gpu_numbers(spec: dict[str, Any]) -> list[str]:
     queued = gpu_goldens_queued()
     if sampled and not queued:
         failures.append(
-            f"{spec.get('id')}: gpu_sampled=true but {GPU_QUEUE_ENV} is unset; "
-            "GPU-not-run ≠ pass"
+            f"{spec.get('id')}: gpu_sampled=true but {GPU_QUEUE_ENV} is unset; GPU-not-run ≠ pass"
         )
     if sampled and queued:
         return failures
     for path, value in _walk_numeric_gpu_claims(spec):
-        failures.append(
-            f"{spec.get('id')}: invented {path}={value!r} (gpu_sampled=false)"
-        )
+        failures.append(f"{spec.get('id')}: invented {path}={value!r} (gpu_sampled=false)")
     return failures
 
 
@@ -283,9 +278,7 @@ def _summary(
 
 def _state_with_prior_success() -> dict[str, Any]:
     state = initial_state("chat_short", "sess_", max_experiments=6)
-    baseline = _summary(
-        eid="sess_baseline", param=None, value=None, vs=0.0, run_id="bb" * 16
-    )
+    baseline = _summary(eid="sess_baseline", param=None, value=None, vs=0.0, run_id="bb" * 16)
     prior = _summary(eid="sess_prior_ok", param="max_num_seqs", value=256, vs=12.0)
     state["baseline_summary"] = baseline
     state["best_summary"] = baseline
@@ -371,14 +364,10 @@ def comparable_terminal(state: dict[str, Any]) -> dict[str, Any]:
                 "experiment_id": step.get("experiment_id"),
                 "run_id": step.get("run_id"),
                 "validity_status": step.get("validity_status"),
-                "promoted_to_best": bool(
-                    (step.get("result") or {}).get("promoted_to_best")
-                ),
+                "promoted_to_best": bool((step.get("result") or {}).get("promoted_to_best")),
             }
         )
-    reflect_steps = [
-        s for s in (state.get("trajectory") or []) if s.get("node") == "reflector"
-    ]
+    reflect_steps = [s for s in (state.get("trajectory") or []) if s.get("node") == "reflector"]
     cited = list((reflect_steps[-1] or {}).get("cited_run_ids") or []) if reflect_steps else []
     return {
         "stop_reason": state.get("stop_reason") or "",
@@ -448,11 +437,7 @@ def _no_false_promote(
             failures.append(f"{golden_id}: trajectory promoted_to_best")
     # Fail-closed: a search winner / partial campaign must not become best
     # even when confirmed_promotable stays false (do not loosen ⑤).
-    anchor = (
-        starting_best
-        if starting_best is not None
-        else (state.get("baseline_summary") or {})
-    )
+    anchor = starting_best if starting_best is not None else (state.get("baseline_summary") or {})
     if _best_identity(best) != _best_identity(anchor):
         kind = "search winner / partial campaign"
         if getattr(decision, "search_winner", False):
@@ -487,12 +472,16 @@ def _exec_then_reflect(state: dict[str, Any], exec_patch: dict[str, Any]) -> dic
 # Drivers — production nodes + Tune ⑧ entrypoints, tool-boundary stubs only
 # ---------------------------------------------------------------------------
 
+
 def _drive_propose_tool_error() -> dict[str, Any]:
     state = _state_with_prior_success()
     state["last_result"] = object()
-    with patch("inferops.agent.executor.get_result_by_id", return_value=None), patch(
-        "inferops.tools.propose_config.propose_config_patch",
-        side_effect=RuntimeError("propose backend down"),
+    with (
+        patch("inferops.agent.executor.get_result_by_id", return_value=None),
+        patch(
+            "inferops.tools.propose_config.propose_config_patch",
+            side_effect=RuntimeError("propose backend down"),
+        ),
     ):
         exec_patch = executor_node(state)
     final = _exec_then_reflect(state, exec_patch)
@@ -507,11 +496,13 @@ def _drive_propose_tool_error() -> dict[str, Any]:
 
 def _drive_benchmark_no_result() -> dict[str, Any]:
     state = _pending_search_state()
-    with patch("inferops.agent.executor.get_result_by_id", return_value=None), patch(
-        "inferops.tools.propose_config.propose_config_patch"
-    ), patch(
-        "inferops.agent.executor.run_benchmark",
-        side_effect=BenchmarkError("no contract row"),
+    with (
+        patch("inferops.agent.executor.get_result_by_id", return_value=None),
+        patch("inferops.tools.propose_config.propose_config_patch"),
+        patch(
+            "inferops.agent.executor.run_benchmark",
+            side_effect=BenchmarkError("no contract row"),
+        ),
     ):
         exec_patch = executor_node(state)
     final = _exec_then_reflect(state, exec_patch)
@@ -541,11 +532,13 @@ def _drive_benchmark_error_failed_result() -> dict[str, Any]:
         state["baseline_summary"],
         _summary(eid="sess_prior_ok", param="max_num_seqs", value=256, vs=12.0),
     ]
-    with patch("inferops.agent.executor.get_result_by_id", return_value=None), patch(
-        "inferops.tools.propose_config.propose_config_patch"
-    ), patch(
-        "inferops.agent.executor.run_benchmark",
-        side_effect=OOMError("vLLM OOM during startup", result=failed),
+    with (
+        patch("inferops.agent.executor.get_result_by_id", return_value=None),
+        patch("inferops.tools.propose_config.propose_config_patch"),
+        patch(
+            "inferops.agent.executor.run_benchmark",
+            side_effect=OOMError("vLLM OOM during startup", result=failed),
+        ),
     ):
         exec_patch = executor_node(state)
     final = _exec_then_reflect(state, exec_patch)
@@ -607,11 +600,13 @@ def _drive_prior_success_current_fail() -> dict[str, Any]:
     state = _state_with_prior_success()
     state["last_result"] = stub
     prior = state["experiment_summaries"][-1]
-    with patch("inferops.agent.executor.get_result_by_id", return_value=None), patch(
-        "inferops.tools.propose_config.propose_config_patch"
-    ), patch(
-        "inferops.agent.executor.run_benchmark",
-        side_effect=RuntimeError("bench exploded"),
+    with (
+        patch("inferops.agent.executor.get_result_by_id", return_value=None),
+        patch("inferops.tools.propose_config.propose_config_patch"),
+        patch(
+            "inferops.agent.executor.run_benchmark",
+            side_effect=RuntimeError("bench exploded"),
+        ),
     ):
         exec_patch = executor_node(state)
     final = _exec_then_reflect(state, exec_patch)
@@ -637,15 +632,19 @@ def _drive_ack_lost_unconfirmable() -> dict[str, Any]:
         store[result.experiment_id] = result
 
     state = _pending_search_state()
-    with tool_boundary_overrides(
-        run_benchmark_fn=_bench,
-        propose_config_fn=lambda _inp: None,
-    ), patch(
-        "inferops.agent.executor.get_result_by_id",
-        side_effect=lambda e: store.get(e),
-    ), patch(
-        "inferops.agent.executor.save_result",
-        side_effect=_save,
+    with (
+        tool_boundary_overrides(
+            run_benchmark_fn=_bench,
+            propose_config_fn=lambda _inp: None,
+        ),
+        patch(
+            "inferops.agent.executor.get_result_by_id",
+            side_effect=lambda e: store.get(e),
+        ),
+        patch(
+            "inferops.agent.executor.save_result",
+            side_effect=_save,
+        ),
     ):
         exec_patch = executor_node(state)
         resume = executor_node(state)
@@ -670,15 +669,19 @@ def _drive_ack_lost_save_failure() -> dict[str, Any]:
         raise AckLostError("vLLM/startup succeeded but receipt/ack lost")
 
     state = _pending_search_state()
-    with tool_boundary_overrides(
-        run_benchmark_fn=_bench,
-        propose_config_fn=lambda _inp: None,
-    ), patch(
-        "inferops.agent.executor.get_result_by_id",
-        return_value=None,
-    ), patch(
-        "inferops.agent.executor.save_result",
-        side_effect=RuntimeError("sqlite locked"),
+    with (
+        tool_boundary_overrides(
+            run_benchmark_fn=_bench,
+            propose_config_fn=lambda _inp: None,
+        ),
+        patch(
+            "inferops.agent.executor.get_result_by_id",
+            return_value=None,
+        ),
+        patch(
+            "inferops.agent.executor.save_result",
+            side_effect=RuntimeError("sqlite locked"),
+        ),
     ):
         exec_patch = executor_node(state)
     final = _exec_then_reflect(state, exec_patch)
@@ -695,13 +698,16 @@ def _drive_trajectory_audit_executor_reflect() -> dict[str, Any]:
     """Executor + Reflect carry TRAJECTORY_AUDIT_FIELDS; planner must not."""
     state = _pending_search_state()
     state["remeasure_count"] = 1
-    with patch("inferops.agent.executor.get_result_by_id", return_value=None), patch(
-        "inferops.tools.propose_config.propose_config_patch"
-    ), patch(
-        "inferops.agent.executor.run_benchmark",
-        side_effect=AckLostError("receipt lost"),
-    ), patch(
-        "inferops.agent.executor.save_result",
+    with (
+        patch("inferops.agent.executor.get_result_by_id", return_value=None),
+        patch("inferops.tools.propose_config.propose_config_patch"),
+        patch(
+            "inferops.agent.executor.run_benchmark",
+            side_effect=AckLostError("receipt lost"),
+        ),
+        patch(
+            "inferops.agent.executor.save_result",
+        ),
     ):
         exec_patch = executor_node(state)
     final = _exec_then_reflect(state, exec_patch)
@@ -741,9 +747,7 @@ def _graph_store(template: Any) -> tuple[dict[str, Any], Any, list[str]]:
         calls.append(inp.experiment_id)
         rps = 2.0 if not inp.config_patch else 2.4
         rid = f"{inp.experiment_id}-rid"
-        result = _ledger_backed(
-            template, experiment_id=inp.experiment_id, run_id=rid, rps=rps
-        )
+        result = _ledger_backed(template, experiment_id=inp.experiment_id, run_id=rid, rps=rps)
         store[inp.experiment_id] = result
         return RunBenchmarkOutput(
             experiment_id=inp.experiment_id,
@@ -804,25 +808,32 @@ def _run_production_graph(
 
     llm = ScriptedBottleneckLLM(default_bottleneck="compute-bound")
     checkpointer = MemorySaver()
-    graph = build_graph(
-        llm, checkpointer=checkpointer, interrupt_before=interrupt_before
-    )
+    graph = build_graph(llm, checkpointer=checkpointer, interrupt_before=interrupt_before)
     config = graph_invoke_config("sess_")
     start = _graph_start_state()
 
     def _invoke(payload: Any) -> Any:
-        with tool_boundary_overrides(
-            run_benchmark_fn=bench,
-            propose_config_fn=lambda _inp: None,
-        ), patch(
-            "inferops.agent.executor.get_result_by_id",
-            side_effect=lambda e: store.get(e),
-        ), patch(
-            "inferops.agent.executor.analyze_bottleneck",
-            return_value=MagicMock(bottleneck="compute-bound"),
-        ), patch(
-            "inferops.agent.executor.compare_experiments",
-            return_value=MagicMock(delta_pct=20.0),
+        with (
+            tool_boundary_overrides(
+                run_benchmark_fn=bench,
+                propose_config_fn=lambda _inp: None,
+            ),
+            patch(
+                "inferops.agent.executor.get_result_by_id",
+                side_effect=lambda e: store.get(e),
+            ),
+            patch(
+                "inferops.agent.executor.analyze_bottleneck",
+                return_value=MagicMock(bottleneck="compute-bound"),
+            ),
+            patch(
+                "inferops.agent.executor.compare_experiments",
+                return_value=MagicMock(delta_pct=20.0),
+            ),
+            patch(
+                "inferops.agent.planner._retrieve_knowledge",
+                return_value=SCRIPTED_KNOWLEDGE_CONTEXT,
+            ),
         ):
             return graph.invoke(payload, config)
 
@@ -879,18 +890,23 @@ def _drive_post_persist_pre_commit() -> dict[str, Any]:
         raise KeyboardInterrupt("persist-then-interrupt")
 
     state = _pending_search_state()
-    with tool_boundary_overrides(
-        run_benchmark_fn=_bench,
-        propose_config_fn=lambda _inp: None,
-    ), patch(
-        "inferops.agent.executor.get_result_by_id",
-        side_effect=lambda e: store.get(e),
-    ), patch(
-        "inferops.agent.executor.analyze_bottleneck",
-        return_value=MagicMock(bottleneck="compute-bound"),
-    ), patch(
-        "inferops.agent.executor.compare_experiments",
-        return_value=MagicMock(delta_pct=19.0),
+    with (
+        tool_boundary_overrides(
+            run_benchmark_fn=_bench,
+            propose_config_fn=lambda _inp: None,
+        ),
+        patch(
+            "inferops.agent.executor.get_result_by_id",
+            side_effect=lambda e: store.get(e),
+        ),
+        patch(
+            "inferops.agent.executor.analyze_bottleneck",
+            return_value=MagicMock(bottleneck="compute-bound"),
+        ),
+        patch(
+            "inferops.agent.executor.compare_experiments",
+            return_value=MagicMock(delta_pct=19.0),
+        ),
     ):
         try:
             executor_node(state)
@@ -926,9 +942,7 @@ def _drive_confirm_persist_resume() -> dict[str, Any]:
         calls.append(inp.experiment_id)
         rps = 2.0 if not inp.config_patch else 2.4
         rid = f"{inp.experiment_id}-rid"
-        result = _ledger_backed(
-            template, experiment_id=inp.experiment_id, run_id=rid, rps=rps
-        )
+        result = _ledger_backed(template, experiment_id=inp.experiment_id, run_id=rid, rps=rps)
         store[inp.experiment_id] = result
         if len(calls) == crash_after:
             raise KeyboardInterrupt("mid-confirm persist")
@@ -967,12 +981,15 @@ def _drive_confirm_persist_resume() -> dict[str, Any]:
         remasure_count=1,
     )
 
-    with tool_boundary_overrides(
-        run_benchmark_fn=bench,
-        propose_config_fn=lambda _inp: None,
-    ), patch(
-        "inferops.agent.executor.get_result_by_id",
-        side_effect=lambda e: store.get(e),
+    with (
+        tool_boundary_overrides(
+            run_benchmark_fn=bench,
+            propose_config_fn=lambda _inp: None,
+        ),
+        patch(
+            "inferops.agent.executor.get_result_by_id",
+            side_effect=lambda e: store.get(e),
+        ),
     ):
         try:
             executor_node(state)
@@ -1041,9 +1058,7 @@ def evaluate_golden(spec: dict[str, Any]) -> GoldenCaseResult:
     if spec.get("gpu_sampled") is True and not gpu_goldens_queued():
         failures.append(f"{golden_id}: GPU-not-run ≠ pass")
     if (spec.get("expect") or {}).get("confirmed_promotable") is True:
-        failures.append(
-            f"{golden_id}: this thin set must not claim confirmed_promotable=true"
-        )
+        failures.append(f"{golden_id}: this thin set must not claim confirmed_promotable=true")
 
     driver_name = str(spec.get("driver") or golden_id)
     driver = DRIVERS.get(driver_name)
@@ -1063,11 +1078,7 @@ def evaluate_golden(spec: dict[str, Any]) -> GoldenCaseResult:
     state = payload["state"]
     terminal = comparable_terminal(state)
     expect = spec.get("expect") or {}
-    failures.extend(
-        _no_false_promote(
-            state, golden_id, starting_best=payload.get("starting_best")
-        )
-    )
+    failures.extend(_no_false_promote(state, golden_id, starting_best=payload.get("starting_best")))
 
     exec_patch = payload.get("exec_patch") or {}
     event = exec_patch.get("last_recovery") or state.get("last_recovery")
@@ -1086,8 +1097,7 @@ def evaluate_golden(spec: dict[str, Any]) -> GoldenCaseResult:
                 expected_code = CODE_ACK_LOST
             if event.get("code") != expected_code:
                 failures.append(
-                    f"{golden_id}: recovery.code={event.get('code')!r}, "
-                    f"expected {expected_code!r}"
+                    f"{golden_id}: recovery.code={event.get('code')!r}, expected {expected_code!r}"
                 )
         if event and "result_persisted" in expect:
             if bool(event.get("result_persisted")) != bool(expect["result_persisted"]):
@@ -1124,9 +1134,7 @@ def evaluate_golden(spec: dict[str, Any]) -> GoldenCaseResult:
     if "next_action" in expect and state.get("next_action") != expect["next_action"]:
         # Graph stop paths use stop_reason; node paths use next_action.
         if expect.get("next_action_or_stop"):
-            if state.get("next_action") != expect["next_action"] and not state.get(
-                "should_stop"
-            ):
+            if state.get("next_action") != expect["next_action"] and not state.get("should_stop"):
                 failures.append(
                     f"{golden_id}: next_action={state.get('next_action')!r} "
                     f"and should_stop={state.get('should_stop')}"
@@ -1174,17 +1182,10 @@ def evaluate_golden(spec: dict[str, Any]) -> GoldenCaseResult:
             )
         if last is not None and is_promotable(last):
             failures.append(f"{golden_id}: unconfirmable row became is_promotable")
-        summaries = exec_patch.get("experiment_summaries") or state.get(
-            "experiment_summaries"
-        )
+        summaries = exec_patch.get("experiment_summaries") or state.get("experiment_summaries")
         last_summary = (summaries or [])[-1] if summaries else None
-        if (
-            last_summary is None
-            or last_summary.get("validity_status") != "insufficient_evidence"
-        ):
-            failures.append(
-                f"{golden_id}: unconfirmable summary is not insufficient_evidence"
-            )
+        if last_summary is None or last_summary.get("validity_status") != "insufficient_evidence":
+            failures.append(f"{golden_id}: unconfirmable summary is not insufficient_evidence")
         if last is not None and (
             last.gpu_utilization_pct is not None or last.gpu_memory_used_gb is not None
         ):
@@ -1202,18 +1203,14 @@ def evaluate_golden(spec: dict[str, Any]) -> GoldenCaseResult:
         refl_steps = [s for s in traj if s.get("node") == "reflector"]
         plan_steps = [s for s in traj if s.get("node") == "planner"]
         if not exec_steps or not refl_steps:
-            failures.append(
-                f"{golden_id}: trajectory missing executor/reflector for audit fields"
-            )
+            failures.append(f"{golden_id}: trajectory missing executor/reflector for audit fields")
         for label, step in (
             ("executor", exec_steps[-1] if exec_steps else {}),
             ("reflector", refl_steps[-1] if refl_steps else {}),
         ):
             missing = [key for key in TRAJECTORY_AUDIT_FIELDS if key not in step]
             if missing:
-                failures.append(
-                    f"{golden_id}: {label} missing TRAJECTORY_AUDIT_FIELDS {missing}"
-                )
+                failures.append(f"{golden_id}: {label} missing TRAJECTORY_AUDIT_FIELDS {missing}")
         for step in plan_steps:
             present = [key for key in TRAJECTORY_AUDIT_FIELDS if key in step]
             if present:
@@ -1235,8 +1232,7 @@ def evaluate_golden(spec: dict[str, Any]) -> GoldenCaseResult:
         )
         if latest is not None:
             failures.append(
-                f"{golden_id}: Reflect latest is stale prior success "
-                f"{latest.get('experiment_id')}"
+                f"{golden_id}: Reflect latest is stale prior success {latest.get('experiment_id')}"
             )
         prior = payload.get("prior") or {}
         cited = terminal["reflect_cited_run_ids"]
@@ -1244,7 +1240,11 @@ def evaluate_golden(spec: dict[str, Any]) -> GoldenCaseResult:
         # confirmation bind must be empty and latest must not be that row.
         if state.get("confirmation_decision") is not None:
             failures.append(f"{golden_id}: stale confirmation_decision survived")
-        if prior.get("run_id") and latest is not None and latest.get("run_id") == prior.get("run_id"):
+        if (
+            prior.get("run_id")
+            and latest is not None
+            and latest.get("run_id") == prior.get("run_id")
+        ):
             failures.append(f"{golden_id}: Reflect cited prior success as current")
         notes.append(f"cited_run_ids={cited}")
 
@@ -1282,9 +1282,7 @@ def evaluate_golden(spec: dict[str, Any]) -> GoldenCaseResult:
         if len(search_calls) != 1:
             failures.append(f"{golden_id}: expected one search tool call, got {calls}")
         if confirm_calls:
-            failures.append(
-                f"{golden_id}: unexpected confirm_ tool calls {confirm_calls}"
-            )
+            failures.append(f"{golden_id}: unexpected confirm_ tool calls {confirm_calls}")
 
     confirm_persist = payload.get("confirm_persist")
     if confirm_persist:
@@ -1299,15 +1297,12 @@ def evaluate_golden(spec: dict[str, Any]) -> GoldenCaseResult:
         expected_slot = confirm_persist.get("expected_slot")
         if expected_slot != "sess_confirm_max_num_batched_tokens_4096_r1_c1":
             failures.append(
-                f"{golden_id}: Tune confirmation_slot_experiment_id drifted "
-                f"{expected_slot!r}"
+                f"{golden_id}: Tune confirmation_slot_experiment_id drifted {expected_slot!r}"
             )
         if calls[:2] != first:
             failures.append(f"{golden_id}: confirm persist-resume did not reuse first slots")
         if len(calls) != expected_slots or len(set(calls)) != expected_slots:
-            failures.append(
-                f"{golden_id}: confirm resume duplicate/missing slots {calls}"
-            )
+            failures.append(f"{golden_id}: confirm resume duplicate/missing slots {calls}")
         if resume.get("experiments_remaining") != confirm_persist["pre_budget"] - 1:
             failures.append(
                 f"{golden_id}: confirm campaign budget not charged once "
@@ -1322,9 +1317,7 @@ def evaluate_golden(spec: dict[str, Any]) -> GoldenCaseResult:
         after = int(state["experiments_remaining"])
         debit = 0 if expect.get("budget_consumed") is False else 1
         if after != before - debit:
-            failures.append(
-                f"{golden_id}: budget {before}→{after}, expected debit {debit}"
-            )
+            failures.append(f"{golden_id}: budget {before}→{after}, expected debit {debit}")
 
     if golden_id == "propose_tool_error" and "experiments_remaining" in exec_patch:
         failures.append(f"{golden_id}: propose reject consumed budget")
@@ -1340,9 +1333,7 @@ def evaluate_golden(spec: dict[str, Any]) -> GoldenCaseResult:
             "summary_run_ids",
         ):
             if t1[key] != t2[key]:
-                failures.append(
-                    f"{golden_id}: re-resume {key} {t1[key]!r} != {t2[key]!r}"
-                )
+                failures.append(f"{golden_id}: re-resume {key} {t1[key]!r} != {t2[key]!r}")
         c1 = list(payload["first"]["calls"] or [])
         c2 = list(payload["second"]["calls"] or [])
         if c1 != c2 or len(c2) != 1:
@@ -1353,22 +1344,17 @@ def evaluate_golden(spec: dict[str, Any]) -> GoldenCaseResult:
         tr = comparable_terminal(payload["resumed"]["state"])
         missing_fields = [k for k in RESUME_EQUIVALENCE_FIELDS if k not in tu or k not in tr]
         if missing_fields:
-            failures.append(
-                f"{golden_id}: comparable_terminal missing {missing_fields}"
-            )
+            failures.append(f"{golden_id}: comparable_terminal missing {missing_fields}")
         extra = sorted((set(tu) | set(tr)) - set(RESUME_EQUIVALENCE_FIELDS))
         if extra:
             failures.append(
-                f"{golden_id}: comparable_terminal grew {extra}; "
-                "update RESUME_EQUIVALENCE_FIELDS"
+                f"{golden_id}: comparable_terminal grew {extra}; update RESUME_EQUIVALENCE_FIELDS"
             )
         for key in RESUME_EQUIVALENCE_FIELDS:
             if key == "trajectory_identity":
                 continue
             if tu.get(key) != tr.get(key):
-                failures.append(
-                    f"{golden_id}: U vs R {key} {tu.get(key)!r} != {tr.get(key)!r}"
-                )
+                failures.append(f"{golden_id}: U vs R {key} {tu.get(key)!r} != {tr.get(key)!r}")
         u_traj = [
             tuple(row.get(k) for k in TRAJECTORY_IDENTITY_KEYS)
             for row in tu.get("trajectory_identity") or []
@@ -1382,21 +1368,22 @@ def evaluate_golden(spec: dict[str, Any]) -> GoldenCaseResult:
             return [row for row in rows if row[1] != "interrupt"]
 
         if _without_interrupt(u_traj) != _without_interrupt(r_traj):
-            failures.append(
-                f"{golden_id}: U vs R trajectory_identity {u_traj} != {r_traj}"
-            )
+            failures.append(f"{golden_id}: U vs R trajectory_identity {u_traj} != {r_traj}")
         notes.append(f"U.stop={tu['stop_reason']!r} R.stop={tr['stop_reason']!r}")
 
     if expect.get("week1_gate_closed"):
         stub = promotable_stub_result()
         if not is_promotable(stub):
             failures.append(f"{golden_id}: loosened is_promotable on valid stub")
-        if derive_status(
-            evidence=stub.config_evidence,
-            actual_config=stub.actual_config,
-            requested_config=stub.requested_config,
-            successful_requests=stub.successful_requests,
-        ).value != "valid":
+        if (
+            derive_status(
+                evidence=stub.config_evidence,
+                actual_config=stub.actual_config,
+                requested_config=stub.requested_config,
+                successful_requests=stub.successful_requests,
+            ).value
+            != "valid"
+        ):
             failures.append(f"{golden_id}: derive_status loosened")
 
     notes.append(
@@ -1429,26 +1416,21 @@ def recovery_golden_gate(
             f"(catalog.tune_contract.status={contract.get('status')!r})"
         )
     if contract.get("tip_sha") != TUNE_TIP_SHA:
-        failures.append(
-            f"tune tip_sha {contract.get('tip_sha')!r} != frozen {TUNE_TIP_SHA!r}"
-        )
+        failures.append(f"tune tip_sha {contract.get('tip_sha')!r} != frozen {TUNE_TIP_SHA!r}")
     if contract.get("master_sha") not in (None, TUNE_MASTER_SHA):
         failures.append(
             f"tune master_sha {contract.get('master_sha')!r} != frozen {TUNE_MASTER_SHA!r}"
         )
     if catalog.get("gpu_queued") and gpu_status != "queued":
         failures.append(
-            "catalog.gpu_queued=true but GPU goldens were not queued; "
-            "GPU-not-run ≠ pass"
+            "catalog.gpu_queued=true but GPU goldens were not queued; GPU-not-run ≠ pass"
         )
     if gpu_status == "not_run" and catalog.get("cpu_only") is not True:
         failures.append("CPU-only catalog required while GPU is not queued")
 
     shrunk = catalog_shrunk_below_floor(catalog)
     if shrunk:
-        failures.append(
-            f"catalog.required_ids shrinks below REQUIRED_GOLDEN_IDS floor: {shrunk}"
-        )
+        failures.append(f"catalog.required_ids shrinks below REQUIRED_GOLDEN_IDS floor: {shrunk}")
     required = required_ids_floor(catalog)
     specs = load_golden_specs(root)
     by_id = {str(spec.get("id")): spec for spec in specs}
@@ -1457,11 +1439,7 @@ def recovery_golden_gate(
         failures.append(f"required goldens missing: {missing}")
     if not specs:
         failures.append("GPU-not-run ≠ pass: no CPU goldens evaluated")
-    skipped_ids = [
-        gid
-        for gid, spec in by_id.items()
-        if spec.get("skip") or spec.get("skipped")
-    ]
+    skipped_ids = [gid for gid, spec in by_id.items() if spec.get("skip") or spec.get("skipped")]
     if skipped_ids:
         failures.append(f"skipped fixture set is not a pass: {skipped_ids}")
 

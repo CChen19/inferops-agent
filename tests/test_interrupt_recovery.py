@@ -79,6 +79,7 @@ def _assert_not_confirmed_promoted(patch: dict) -> None:
 # Recovery contract + latest-selection
 # ---------------------------------------------------------------------------
 
+
 def test_recovery_event_has_required_fields_only_no_metrics_schema():
     event = recovery_event(
         experiment_id="sess_x",
@@ -124,6 +125,7 @@ def test_current_attempt_latest_ignores_stale_prior_success():
 # Propose rejection
 # ---------------------------------------------------------------------------
 
+
 def test_propose_rejection_emits_recovery_and_does_not_promote():
     state = _state_with_candidate()
     prior = state["experiment_summaries"][-1]
@@ -135,9 +137,12 @@ def test_propose_rejection_emits_recovery_and_does_not_promote():
     state["hypotheses"][0]["experiment_id"] = None
     state["experiment_summaries"] = [state["baseline_summary"], prior]
 
-    with patch("inferops.agent.executor.get_result_by_id", return_value=None), patch(
-        "inferops.tools.propose_config.propose_config_patch",
-        side_effect=ValueError("max_num_batched_tokens=99999 outside safe range"),
+    with (
+        patch("inferops.agent.executor.get_result_by_id", return_value=None),
+        patch(
+            "inferops.tools.propose_config.propose_config_patch",
+            side_effect=ValueError("max_num_batched_tokens=99999 outside safe range"),
+        ),
     ):
         exec_patch = executor_node(state)
 
@@ -168,6 +173,7 @@ def test_propose_rejection_emits_recovery_and_does_not_promote():
 # Generic benchmark exception (no result) + stale prior success
 # ---------------------------------------------------------------------------
 
+
 def test_generic_benchmark_exception_does_not_forge_or_read_stale_success(result_b):
     state = _state_with_candidate(vs=19.0, run_id=result_b.run_id)
     state["last_result"] = result_b
@@ -179,11 +185,13 @@ def test_generic_benchmark_exception_does_not_forge_or_read_stale_success(result
     prior = state["experiment_summaries"][-1]
     assert prior["validity_status"] == "valid"
 
-    with patch("inferops.agent.executor.get_result_by_id", return_value=None), patch(
-        "inferops.tools.propose_config.propose_config_patch"
-    ), patch(
-        "inferops.agent.executor.run_benchmark",
-        side_effect=RuntimeError("bench exploded"),
+    with (
+        patch("inferops.agent.executor.get_result_by_id", return_value=None),
+        patch("inferops.tools.propose_config.propose_config_patch"),
+        patch(
+            "inferops.agent.executor.run_benchmark",
+            side_effect=RuntimeError("bench exploded"),
+        ),
     ):
         exec_patch = executor_node(state)
 
@@ -214,19 +222,23 @@ def test_generic_benchmark_exception_does_not_forge_or_read_stale_success(result
 
 def test_keyboardinterrupt_and_systemexit_are_not_swallowed_as_success():
     state = _pending_search_state()
-    with patch("inferops.agent.executor.get_result_by_id", return_value=None), patch(
-        "inferops.tools.propose_config.propose_config_patch"
-    ), patch(
-        "inferops.agent.executor.run_benchmark",
-        side_effect=KeyboardInterrupt("user"),
+    with (
+        patch("inferops.agent.executor.get_result_by_id", return_value=None),
+        patch("inferops.tools.propose_config.propose_config_patch"),
+        patch(
+            "inferops.agent.executor.run_benchmark",
+            side_effect=KeyboardInterrupt("user"),
+        ),
     ):
         with pytest.raises(KeyboardInterrupt):
             executor_node(state)
-    with patch("inferops.agent.executor.get_result_by_id", return_value=None), patch(
-        "inferops.tools.propose_config.propose_config_patch"
-    ), patch(
-        "inferops.agent.executor.run_benchmark",
-        side_effect=SystemExit(2),
+    with (
+        patch("inferops.agent.executor.get_result_by_id", return_value=None),
+        patch("inferops.tools.propose_config.propose_config_patch"),
+        patch(
+            "inferops.agent.executor.run_benchmark",
+            side_effect=SystemExit(2),
+        ),
     ):
         with pytest.raises(SystemExit):
             executor_node(state)
@@ -238,6 +250,7 @@ def test_keyboardinterrupt_and_systemexit_are_not_swallowed_as_success():
 # ---------------------------------------------------------------------------
 # BenchmarkError (persisted failed contract row)
 # ---------------------------------------------------------------------------
+
 
 def test_benchmark_error_keeps_persisted_row_and_does_not_promote(result_b):
     failed = result_b.model_copy(
@@ -258,11 +271,13 @@ def test_benchmark_error_keeps_persisted_row_and_does_not_promote(result_b):
     ]
     state["last_result"] = result_b
 
-    with patch("inferops.agent.executor.get_result_by_id", return_value=None), patch(
-        "inferops.tools.propose_config.propose_config_patch"
-    ), patch(
-        "inferops.agent.executor.run_benchmark",
-        side_effect=OOMError("vLLM OOM during startup", result=failed),
+    with (
+        patch("inferops.agent.executor.get_result_by_id", return_value=None),
+        patch("inferops.tools.propose_config.propose_config_patch"),
+        patch(
+            "inferops.agent.executor.run_benchmark",
+            side_effect=OOMError("vLLM OOM during startup", result=failed),
+        ),
     ):
         exec_patch = executor_node(state)
 
@@ -287,11 +302,13 @@ def test_benchmark_error_keeps_persisted_row_and_does_not_promote(result_b):
 
 def test_benchmark_error_without_result_does_not_forge_summary():
     state = _pending_search_state()
-    with patch("inferops.agent.executor.get_result_by_id", return_value=None), patch(
-        "inferops.tools.propose_config.propose_config_patch"
-    ), patch(
-        "inferops.agent.executor.run_benchmark",
-        side_effect=BenchmarkError("no contract row"),
+    with (
+        patch("inferops.agent.executor.get_result_by_id", return_value=None),
+        patch("inferops.tools.propose_config.propose_config_patch"),
+        patch(
+            "inferops.agent.executor.run_benchmark",
+            side_effect=BenchmarkError("no contract row"),
+        ),
     ):
         exec_patch = executor_node(state)
     assert "experiment_summaries" not in exec_patch
@@ -302,6 +319,7 @@ def test_benchmark_error_without_result_does_not_forge_summary():
 # ---------------------------------------------------------------------------
 # Confirmation mid-slot fail + remasure cap
 # ---------------------------------------------------------------------------
+
 
 def test_confirmation_mid_slot_fail_records_ids_and_does_not_confirm(result_b):
     state = _state_with_candidate(run_id=result_b.run_id)
@@ -378,15 +396,20 @@ def test_confirmation_failures_are_capped_no_infinite_remeasure(result_b):
 # analyze / compare degrade — never silent 0 / promotion change
 # ---------------------------------------------------------------------------
 
+
 def test_analyze_and_compare_unavailable_are_recorded_not_silent_zero(result_b):
     state = _pending_search_state()
     result = result_b.model_copy(update={"experiment_id": "sess_max_num_batched_tokens_4096"})
-    with patch("inferops.agent.executor.get_result_by_id", return_value=result), patch(
-        "inferops.agent.executor.analyze_bottleneck",
-        side_effect=RuntimeError("profile missing"),
-    ), patch(
-        "inferops.agent.executor.compare_experiments",
-        side_effect=RuntimeError("bootstrap failed"),
+    with (
+        patch("inferops.agent.executor.get_result_by_id", return_value=result),
+        patch(
+            "inferops.agent.executor.analyze_bottleneck",
+            side_effect=RuntimeError("profile missing"),
+        ),
+        patch(
+            "inferops.agent.executor.compare_experiments",
+            side_effect=RuntimeError("bootstrap failed"),
+        ),
     ):
         exec_patch = executor_node(state)
 
@@ -408,6 +431,7 @@ def test_analyze_and_compare_unavailable_are_recorded_not_silent_zero(result_b):
 # Persist-then-interrupt-before-commit + reuse
 # ---------------------------------------------------------------------------
 
+
 def test_persist_then_interrupt_before_commit_reuses_result(result_b):
     """Crash after persist: resume reuses the row, no second benchmark."""
     store: dict[str, object] = {}
@@ -422,18 +446,23 @@ def test_persist_then_interrupt_before_commit_reuses_result(result_b):
         raise KeyboardInterrupt("persist-then-interrupt")
 
     state = _pending_search_state()
-    with tool_boundary_overrides(
-        run_benchmark_fn=_bench,
-        propose_config_fn=lambda _inp: None,
-    ), patch(
-        "inferops.agent.executor.get_result_by_id",
-        side_effect=lambda e: store.get(e),
-    ), patch(
-        "inferops.agent.executor.analyze_bottleneck",
-        return_value=MagicMock(bottleneck="compute-bound"),
-    ), patch(
-        "inferops.agent.executor.compare_experiments",
-        return_value=MagicMock(delta_pct=19.0),
+    with (
+        tool_boundary_overrides(
+            run_benchmark_fn=_bench,
+            propose_config_fn=lambda _inp: None,
+        ),
+        patch(
+            "inferops.agent.executor.get_result_by_id",
+            side_effect=lambda e: store.get(e),
+        ),
+        patch(
+            "inferops.agent.executor.analyze_bottleneck",
+            return_value=MagicMock(bottleneck="compute-bound"),
+        ),
+        patch(
+            "inferops.agent.executor.compare_experiments",
+            return_value=MagicMock(delta_pct=19.0),
+        ),
     ):
         with pytest.raises(KeyboardInterrupt):
             executor_node(state)
@@ -453,6 +482,7 @@ def test_persist_then_interrupt_before_commit_reuses_result(result_b):
 # ---------------------------------------------------------------------------
 # Production graph: interrupt_before tool + terminal equivalence
 # ---------------------------------------------------------------------------
+
 
 def _scripted_llm():
     from inferops.eval.real_graph import ScriptedBottleneckLLM
@@ -518,6 +548,7 @@ def _graph_start_state(result_b):
 
 def _run_production_graph(result_b, *, interrupt_before=None, crash_after_persist=False):
     from langgraph.checkpoint.memory import MemorySaver
+    from inferops.eval.real_graph import SCRIPTED_KNOWLEDGE_CONTEXT
 
     store, bench, calls = _graph_store(result_b)
     if crash_after_persist:
@@ -531,26 +562,33 @@ def _run_production_graph(result_b, *, interrupt_before=None, crash_after_persis
 
     llm = _scripted_llm()
     checkpointer = MemorySaver()
-    graph = build_graph(
-        llm, checkpointer=checkpointer, interrupt_before=interrupt_before
-    )
+    graph = build_graph(llm, checkpointer=checkpointer, interrupt_before=interrupt_before)
     config = graph_invoke_config("sess_")
     assert config["configurable"]["thread_id"] == session_thread_id("sess_")
     start = _graph_start_state(result_b)
 
     def _invoke(payload):
-        with tool_boundary_overrides(
-            run_benchmark_fn=bench,
-            propose_config_fn=lambda _inp: None,
-        ), patch(
-            "inferops.agent.executor.get_result_by_id",
-            side_effect=lambda e: store.get(e),
-        ), patch(
-            "inferops.agent.executor.analyze_bottleneck",
-            return_value=MagicMock(bottleneck="compute-bound"),
-        ), patch(
-            "inferops.agent.executor.compare_experiments",
-            return_value=MagicMock(delta_pct=20.0),
+        with (
+            tool_boundary_overrides(
+                run_benchmark_fn=bench,
+                propose_config_fn=lambda _inp: None,
+            ),
+            patch(
+                "inferops.agent.executor.get_result_by_id",
+                side_effect=lambda e: store.get(e),
+            ),
+            patch(
+                "inferops.agent.executor.analyze_bottleneck",
+                return_value=MagicMock(bottleneck="compute-bound"),
+            ),
+            patch(
+                "inferops.agent.executor.compare_experiments",
+                return_value=MagicMock(delta_pct=20.0),
+            ),
+            patch(
+                "inferops.agent.planner._retrieve_knowledge",
+                return_value=SCRIPTED_KNOWLEDGE_CONTEXT,
+            ),
         ):
             return graph.invoke(payload, config)
 
@@ -571,9 +609,7 @@ def _run_production_graph(result_b, *, interrupt_before=None, crash_after_persis
 
 
 def test_interrupt_before_tool_runs_benchmark_once_on_resume(result_b):
-    final, calls, config, _store = _run_production_graph(
-        result_b, interrupt_before=["executor"]
-    )
+    final, calls, config, _store = _run_production_graph(result_b, interrupt_before=["executor"])
     search_calls = [c for c in calls if "confirm_" not in c]
     assert len(search_calls) == 1
     assert config["configurable"]["thread_id"] == "sess"
@@ -583,9 +619,7 @@ def test_interrupt_before_tool_runs_benchmark_once_on_resume(result_b):
 
 
 def test_persist_then_interrupt_graph_reuses_result_no_second_benchmark(result_b):
-    final, calls, _config, store = _run_production_graph(
-        result_b, crash_after_persist=True
-    )
+    final, calls, _config, store = _run_production_graph(result_b, crash_after_persist=True)
     search_calls = [c for c in calls if "confirm_" not in c]
     assert len(search_calls) == 1
     assert search_calls[0] in store
@@ -597,9 +631,7 @@ def test_persist_then_interrupt_graph_reuses_result_no_second_benchmark(result_b
 
 def test_uninterrupted_vs_interrupted_resumed_terminal_equivalence(result_b):
     plain, plain_calls, _, _ = _run_production_graph(result_b)
-    resumed, resumed_calls, _, _ = _run_production_graph(
-        result_b, interrupt_before=["executor"]
-    )
+    resumed, resumed_calls, _, _ = _run_production_graph(result_b, interrupt_before=["executor"])
     assert [c for c in plain_calls if "confirm_" not in c] == [
         c for c in resumed_calls if "confirm_" not in c
     ]
@@ -613,14 +645,10 @@ def test_uninterrupted_vs_interrupted_resumed_terminal_equivalence(result_b):
     assert (plain.get("best_summary") or {}).get("confirmed_promotable") is not True
     assert (resumed.get("best_summary") or {}).get("confirmed_promotable") is not True
     plain_eids = [
-        s.get("experiment_id")
-        for s in plain["trajectory"]
-        if s.get("node") == "executor"
+        s.get("experiment_id") for s in plain["trajectory"] if s.get("node") == "executor"
     ]
     resumed_eids = [
-        s.get("experiment_id")
-        for s in resumed["trajectory"]
-        if s.get("node") == "executor"
+        s.get("experiment_id") for s in resumed["trajectory"] if s.get("node") == "executor"
     ]
     assert plain_eids == resumed_eids
 
@@ -629,11 +657,13 @@ def test_no_confirmed_promotion_on_fail_or_resume_paths(result_b):
     """Any fail / resume path in this module stays fail-closed on confirm."""
     state = _state_with_candidate()
     state["hypotheses"][0]["status"] = "pending"
-    with patch("inferops.agent.executor.get_result_by_id", return_value=None), patch(
-        "inferops.tools.propose_config.propose_config_patch"
-    ), patch(
-        "inferops.agent.executor.run_benchmark",
-        side_effect=RuntimeError("fail"),
+    with (
+        patch("inferops.agent.executor.get_result_by_id", return_value=None),
+        patch("inferops.tools.propose_config.propose_config_patch"),
+        patch(
+            "inferops.agent.executor.run_benchmark",
+            side_effect=RuntimeError("fail"),
+        ),
     ):
         exec_patch = executor_node(state)
     refl = reflector_node(_merge(state, exec_patch))
@@ -646,6 +676,7 @@ def test_no_confirmed_promotion_on_fail_or_resume_paths(result_b):
 # ---------------------------------------------------------------------------
 # P1: confirm persist-resume + successful-confirm budget-once
 # ---------------------------------------------------------------------------
+
 
 def _remeasure_state(*, remaining: int = 2, remasure_count: int = 1):
     state = _pending_search_state()
@@ -697,12 +728,15 @@ def test_confirm_persist_then_crash_reuses_slots_budget_once(result_b):
     state = _remeasure_state(remaining=2, remasure_count=1)
     pre_budget = state["experiments_remaining"]
 
-    with tool_boundary_overrides(
-        run_benchmark_fn=bench,
-        propose_config_fn=lambda _inp: None,
-    ), patch(
-        "inferops.agent.executor.get_result_by_id",
-        side_effect=lambda e: store.get(e),
+    with (
+        tool_boundary_overrides(
+            run_benchmark_fn=bench,
+            propose_config_fn=lambda _inp: None,
+        ),
+        patch(
+            "inferops.agent.executor.get_result_by_id",
+            side_effect=lambda e: store.get(e),
+        ),
     ):
         with pytest.raises(KeyboardInterrupt):
             executor_node(state)
@@ -727,8 +761,8 @@ def test_confirm_persist_then_crash_reuses_slots_budget_once(result_b):
 
 def test_successful_confirm_promotes_and_consumes_budget_once(result_b):
     """Promote path decrements budget exactly once — never remaining-still-1."""
-    search_exec, _search_refl, confirm_exec, final_refl, _after = (
-        _run_search_remeasure_confirm(result_b, confirm_cand_rps=2.4)
+    search_exec, _search_refl, confirm_exec, final_refl, _after = _run_search_remeasure_confirm(
+        result_b, confirm_cand_rps=2.4
     )
     pre_confirm = search_exec["experiments_remaining"]
     assert confirm_exec["experiments_remaining"] == pre_confirm - 1
@@ -741,12 +775,15 @@ def test_successful_confirm_on_last_budget_slot_still_promotes(result_b):
     store, bench = _tool_boundary_store(result_b, confirm_cand_rps=2.4)
     state = _remeasure_state(remaining=1, remasure_count=1)
 
-    with tool_boundary_overrides(
-        run_benchmark_fn=bench,
-        propose_config_fn=lambda _inp: None,
-    ), patch(
-        "inferops.agent.executor.get_result_by_id",
-        side_effect=lambda e: store.get(e),
+    with (
+        tool_boundary_overrides(
+            run_benchmark_fn=bench,
+            propose_config_fn=lambda _inp: None,
+        ),
+        patch(
+            "inferops.agent.executor.get_result_by_id",
+            side_effect=lambda e: store.get(e),
+        ),
     ):
         confirm_exec = executor_node(state)
 
@@ -813,11 +850,15 @@ def test_last_budget_slot_missing_error_rate_does_not_promote(result_b):
 # P2: generic propose error + GraphInterrupt not swallowed
 # ---------------------------------------------------------------------------
 
+
 def test_generic_propose_tool_error_emits_recovery_no_forge():
     state = _pending_search_state()
-    with patch("inferops.agent.executor.get_result_by_id", return_value=None), patch(
-        "inferops.tools.propose_config.propose_config_patch",
-        side_effect=RuntimeError("propose backend down"),
+    with (
+        patch("inferops.agent.executor.get_result_by_id", return_value=None),
+        patch(
+            "inferops.tools.propose_config.propose_config_patch",
+            side_effect=RuntimeError("propose backend down"),
+        ),
     ):
         exec_patch = executor_node(state)
 
@@ -840,11 +881,13 @@ def test_graphinterrupt_is_reraised_not_swallowed():
     from langgraph.errors import GraphInterrupt
 
     state = _pending_search_state()
-    with patch("inferops.agent.executor.get_result_by_id", return_value=None), patch(
-        "inferops.tools.propose_config.propose_config_patch"
-    ), patch(
-        "inferops.agent.executor.run_benchmark",
-        side_effect=GraphInterrupt(),
+    with (
+        patch("inferops.agent.executor.get_result_by_id", return_value=None),
+        patch("inferops.tools.propose_config.propose_config_patch"),
+        patch(
+            "inferops.agent.executor.run_benchmark",
+            side_effect=GraphInterrupt(),
+        ),
     ):
         with pytest.raises(GraphInterrupt):
             executor_node(state)
@@ -861,9 +904,12 @@ def test_graphinterrupt_is_reraised_not_swallowed():
         with pytest.raises(GraphInterrupt):
             executor_node(remasure)
 
-    with patch("inferops.agent.executor.get_result_by_id", return_value=None), patch(
-        "inferops.tools.propose_config.propose_config_patch",
-        side_effect=GraphInterrupt(),
+    with (
+        patch("inferops.agent.executor.get_result_by_id", return_value=None),
+        patch(
+            "inferops.tools.propose_config.propose_config_patch",
+            side_effect=GraphInterrupt(),
+        ),
     ):
         with pytest.raises(GraphInterrupt):
             executor_node(state)
@@ -874,6 +920,7 @@ def test_graphinterrupt_is_reraised_not_swallowed():
 # ---------------------------------------------------------------------------
 # Residual P0: startup-ok / ack-lost fact-check + unconfirmable persist
 # ---------------------------------------------------------------------------
+
 
 def test_is_ack_lost_matches_receipt_and_ack_wording():
     assert is_ack_lost(AckLostError("startup ok")) is True
@@ -916,24 +963,27 @@ def test_ack_lost_reuses_persisted_row_no_second_benchmark(result_b):
 
     def _bench(inp: RunBenchmarkInput):
         calls.append(inp.experiment_id)
-        store[inp.experiment_id] = persisted.model_copy(
-            update={"experiment_id": inp.experiment_id}
-        )
+        store[inp.experiment_id] = persisted.model_copy(update={"experiment_id": inp.experiment_id})
         raise RuntimeError("vLLM/startup succeeded but receipt/ack lost")
 
     state = _pending_search_state()
-    with tool_boundary_overrides(
-        run_benchmark_fn=_bench,
-        propose_config_fn=lambda _inp: None,
-    ), patch(
-        "inferops.agent.executor.get_result_by_id",
-        side_effect=lambda e: store.get(e),
-    ), patch(
-        "inferops.agent.executor.analyze_bottleneck",
-        return_value=MagicMock(bottleneck="compute-bound"),
-    ), patch(
-        "inferops.agent.executor.compare_experiments",
-        return_value=MagicMock(delta_pct=19.0),
+    with (
+        tool_boundary_overrides(
+            run_benchmark_fn=_bench,
+            propose_config_fn=lambda _inp: None,
+        ),
+        patch(
+            "inferops.agent.executor.get_result_by_id",
+            side_effect=lambda e: store.get(e),
+        ),
+        patch(
+            "inferops.agent.executor.analyze_bottleneck",
+            return_value=MagicMock(bottleneck="compute-bound"),
+        ),
+        patch(
+            "inferops.agent.executor.compare_experiments",
+            return_value=MagicMock(delta_pct=19.0),
+        ),
     ):
         first = executor_node(state)
         assert calls == [eid]
@@ -969,15 +1019,19 @@ def test_ack_lost_unconfirmable_persists_insufficient_evidence():
         store[result.experiment_id] = result
 
     state = _pending_search_state()
-    with tool_boundary_overrides(
-        run_benchmark_fn=_bench,
-        propose_config_fn=lambda _inp: None,
-    ), patch(
-        "inferops.agent.executor.get_result_by_id",
-        side_effect=lambda e: store.get(e),
-    ), patch(
-        "inferops.agent.executor.save_result",
-        side_effect=_save,
+    with (
+        tool_boundary_overrides(
+            run_benchmark_fn=_bench,
+            propose_config_fn=lambda _inp: None,
+        ),
+        patch(
+            "inferops.agent.executor.get_result_by_id",
+            side_effect=lambda e: store.get(e),
+        ),
+        patch(
+            "inferops.agent.executor.save_result",
+            side_effect=_save,
+        ),
     ):
         exec_patch = executor_node(state)
 
@@ -999,12 +1053,15 @@ def test_ack_lost_unconfirmable_persists_insufficient_evidence():
     assert persisted.gpu_utilization_pct is None
     assert store[persisted.experiment_id].status == ExperimentValidityStatus.INSUFFICIENT_EVIDENCE
     # Resume must reuse the persisted incomplete row as failure — no second bench.
-    with tool_boundary_overrides(
-        run_benchmark_fn=_bench,
-        propose_config_fn=lambda _inp: None,
-    ), patch(
-        "inferops.agent.executor.get_result_by_id",
-        side_effect=lambda e: store.get(e),
+    with (
+        tool_boundary_overrides(
+            run_benchmark_fn=_bench,
+            propose_config_fn=lambda _inp: None,
+        ),
+        patch(
+            "inferops.agent.executor.get_result_by_id",
+            side_effect=lambda e: store.get(e),
+        ),
     ):
         resume = executor_node(state)
     assert calls == ["sess_max_num_batched_tokens_4096"]
@@ -1033,12 +1090,15 @@ def test_confirm_slot_ack_lost_reuses_persisted_no_rebench(result_b):
 
     state = _remeasure_state(remaining=2, remasure_count=1)
     pre_budget = state["experiments_remaining"]
-    with tool_boundary_overrides(
-        run_benchmark_fn=bench,
-        propose_config_fn=lambda _inp: None,
-    ), patch(
-        "inferops.agent.executor.get_result_by_id",
-        side_effect=lambda e: store.get(e),
+    with (
+        tool_boundary_overrides(
+            run_benchmark_fn=bench,
+            propose_config_fn=lambda _inp: None,
+        ),
+        patch(
+            "inferops.agent.executor.get_result_by_id",
+            side_effect=lambda e: store.get(e),
+        ),
     ):
         exec_patch = executor_node(state)
 
@@ -1064,15 +1124,19 @@ def test_ack_lost_save_failure_does_not_claim_persisted_or_rebench():
         raise AckLostError("vLLM/startup succeeded but receipt/ack lost")
 
     state = _pending_search_state()
-    with tool_boundary_overrides(
-        run_benchmark_fn=_bench,
-        propose_config_fn=lambda _inp: None,
-    ), patch(
-        "inferops.agent.executor.get_result_by_id",
-        return_value=None,
-    ), patch(
-        "inferops.agent.executor.save_result",
-        side_effect=RuntimeError("sqlite locked"),
+    with (
+        tool_boundary_overrides(
+            run_benchmark_fn=_bench,
+            propose_config_fn=lambda _inp: None,
+        ),
+        patch(
+            "inferops.agent.executor.get_result_by_id",
+            return_value=None,
+        ),
+        patch(
+            "inferops.agent.executor.save_result",
+            side_effect=RuntimeError("sqlite locked"),
+        ),
     ):
         exec_patch = executor_node(state)
 
@@ -1107,15 +1171,19 @@ def test_confirm_slot_ack_lost_miss_persists_insufficient_evidence():
         store[result.experiment_id] = result
 
     state = _remeasure_state(remaining=2, remasure_count=1)
-    with tool_boundary_overrides(
-        run_benchmark_fn=_bench,
-        propose_config_fn=lambda _inp: None,
-    ), patch(
-        "inferops.agent.executor.get_result_by_id",
-        side_effect=lambda e: store.get(e),
-    ), patch(
-        "inferops.agent.executor.save_result",
-        side_effect=_save,
+    with (
+        tool_boundary_overrides(
+            run_benchmark_fn=_bench,
+            propose_config_fn=lambda _inp: None,
+        ),
+        patch(
+            "inferops.agent.executor.get_result_by_id",
+            side_effect=lambda e: store.get(e),
+        ),
+        patch(
+            "inferops.agent.executor.save_result",
+            side_effect=_save,
+        ),
     ):
         exec_patch = executor_node(state)
 
@@ -1163,18 +1231,23 @@ def test_benchmark_error_persisted_lookup_keeps_failure_not_success(result_b):
         raise OOMError("vLLM OOM during startup", result=stored)
 
     state = _pending_search_state()
-    with tool_boundary_overrides(
-        run_benchmark_fn=_bench,
-        propose_config_fn=lambda _inp: None,
-    ), patch(
-        "inferops.agent.executor.get_result_by_id",
-        side_effect=lambda e: store.get(e),
-    ), patch(
-        "inferops.agent.executor.analyze_bottleneck",
-        return_value=MagicMock(bottleneck="compute-bound"),
-    ), patch(
-        "inferops.agent.executor.compare_experiments",
-        return_value=MagicMock(delta_pct=19.0),
+    with (
+        tool_boundary_overrides(
+            run_benchmark_fn=_bench,
+            propose_config_fn=lambda _inp: None,
+        ),
+        patch(
+            "inferops.agent.executor.get_result_by_id",
+            side_effect=lambda e: store.get(e),
+        ),
+        patch(
+            "inferops.agent.executor.analyze_bottleneck",
+            return_value=MagicMock(bottleneck="compute-bound"),
+        ),
+        patch(
+            "inferops.agent.executor.compare_experiments",
+            return_value=MagicMock(delta_pct=19.0),
+        ),
     ):
         first = executor_node(state)
         assert calls == [eid]
@@ -1201,13 +1274,16 @@ def test_benchmark_error_persisted_lookup_keeps_failure_not_success(result_b):
 def test_trajectory_records_retry_budget_stop_and_next_action():
     state = _pending_search_state()
     state["remeasure_count"] = 1
-    with patch("inferops.agent.executor.get_result_by_id", return_value=None), patch(
-        "inferops.tools.propose_config.propose_config_patch"
-    ), patch(
-        "inferops.agent.executor.run_benchmark",
-        side_effect=AckLostError("receipt lost"),
-    ), patch(
-        "inferops.agent.executor.save_result",
+    with (
+        patch("inferops.agent.executor.get_result_by_id", return_value=None),
+        patch("inferops.tools.propose_config.propose_config_patch"),
+        patch(
+            "inferops.agent.executor.run_benchmark",
+            side_effect=AckLostError("receipt lost"),
+        ),
+        patch(
+            "inferops.agent.executor.save_result",
+        ),
     ):
         exec_patch = executor_node(state)
 
