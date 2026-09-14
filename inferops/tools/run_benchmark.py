@@ -10,7 +10,7 @@ from configs.search_space import make_configs
 from inferops.bench_runner import BenchmarkError, run_experiment
 from inferops.memory.db import save_result
 from inferops.observability import span
-from inferops.schemas import ExperimentResult
+from inferops.schemas import ExperimentResult, WorkloadSpec
 from workloads.definitions import ALL_WORKLOADS, get_prompts
 
 # Safe parameter ranges for RTX 3060 Laptop (6 GB, WSL2)
@@ -51,6 +51,17 @@ class RunBenchmarkInput(BaseModel):
     session_id: str | None = Field(
         default=None,
         description="Session prefix / id mapped to run_id and MLflow tags.",
+    )
+    model_name: str | None = Field(
+        default=None,
+        description="Model served by this run. Defaults to the search-space catalog model.",
+    )
+    workload: WorkloadSpec | None = Field(
+        default=None,
+        description=(
+            "Exact workload to run. When set, this spec is used instead of looking "
+            "up workload_name in the preset catalog."
+        ),
     )
 
 
@@ -102,7 +113,9 @@ def run_benchmark(inp: RunBenchmarkInput) -> RunBenchmarkOutput:
                 raise ValueError(f"{key}={val} outside safe range [{lo}, {hi}] for RTX 3060")
 
     workload_map = {w.name: w for w in ALL_WORKLOADS}
-    workload = workload_map.get(inp.workload_name)
+    workload = inp.workload
+    if workload is None:
+        workload = workload_map.get(inp.workload_name)
     if workload is None:
         raise ValueError(
             f"Unknown workload: {inp.workload_name}. "
@@ -111,7 +124,7 @@ def run_benchmark(inp: RunBenchmarkInput) -> RunBenchmarkOutput:
 
     # Build config by patching the default
     tags = {"session_id": inp.session_id} if inp.session_id else {}
-    base_cfg = make_configs(workload)[0]  # default variant as base
+    base_cfg = make_configs(workload, model_name=inp.model_name)[0]
     patched = base_cfg.model_copy(
         update={
             **inp.config_patch,

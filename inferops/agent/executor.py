@@ -55,15 +55,18 @@ from inferops.agent.recovery import (
 )
 from inferops.agent.reflect_constraints import MAX_REMEASURES
 from inferops.agent.state import (
-    WORKLOAD_PRIMARY_METRIC,
     AgentState,
     ExperimentSummary,
     Hypothesis,
     is_duplicate,
     is_promotable_summary,
+    model_name_of,
     pending_hypotheses,
+    primary_metric_of,
     summary_from_result,
+    task_of,
 )
+from inferops.task import task_conditions
 from inferops.bench_runner import BenchmarkError
 from inferops.memory.db import get_result_by_id, save_result
 from inferops.schemas import ExperimentResult, ExperimentValidityStatus, is_promotable
@@ -116,6 +119,24 @@ def confirmation_run_arm_override(run_arm: Callable[..., Any]) -> Iterator[None]
         _confirmation_run_arm_override = prev
 
 
+def _benchmark_input(
+    state: AgentState,
+    experiment_id: str,
+    config_patch: dict[str, Any],
+) -> RunBenchmarkInput:
+    """Build a RunBenchmarkInput from the confirmed task when present."""
+    task = task_of(state)
+    return RunBenchmarkInput(
+        experiment_id=experiment_id,
+        config_patch=config_patch,
+        workload_name=state["workload_name"],
+        persist=True,
+        session_id=state["session_prefix"],
+        model_name=model_name_of(state),
+        workload=task.workload if task is not None else None,
+    )
+
+
 def executor_node(state: AgentState) -> dict:
     """
     Pick the first pending hypothesis, run the experiment, and return a state patch.
@@ -129,7 +150,7 @@ def executor_node(state: AgentState) -> dict:
         return {}
 
     hyp = pending[0]
-    primary_metric = WORKLOAD_PRIMARY_METRIC[state["workload_name"]]
+    primary_metric = primary_metric_of(state)
 
     # --- Deduplication check (remeasure of the same hyp is not a skip) ---
     remeasuring = state.get("next_action") == "remeasure"
@@ -253,12 +274,10 @@ def executor_node(state: AgentState) -> dict:
         console.print(f"  executor: running {eid} ({hyp['param']}={hyp['value']}) …")
         try:
             bench_fn = _run_benchmark_override or run_benchmark
-            bench_out = bench_fn(RunBenchmarkInput(
-                experiment_id=eid,
-                config_patch={hyp["param"]: hyp["value"]},
-                workload_name=state["workload_name"],
-                persist=True,
-                session_id=state["session_prefix"],
+            bench_out = bench_fn(_benchmark_input(
+                state,
+                eid,
+                {hyp["param"]: hyp["value"]},
             ))
         except Exception as exc:
             reraise_hard_control(exc)
@@ -416,6 +435,9 @@ def executor_node(state: AgentState) -> dict:
             stop_reason="",
         ),
     }
+    task = task_of(state)
+    if task is not None:
+        traj_step["task_conditions"] = task_conditions(task)
 
     vs_log = summary.get("vs_baseline_pct")
     vs_txt = f"{vs_log:+.1f}%" if vs_log is not None else "unavailable"
@@ -594,7 +616,10 @@ def _unconfirmable_config(state: AgentState, hyp: Hypothesis, experiment_id: str
     from workloads.definitions import ALL_WORKLOADS
 
     workload = {w.name: w for w in ALL_WORKLOADS}[state["workload_name"]]
-    base = make_configs(workload)[0]
+    task = task_of(state)
+    if task is not None:
+        workload = task.workload
+    base = make_configs(workload, model_name=model_name_of(state))[0]
     update: dict[str, Any] = {"experiment_id": experiment_id}
     param = hyp.get("param")
     if param:
@@ -780,13 +805,7 @@ def _production_confirm_run_arm(state: AgentState, hyp: Hypothesis):
             return existing
         bench_fn = _run_benchmark_override or run_benchmark
         try:
-            out = bench_fn(RunBenchmarkInput(
-                experiment_id=eid,
-                config_patch=config,
-                workload_name=state["workload_name"],
-                persist=True,
-                session_id=state["session_prefix"],
-            ))
+            out = bench_fn(_benchmark_input(state, eid, config))
         except Exception as exc:
             reraise_hard_control(exc)
             reused = _factcheck_persisted_attempt(eid)

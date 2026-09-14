@@ -24,13 +24,24 @@ from inferops.schemas import ExperimentConfig, ModelSize, SchedulerPolicy
 MODEL = "Qwen/Qwen2.5-0.5B-Instruct"
 
 
-def make_configs(workload) -> list[ExperimentConfig]:  # workload: WorkloadSpec
+def model_size_for(model_name: str) -> ModelSize:
+    if "1.5B" in model_name:
+        return ModelSize.ONE_HALF_B
+    if "14B" in model_name:
+        return ModelSize.FOURTEEN_B
+    if "7B" in model_name:
+        return ModelSize.SEVEN_B
+    return ModelSize.HALF_B
+
+
+def make_configs(workload, model_name: str | None = None) -> list[ExperimentConfig]:
     # long_context_qa needs larger max_model_len (1024 in + 256 out = 1280 min)
     max_model_len = 2048 if workload.name == "chat_short" else 2048
+    resolved_model = model_name or MODEL
 
     base = dict(
-        model_name=MODEL,
-        model_size=ModelSize.HALF_B,
+        model_name=resolved_model,
+        model_size=model_size_for(resolved_model),
         workload=workload,
         gpu_memory_utilization=0.80,
         max_num_seqs=128,

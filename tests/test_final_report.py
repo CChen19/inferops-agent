@@ -131,4 +131,5 @@ def test_write_final_report_counts_sections(tmp_path):
     )
     result = write_final_report(inp)
     # Executive Summary + Experiment Log + Citations + Recommendation = 4
+    # (Task Conditions is added only when optimization_task is provided)
     assert result.sections_written == 4

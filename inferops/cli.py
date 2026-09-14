@@ -25,21 +25,43 @@ def agent(
     budget: int = typer.Option(8, help="Max vLLM experiments including baseline."),
     prefix: Optional[str] = typer.Option(None, help="Experiment ID prefix for this session."),
     temperature: float = typer.Option(0.3, help="LLM temperature."),
+    model_name: Optional[str] = typer.Option(
+        None, "--model", help="Supported model, e.g. Qwen/Qwen2.5-1.5B-Instruct."
+    ),
+    target_qps: Optional[float] = typer.Option(
+        None, help="Measured throughput goal. Not an offered arrival rate."
+    ),
+    max_ttft_ms: Optional[float] = typer.Option(
+        None, help="Hard TTFT p99 constraint in milliseconds."
+    ),
 ) -> None:
     """Run the Plan-Execute-Reflect optimizer agent."""
     from inferops.agent.graph import make_llm, run_agent
     from inferops.agent.state import WORKLOAD_PRIMARY_METRIC
+    from inferops.task import default_task_for_workload
 
     valid = set(WORKLOAD_PRIMARY_METRIC)
     if workload not in valid:
         raise typer.BadParameter(f"Unknown workload '{workload}'. Valid: {', '.join(sorted(valid))}")
 
+    try:
+        task = default_task_for_workload(
+            workload,
+            budget,
+            model_name=model_name,
+            target_qps=target_qps,
+            max_ttft_ms=max_ttft_ms,
+        )
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
     model = make_llm(backend=llm, temperature=temperature)
     run_agent(
-        workload_name=workload,
+        workload_name=task.workload.name,
         llm=model,
-        max_experiments=budget,
+        max_experiments=task.experiment_budget,
         session_prefix=prefix,
+        task=task,
     )
 
 

@@ -36,19 +36,20 @@ def test_extract_intent_long_generation():
     assert intent.budget == 4
 
 
-def test_extract_intent_defaults_to_chat_short_on_bad_workload():
+def test_extract_intent_keeps_unknown_workload_for_validation():
     llm = _make_llm('{"workload_name": "nonexistent_workload", "budget": 6}')
     intent = extract_intent("Some unknown scenario", llm)
 
-    assert intent.workload_name == "chat_short"
+    assert intent.workload_name == "nonexistent_workload"
 
 
-def test_extract_intent_handles_invalid_json_gracefully():
+def test_extract_intent_handles_invalid_json_without_inventing_workload():
     llm = _make_llm("sorry I cannot parse that")
     intent = extract_intent("anything", llm)
 
-    assert intent.workload_name == "chat_short"
-    assert intent.budget == 6
+    assert intent.workload_name is None
+    assert intent.budget is None
+    assert intent.parse_ok is False
 
 
 def test_extract_intent_returns_intent_dataclass():

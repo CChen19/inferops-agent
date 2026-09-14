@@ -9,6 +9,10 @@ from pydantic import BaseModel, Field
 
 from inferops.observability import span
 from inferops.agent.state import is_promotable_summary
+from inferops.task import (
+    format_task_conditions_markdown,
+    task_from_mapping,
+)
 
 
 def _fmt_metric(v: Any, spec: str) -> str:
@@ -45,6 +49,10 @@ class FinalReportInput(BaseModel):
         default="reports/agent_final_report.md",
         description="Where to write the Markdown file",
     )
+    optimization_task: dict[str, Any] | None = Field(
+        default=None,
+        description="Confirmed OptimizationTask dump — same conditions as the confirm page",
+    )
 
 
 class FinalReportOutput(BaseModel):
@@ -75,6 +83,11 @@ def write_final_report(inp: FinalReportInput) -> FinalReportOutput:
             f"**Experiments run:** {len(inp.experiment_summaries)}",
             "",
         ]
+
+        task = task_from_mapping(inp.optimization_task)
+        if task is not None:
+            lines += format_task_conditions_markdown(task)
+            sections += 1
 
         # Executive summary
         improvement: float | None = None

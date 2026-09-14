@@ -15,6 +15,7 @@ Entry point: run_agent() — handles baseline, builds initial state, invokes gra
 from __future__ import annotations
 
 import os
+import time
 import uuid
 from functools import partial
 from typing import Any
@@ -33,12 +34,18 @@ from inferops.agent.state import (
     ExperimentSummary,
     initial_state,
     is_promotable_summary,
+    primary_metric_of,
     summary_from_result,
+)
+from inferops.task import (
+    OptimizationTask,
+    default_task_for_workload,
+    require_confirmed,
+    task_from_mapping,
 )
 from inferops.memory.db import get_result_by_id, init_db, save_result
 from inferops.schemas import is_promotable
 from inferops.tools.analyze_bottleneck import AnalyzeBottleneckInput, analyze_bottleneck
-from inferops.tools.run_benchmark import RunBenchmarkInput, run_benchmark
 
 console = Console()
 
@@ -147,7 +154,11 @@ def build_graph(
 # Baseline helper
 # ---------------------------------------------------------------------------
 
-def _run_baseline(workload_name: str, session_prefix: str) -> tuple[ExperimentSummary, str]:
+def _run_baseline(
+    workload_name: str,
+    session_prefix: str,
+    task: OptimizationTask | None = None,
+) -> tuple[ExperimentSummary, str]:
     """
     Run (or load) the default config as baseline. Returns (summary, bottleneck).
 
@@ -159,12 +170,18 @@ def _run_baseline(workload_name: str, session_prefix: str) -> tuple[ExperimentSu
 
     eid = f"{session_prefix}baseline"
     existing = get_result_by_id(eid)
+    resolved_task = task
+    workload = resolved_task.workload if resolved_task is not None else None
+    model_name = resolved_task.model_name if resolved_task is not None else None
 
     if existing is None:
         console.print(f"[bold]Running baseline experiment:[/] {eid} …")
-        wl_map = {w.name: w for w in ALL_WORKLOADS}
-        workload = wl_map[workload_name]
-        base_cfg = make_configs(workload)[0].model_copy(update={"experiment_id": eid})
+        if workload is None:
+            wl_map = {w.name: w for w in ALL_WORKLOADS}
+            workload = wl_map[workload_name]
+        base_cfg = make_configs(workload, model_name=model_name)[0].model_copy(
+            update={"experiment_id": eid}
+        )
         from workloads.definitions import get_prompts
         prompts = get_prompts(workload)
         from inferops.bench_runner import BenchmarkError, run_experiment
@@ -184,7 +201,11 @@ def _run_baseline(workload_name: str, session_prefix: str) -> tuple[ExperimentSu
                 f"(status={result.status.value}) — will not seed best_summary[/yellow]"
             )
 
-    primary_metric = WORKLOAD_PRIMARY_METRIC[workload_name]
+    primary_metric = (
+        resolved_task.primary_metric
+        if resolved_task is not None
+        else WORKLOAD_PRIMARY_METRIC[workload_name]
+    )
 
     bottleneck = "unknown"
     try:
@@ -211,6 +232,7 @@ def prepare_initial_state(
     workload_name: str,
     session_prefix: str,
     max_experiments: int = 8,
+    task: OptimizationTask | dict | None = None,
 ) -> AgentState:
     """
     Build an AgentState with the baseline experiment already run or loaded.
@@ -222,10 +244,28 @@ def prepare_initial_state(
     best_summary is only seeded from baseline when the baseline is promotable
     (valid + critical config evidence). Old / insufficient-evidence rows never
     auto-become best.
-    """
-    baseline_summary, baseline_bottleneck = _run_baseline(workload_name, session_prefix)
 
-    state = initial_state(workload_name, session_prefix, max_experiments=max_experiments)
+    An OptimizationTask, when provided, must already be confirmed. The CLI/eval
+    path synthesizes a confirmed default task so conditions stay consistent.
+    """
+    resolved = task_from_mapping(task)
+    if resolved is None:
+        resolved = default_task_for_workload(workload_name, max_experiments)
+    else:
+        require_confirmed(resolved)
+        workload_name = resolved.workload.name
+        max_experiments = resolved.experiment_budget
+
+    baseline_summary, baseline_bottleneck = _run_baseline(
+        workload_name, session_prefix, task=resolved
+    )
+
+    state = initial_state(
+        workload_name,
+        session_prefix,
+        max_experiments=max_experiments,
+        optimization_task=resolved.model_dump(mode="json"),
+    )
     state["baseline_summary"] = baseline_summary
     state["best_summary"] = (
         baseline_summary if is_promotable_summary(baseline_summary) else None
@@ -234,6 +274,7 @@ def prepare_initial_state(
     state["tried_experiment_ids"] = [baseline_summary["experiment_id"]]
     state["current_bottleneck"] = baseline_bottleneck
     state["experiments_remaining"] = max(0, max_experiments - 1)
+    state["started_at_s"] = time.time()
     return state
 
 
@@ -247,6 +288,7 @@ def run_agent(
     max_experiments: int = 8,
     session_prefix: str | None = None,
     interrupt_before: list[str] | None = None,
+    task: OptimizationTask | dict | None = None,
 ) -> AgentState:
     """
     Run the optimizer agent on a workload.
@@ -261,7 +303,9 @@ def run_agent(
     console.rule(f"[bold cyan]Agent: {workload_name}[/]  prefix={prefix}")
 
     # 1. Baseline + initial state. Baseline uses one experiment slot.
-    state = prepare_initial_state(workload_name, prefix, max_experiments=max_experiments)
+    state = prepare_initial_state(
+        workload_name, prefix, max_experiments=max_experiments, task=task
+    )
 
     # 2. Run graph — production checkpoint + stable thread/session identity.
     graph = build_graph(
@@ -281,7 +325,7 @@ def run_agent(
 # ---------------------------------------------------------------------------
 
 def _print_run_summary(state: AgentState) -> None:
-    primary = WORKLOAD_PRIMARY_METRIC[state["workload_name"]]
+    primary = primary_metric_of(state)
     best = state.get("best_summary")
     baseline = state.get("baseline_summary")
 
