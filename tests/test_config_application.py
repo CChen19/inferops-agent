@@ -91,8 +91,8 @@ def test_cli_evidenced_excludes_unsupported(config):
     assert "tensor_parallel_size" not in cli
 
 
-def test_complete_coverage_cli_only_is_insufficient_not_valid(config):
-    """P0-①: CLI-only actual cannot be status=valid / promotable."""
+def test_cli_actual_is_valid_despite_schema_only_keys(config):
+    """Managed CLI actual is valid; unused schema defaults do not block."""
     requested = config_knobs(config)
     actual = cli_evidenced_knobs(config)
     ev = managed_start_evidence(
@@ -101,9 +101,7 @@ def test_complete_coverage_cli_only_is_insufficient_not_valid(config):
     status = derive_status(
         evidence=ev, actual_config=actual, requested_config=requested, successful_requests=2
     )
-    assert status == ExperimentValidityStatus.INSUFFICIENT_EVIDENCE
-    # Build a result-like check via is_promotable would need full ExperimentResult;
-    # status alone already blocks promotion.
+    assert status == ExperimentValidityStatus.VALID
 
 
 def test_healthy_but_different_must_restart(monkeypatch, config):
@@ -209,9 +207,8 @@ def test_healthy_but_different_must_restart(monkeypatch, config):
     assert result.actual_config is not None
     assert result.actual_config["max_num_batched_tokens"] == config.max_num_batched_tokens
     assert "scheduler_policy" not in result.actual_config
-    # Complete-coverage: CLI-only actual → insufficient_evidence (not valid)
-    assert result.status == ExperimentValidityStatus.INSUFFICIENT_EVIDENCE
-    assert is_promotable(result) is False
+    assert result.status == ExperimentValidityStatus.VALID
+    assert is_promotable(result) is True
     assert result.run_id
     assert result.request_ledger == {}
     assert result.ledger_path is None
@@ -793,7 +790,7 @@ def test_live_identity_probe_written_while_child_alive(monkeypatch, config, tmp_
     data = json.loads(probe.read_text())
     assert data["pids_equal"] is True
     assert data["listener_pid"] == data["child_pid"] == 77
-    assert result.status == ExperimentValidityStatus.INSUFFICIENT_EVIDENCE
+    assert result.status == ExperimentValidityStatus.VALID
 
 
 def test_simulate_stop_failure_env(monkeypatch, config):

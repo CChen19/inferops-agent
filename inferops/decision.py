@@ -266,7 +266,7 @@ def _why_not_others(
         elif not is_promotable_summary(s):
             lines.append(
                 f"Reject `{eid}`: status=`{status}` / not promotable "
-                "(no critical actual-config evidence)."
+                "(Week-1 promotion gate rejected the row)."
             )
         elif s.get("vs_baseline_pct") is None:
             lines.append(f"Reject `{eid}`: primary metric missing, no invented gain.")

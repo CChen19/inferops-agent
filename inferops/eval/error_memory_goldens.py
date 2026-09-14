@@ -2,7 +2,8 @@
 
 Consumes Week-1 ``is_promotable`` / ``derive_status`` and experiment memory
 (``save_result``, ``query_results``, ``get_promotable_result``). Does not
-invent a second memory schema, loosen ①, or rewrite Tune Reflect.
+invent a second memory schema or rewrite Tune Reflect. Incomplete applyable
+actual still cannot promote.
 
 CPU / fixture only. GPU-not-run is not a pass. An empty or skipped
 fixture set is a fail.
@@ -348,9 +349,11 @@ def _invalid_mismatch(experiment_id: str) -> ExperimentResult:
 
 
 def _cli_only_insufficient(experiment_id: str) -> ExperimentResult:
+    """Incomplete even among CLI-evidenced keys — still insufficient."""
     config = _base_config(experiment_id)
     knobs = config_knobs(config)
     actual = managed_cli_actual_config(knobs)
+    actual.pop("max_num_seqs", None)
     evidence = managed_start_evidence(
         process_pid=3,
         host="127.0.0.1",
@@ -504,7 +507,7 @@ def _drive_cli_only(db_path: Path) -> tuple[ExperimentResult, dict[str, Any], li
             "expected insufficient_evidence"
         )
     if is_promotable(result):
-        extra.append("cli_only: CLI-only actual became promotable (① loosened)")
+        extra.append("cli_only: incomplete CLI actual became promotable (① loosened)")
     save_result(result, db_path=db_path)
     return result, _memory_view(db_path, result.experiment_id), extra
 

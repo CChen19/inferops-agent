@@ -13,9 +13,9 @@ Flow per experiment:
 Week-1 item ②: healthy ≠ config applied. Never mark valid from health alone,
 config file alone, or performance delta alone.
 
-Complete-coverage (P0-①): managed `actual_config` is CLI-evidenced keys only;
-non-CLI requested knobs keep status at insufficient_evidence (not valid / not
-promotable) until they can be verified.
+Managed `actual_config` records CLI-evidenced keys only. Promotion covers
+that applyable subset; schema-only knobs (scheduler_policy,
+tensor_parallel_size) stay on the request snapshot but do not block valid.
 """
 
 from __future__ import annotations
@@ -378,8 +378,8 @@ def _ensure_managed_vllm(
         elif on_progress:
             on_progress(f"status:identity_verified:pid={bound_pid}")
 
-        # CLI-evidenced keys only (complete-coverage gate → insuff until non-CLI
-        # requested knobs are also verified).
+        # Record only CLI-evidenced keys. Promotion checks complete coverage of
+        # this applyable subset; schema-only request fields are not claimed.
         actual = proc.evidenced_actual_config()
         if not actual:
             # Fall back to schema helper from requested CLI snapshot.
