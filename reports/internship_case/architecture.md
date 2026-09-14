@@ -1,7 +1,7 @@
 # Architecture
 
 One pass through the system, in the order things actually happen. File
-references are to master at `ca8e3fb` (through merged PRs #51–#53).
+references are to master at `19ad450` (through merged PR #54).
 
 ## 1. Task confirmation (`inferops/task.py`)
 
@@ -162,11 +162,15 @@ UI, so the UI cannot show a friendlier story than the file.
 `vs_baseline_pct` (PR #42). The Experiment Log prints that stored percentage
 at stored precision and includes a `ttft_p99` column (PR #44). The Executive
 Summary headline uses the same `_fmt_vs_baseline` helper (PR #50), so 3.77
-prints as `+3.77%` and a missing value prints as `n/a`, never `+0.0%`. The
-published live case artifact predates these changes and is not rewritten by
-them. A zero baseline denominator in `compare_experiments` raises `ValueError`
-instead of inventing `0.0%`; the executor records compare as
-`tool_unavailable` and leaves `vs_baseline_pct` as `None` (PR #49).
+prints as `+3.77%` and a missing value prints as `n/a`, never `+0.0%`. PR #54
+routes the Chainlit live-result and all-experiments displays through tested
+helpers in `inferops.tools.final_report`, and updates the graph run summary,
+executor completion line, and `scripts/run_agent.py` result to preserve the
+stored precision; their missing-value output is `n/a` or `unavailable`, not an
+invented `+0.0%`. The published live case artifact predates these changes and
+is not rewritten by them. A zero baseline denominator in `compare_experiments`
+raises `ValueError` instead of inventing `0.0%`; the executor records compare
+as `tool_unavailable` and leaves `vs_baseline_pct` as `None` (PR #49).
 
 ## Known limits of this architecture
 
@@ -188,8 +192,14 @@ instead of inventing `0.0%`; the executor records compare as
   multi-GPU paths are untested here.
 - `external` service mode cannot prove config application the way `managed` can;
   externally-launched servers fall back to weaker evidence kinds.
-- CLI/UI vs-baseline sites in `app.py`, `graph.py`, `executor.py`, and
-  `scripts/run_agent.py` still format as `+:.1f`. Those are not covered by
-  PR #50.
+- `_fmt_vs_baseline` has separate copies in `planner.py` and
+  `final_report.py`. They agree for reachable float/`None` inputs today, but
+  could silently diverge later.
+- CI tests the Chainlit-facing helpers in `final_report.py`, not the `app.py`
+  call sites because Chainlit is absent from the dev environment; a future
+  local re-round at an app call site could escape CI.
+- `eval/runner.py` and `scripts/run_comparison.py` retain one-decimal formatting
+  for `gap_pct` / `vs_default`; those are different metrics, not
+  `vs_baseline_pct` regressions.
 - A remote `VLLM_HOST` whose RTT exceeds `CANCEL_CHECK_S` (0.25 s) would never
   succeed `wait_ready`.
