@@ -8,7 +8,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from inferops.observability import span
-from inferops.agent.state import is_promotable_summary
+from inferops.decision import DecisionKind, build_decision, render_decision_markdown
 from inferops.task import (
     format_task_conditions_markdown,
     task_from_mapping,
@@ -20,11 +20,6 @@ def _fmt_metric(v: Any, spec: str) -> str:
     if v is None:
         return "n/a"
     return format(float(v), spec)
-
-
-def _is_deployable_best(best: dict[str, Any] | None) -> bool:
-    """Deploy recommendations use the SAME full gate as executor/eval/DB."""
-    return is_promotable_summary(best)
 
 
 class FinalReportInput(BaseModel):
@@ -53,12 +48,14 @@ class FinalReportInput(BaseModel):
         default=None,
         description="Confirmed OptimizationTask dump — same conditions as the confirm page",
     )
+    stop_reason: str = Field(default="", description="Reflect stop reason")
 
 
 class FinalReportOutput(BaseModel):
     output_path: str
     sections_written: int
     improvement_pct: float | None = None
+    decision_kind: str | None = None
 
 
 def write_final_report(inp: FinalReportInput) -> FinalReportOutput:
@@ -89,21 +86,25 @@ def write_final_report(inp: FinalReportInput) -> FinalReportOutput:
             lines += format_task_conditions_markdown(task)
             sections += 1
 
-        # Executive summary
+        decision = build_decision(
+            baseline_summary=inp.baseline_summary,
+            best_summary=inp.best_summary,
+            experiment_summaries=inp.experiment_summaries,
+            optimization_task=inp.optimization_task,
+            stop_reason=inp.stop_reason,
+        )
         improvement: float | None = None
-        deployable = _is_deployable_best(inp.best_summary)
+        if inp.best_summary and inp.best_summary.get("vs_baseline_pct") is not None:
+            improvement = float(inp.best_summary["vs_baseline_pct"])
+
+        lines += ["## Executive Summary", ""]
         if inp.baseline_summary and inp.best_summary:
             raw_imp = inp.best_summary.get("vs_baseline_pct")
-            improvement = float(raw_imp) if raw_imp is not None else None
-            icon = "🟢" if raw_imp is not None and improvement > 5 else "🟡" if raw_imp is not None and improvement > 0 else "🔴"
             status = inp.best_summary.get("validity_status", "insufficient_evidence")
             lines += [
-                "## Executive Summary",
-                "",
-                f"{icon} Best configuration achieved "
+                f"Best observed change vs baseline: "
                 f"**{f'{raw_imp:+.1f}%' if raw_imp is not None else 'n/a'}** "
-                f"vs baseline on primary metric "
-                f"(validity=`{status}`).",
+                f"(validity=`{status}`). Decision below is authoritative.",
                 "",
                 f"- **Baseline:** `{inp.baseline_summary['experiment_id']}`  "
                 f"rps={_fmt_metric(inp.baseline_summary.get('throughput_rps'), '.3f')}  "
@@ -115,11 +116,8 @@ def write_final_report(inp: FinalReportInput) -> FinalReportOutput:
                 f"- **Bottleneck at best:** `{inp.best_summary.get('bottleneck', 'unknown')}`",
                 "",
             ]
-            sections += 1
         elif inp.baseline_summary and not inp.best_summary:
             lines += [
-                "## Executive Summary",
-                "",
                 "No promotable (valid + evidenced) candidate was selected as best. "
                 "High scores without actual-config evidence are not deployable.",
                 "",
@@ -128,7 +126,8 @@ def write_final_report(inp: FinalReportInput) -> FinalReportOutput:
                 f"status=`{inp.baseline_summary.get('validity_status', 'unknown')}`",
                 "",
             ]
-            sections += 1
+        lines += render_decision_markdown(decision)
+        sections += 1
 
         # Experiment table
         if inp.experiment_summaries:
@@ -183,39 +182,33 @@ def write_final_report(inp: FinalReportInput) -> FinalReportOutput:
             lines.append("")
             sections += 1
 
-        # Recommendation
+        # Recommendation — same four outcomes as the Decision section, no generic FP8 tips.
         lines += ["## Recommendation", ""]
-        if deployable and inp.best_summary:
-            best = inp.best_summary
+        if decision.kind == DecisionKind.CONFIRMED_AND_MEETS_GOALS and decision.adopted_summary:
+            best = decision.adopted_summary
             lines.append(
-                f"Deploy experiment **`{best['experiment_id']}`** "
+                f"Adopt the measured configuration from **`{best['experiment_id']}`** "
                 f"(run_id=`{best.get('run_id', '')}`, "
-                f"bottleneck: `{best.get('bottleneck', 'unknown')}`)."
+                f"ledger=`{best.get('ledger_path') or 'n/a'}`)."
             )
-            lines.append("")
-            lines.append("Suggested next steps:")
-            bottleneck = best.get("bottleneck", "unknown")
-            if bottleneck == "compute-bound":
-                lines.append("- Consider increasing `max_num_batched_tokens` further or enabling FP8 quantisation.")
-            elif bottleneck == "memory-bound":
-                lines.append("- Reduce `max_num_seqs` or `max_model_len` to free KV cache headroom.")
-            elif bottleneck in ("scheduling-bound", "kv-bound"):
-                lines.append("- Enable `enable_prefix_caching` or `enable_chunked_prefill` if not already tried.")
-            else:
-                lines.append("- Run a wider search or try a different workload scenario.")
-        elif inp.best_summary:
-            best = inp.best_summary
+        elif decision.kind == DecisionKind.IMPROVED_BUT_UNMET_GOALS and decision.adopted_summary:
+            best = decision.adopted_summary
             lines.append(
-                f"**No deploy recommendation.** Candidate `{best['experiment_id']}` "
-                f"has status=`{best.get('validity_status', 'insufficient_evidence')}` "
-                "and/or lacks critical actual-config evidence. "
-                "Config file alone, HTTP 200 alone, or performance change alone "
-                "are never sufficient."
+                f"**No deploy recommendation.** `{best['experiment_id']}` improved "
+                "over baseline but the task goals are still not met."
+            )
+        elif decision.kind == DecisionKind.NO_RELIABLE_IMPROVEMENT:
+            base = decision.baseline_summary or {}
+            lines.append(
+                f"**No deploy recommendation.** Keep baseline "
+                f"`{base.get('experiment_id', 'n/a')}`. "
+                "No candidate was both confirmed and promotable."
             )
         else:
             lines.append(
-                "**No deploy recommendation.** No valid, evidenced best candidate "
-                "was selected in this session."
+                "**No deploy recommendation.** Evidence is insufficient or execution "
+                "failed. Config file alone, HTTP 200 alone, or a performance delta "
+                "alone are never sufficient."
             )
         lines.append("")
         sections += 1
@@ -229,4 +222,5 @@ def write_final_report(inp: FinalReportInput) -> FinalReportOutput:
         output_path=str(out_path),
         sections_written=sections,
         improvement_pct=improvement,
+        decision_kind=decision.kind.value,
     )

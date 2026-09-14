@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Any, TypedDict
+from typing import Annotated, Any, NotRequired, TypedDict
 
 from langchain_core.messages import BaseMessage
 from langgraph.graph import add_messages
@@ -40,6 +40,9 @@ class ExperimentSummary(TypedDict):
     promotable: bool
     failure_reason: str  # notes / error from failed contract rows ("" if none)
     error_rate: float | None  # ④ field; Reflect SLO reads this — never invent 0
+    requested_config: NotRequired[dict[str, Any]]
+    actual_config: NotRequired[dict[str, Any] | None]
+    ledger_path: NotRequired[str | None]
 
 
 # ---------------------------------------------------------------------------
@@ -231,6 +234,13 @@ def summary_from_result(
             status_value == "failed"
         ) else "",
         error_rate=_error_rate_from_result(result),
+        requested_config=dict(getattr(result, "requested_config", None) or {}),
+        actual_config=(
+            dict(result.actual_config)
+            if getattr(result, "actual_config", None)
+            else None
+        ),
+        ledger_path=getattr(result, "ledger_path", None),
     )
 
 

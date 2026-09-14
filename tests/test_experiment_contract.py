@@ -679,6 +679,26 @@ def test_final_report_withholds_deploy_without_evidence(tmp_path):
 
 
 def test_final_report_deploys_only_when_promotable(tmp_path):
+    baseline = {
+        "experiment_id": "sess_baseline",
+        "param_changed": None,
+        "value_changed": None,
+        "throughput_rps": 2.5,
+        "tokens_per_second": 160.0,
+        "ttft_p50_ms": 45.0,
+        "ttft_p99_ms": 60.0,
+        "e2e_p50_ms": 750.0,
+        "bottleneck": "compute-bound",
+        "vs_baseline_pct": 0.0,
+        "run_id": "bb",
+        "validity_status": "valid",
+        "mlflow_run_id": "m1",
+        "has_config_evidence": True,
+        "promotable": True,
+        "failure_reason": "",
+        "error_rate": 0.0,
+        "actual_config": {"max_num_batched_tokens": 2048},
+    }
     best = {
         "experiment_id": "sess_good",
         "param_changed": "max_num_batched_tokens",
@@ -696,19 +716,24 @@ def test_final_report_deploys_only_when_promotable(tmp_path):
         "has_config_evidence": True,
         "promotable": True,
         "failure_reason": "",
+        "error_rate": 0.0,
+        "actual_config": {"max_num_batched_tokens": 4096},
     }
     out = tmp_path / "ok.md"
     write_final_report(
         FinalReportInput(
             workload_name="chat_short",
             session_prefix="sess_",
-            experiment_summaries=[best],
-            baseline_summary=best,
+            experiment_summaries=[baseline, best],
+            baseline_summary=baseline,
             best_summary=best,
             output_path=str(out),
         )
     )
-    assert "Deploy experiment **`sess_good`**" in out.read_text()
+    text = out.read_text()
+    assert "sess_good" in text
+    assert "confirmed_and_meets_goals" in text
+    assert "No deploy recommendation" not in text
 
 
 def test_final_report_rejects_valid_without_promotable_flag(tmp_path):
