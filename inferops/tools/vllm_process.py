@@ -29,7 +29,6 @@ from inferops.schemas import (
 )
 from inferops.tools.managed_lifecycle import cancel_requested
 
-DEFAULT_VLLM_PYTHON = "/home/chris/miniconda3/envs/vllm-dev/bin/python"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8000
 STARTUP_TIMEOUT_S = 180  # CUDA graph compilation can be slow
@@ -42,14 +41,22 @@ CANCEL_CHECK_S = 0.25
 # Alias kept for tests / call sites; source of truth is schemas.
 CLI_EVIDENCED_KNOB_KEYS: tuple[str, ...] = tuple(sorted(MANAGED_CLI_EVIDENCED_KEYS))
 
+_VLLM_PYTHON_UNSET_MSG = (
+    "No vLLM Python configured. Set INFEROPS_VLLM_PYTHON to the interpreter "
+    "that has vLLM installed (VLLM_PYTHON is also accepted)."
+)
+
 
 def get_vllm_python() -> str:
-    """Return the Python executable used to launch the vLLM server."""
-    return (
-        os.environ.get("INFEROPS_VLLM_PYTHON")
-        or os.environ.get("VLLM_PYTHON")
-        or DEFAULT_VLLM_PYTHON
-    )
+    """Return the Python executable used to launch the vLLM server.
+
+    Prefers INFEROPS_VLLM_PYTHON, then VLLM_PYTHON. Raises if neither is set
+    (no machine-local fallback).
+    """
+    python = os.environ.get("INFEROPS_VLLM_PYTHON") or os.environ.get("VLLM_PYTHON")
+    if not python:
+        raise RuntimeError(_VLLM_PYTHON_UNSET_MSG)
+    return python
 
 
 def cli_evidenced_knobs(cfg: ExperimentConfig) -> dict[str, Any]:

@@ -13,7 +13,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from rich.console import Console
 
 from inferops.eval.live_fair_compare import (
-    DEFAULT_VLLM_PYTHON,
     LIVE_LLM_BOUNDARY,
     TOOL_BOUNDARY,
     LiveCompareBlocked,
@@ -24,6 +23,7 @@ from inferops.eval.live_fair_compare import (
     run_live_search,
     write_live_compare_outputs,
 )
+from inferops.tools.vllm_process import get_vllm_python
 
 console = Console()
 
@@ -40,7 +40,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--model", default="Qwen/Qwen2.5-0.5B-Instruct")
     parser.add_argument("--max-ttft-ms", type=float, default=250.0)
     parser.add_argument("--prefix", default="livefair_search_")
-    parser.add_argument("--vllm-python", default=DEFAULT_VLLM_PYTHON)
+    parser.add_argument(
+        "--vllm-python",
+        default=None,
+        help="vLLM interpreter path (default: INFEROPS_VLLM_PYTHON or VLLM_PYTHON)",
+    )
     parser.add_argument("--commit-sha")
     args = parser.parse_args(argv)
 
@@ -86,8 +90,12 @@ def main(argv: list[str] | None = None) -> int:
                 )
 
         if args.run_search:
-            require_managed_live_conditions(args.vllm_python)
-            os.environ["INFEROPS_VLLM_PYTHON"] = args.vllm_python
+            try:
+                vllm_python = args.vllm_python if args.vllm_python is not None else get_vllm_python()
+            except RuntimeError as exc:
+                raise LiveCompareBlocked(str(exc)) from exc
+            require_managed_live_conditions(vllm_python)
+            os.environ["INFEROPS_VLLM_PYTHON"] = vllm_python
             search_run, fixture = run_live_search(
                 budget=args.budget,
                 workload_name=args.workload,
