@@ -114,6 +114,97 @@ def _executor_state():
     return state
 
 
+def _build_wrongly_valid_hot_result(
+    config,
+    *,
+    requested_config: dict,
+    actual_config: dict,
+    config_evidence: ConfigEvidence,
+    experiment_id: str = "sess_max_num_batched_tokens_4096",
+) -> ExperimentResult:
+    """High-RPS row with critical evidence but incomplete actual, status stamped valid."""
+    return ExperimentResult(
+        experiment_id=experiment_id,
+        config=config.model_copy(update={
+            "experiment_id": experiment_id,
+            "max_num_batched_tokens": 4096,
+        }),
+        total_requests=10,
+        successful_requests=10,
+        total_time_s=1.0,
+        throughput_rps=99.9,
+        tokens_per_second=999.0,
+        ttft=LatencyPercentiles(p50=1, p90=2, p95=3, p99=4),
+        tpot=LatencyPercentiles(p50=1, p90=2, p95=3, p99=4),
+        e2e_latency=LatencyPercentiles(p50=1, p90=2, p95=3, p99=4),
+        run_id="cccccccccccccccccccccccccccccccc",
+        requested_config=requested_config,
+        actual_config=actual_config,
+        config_evidence=config_evidence,
+        status=ExperimentValidityStatus.VALID,
+        mlflow_run_id="mlf-hot",
+    )
+
+
+def _assert_unified_gate_rejects_everywhere(
+    hot: ExperimentResult,
+    result_b: ExperimentResult,
+    tmp_db: Path,
+    tmp_path: Path,
+) -> None:
+    """Same counterexample must fail executor, baseline, eval, AND report."""
+    assert is_promotable(hot) is False
+    summary = summary_from_result(
+        hot, "max_num_batched_tokens", 4096, 2.0, "throughput_rps"
+    )
+    assert summary["promotable"] is False
+    assert is_promotable_summary(summary) is False
+
+    # --- executor ---
+    state = _executor_state()
+    with patch("inferops.agent.executor.get_result_by_id", return_value=hot), \
+         patch("inferops.agent.executor.run_benchmark"), \
+         patch("inferops.agent.executor.analyze_bottleneck",
+               return_value=MagicMock(bottleneck="compute-bound")), \
+         patch("inferops.agent.executor.compare_experiments",
+               return_value=MagicMock(delta_pct=400.0)):
+        out = executor_node(state)
+    assert out["best_summary"]["experiment_id"] == "sess_baseline"
+
+    # --- baseline seeding ---
+    with patch("inferops.agent.graph._run_baseline", return_value=(summary, "unknown")):
+        summary = {**summary, "experiment_id": "sess_baseline", "vs_baseline_pct": 0.0}
+    with patch("inferops.agent.graph._run_baseline", return_value=(summary, "unknown")):
+        st = prepare_initial_state("chat_short", "sess_", max_experiments=3)
+    assert st["best_summary"] is None
+
+    # --- DB / eval ---
+    save_result(hot, db_path=tmp_db)
+    save_result(result_b.model_copy(update={"experiment_id": "agent_x_good"}), db_path=tmp_db)
+    prom = query_results(top_k=10, db_path=tmp_db, promotable_only=True)
+    assert all(r["experiment_id"] != hot.experiment_id for r in prom)
+
+    # --- final report ---
+    fake_best = {
+        **summary,
+        "experiment_id": hot.experiment_id,
+        "promotable": False,
+        "failure_reason": "",
+    }
+    out_path = tmp_path / "r.md"
+    write_final_report(FinalReportInput(
+        workload_name="chat_short",
+        session_prefix="sess_",
+        experiment_summaries=[fake_best],
+        baseline_summary=fake_best,
+        best_summary=fake_best,
+        output_path=str(out_path),
+    ))
+    text = out_path.read_text()
+    assert "No deploy recommendation" in text
+    assert "Deploy experiment" not in text
+
+
 # ---------------------------------------------------------------------------
 # Core gate / derive_status
 # ---------------------------------------------------------------------------
@@ -333,85 +424,30 @@ def test_is_promotable_requires_actual_and_evidence(result_b, result_b_unevidenc
 # ---------------------------------------------------------------------------
 
 def test_unified_gate_rejects_valid_looking_partial_everywhere(config, result_b, tmp_db, tmp_path):
-    """Same counterexample must fail executor, baseline, eval, AND report."""
+    """Empty actual must never promote, even if status is stamped valid."""
     req = config_knobs(config)
-    actual: dict = {}  # empty actual must never promote, even if status is stamped valid
+    actual: dict = {}
     ev = managed_start_evidence(
         process_pid=1, host="127.0.0.1", port=8000, observed_params=managed_cli_actual_config(req)
     )
-    # Intentionally stamp status=valid to simulate inconsistent older writers
-    hot = ExperimentResult(
-        experiment_id="sess_max_num_batched_tokens_4096",
-        config=config.model_copy(update={
-            "experiment_id": "sess_max_num_batched_tokens_4096",
-            "max_num_batched_tokens": 4096,
-        }),
-        total_requests=10,
-        successful_requests=10,
-        total_time_s=1.0,
-        throughput_rps=99.9,
-        tokens_per_second=999.0,
-        ttft=LatencyPercentiles(p50=1, p90=2, p95=3, p99=4),
-        tpot=LatencyPercentiles(p50=1, p90=2, p95=3, p99=4),
-        e2e_latency=LatencyPercentiles(p50=1, p90=2, p95=3, p99=4),
-        run_id="cccccccccccccccccccccccccccccccc",
-        requested_config=req,
-        actual_config=actual,
-        config_evidence=ev,
-        status=ExperimentValidityStatus.VALID,
-        mlflow_run_id="mlf-hot",
+    hot = _build_wrongly_valid_hot_result(
+        config, requested_config=req, actual_config=actual, config_evidence=ev
     )
-    assert is_promotable(hot) is False
-    summary = summary_from_result(
-        hot, "max_num_batched_tokens", 4096, 2.0, "throughput_rps"
+    _assert_unified_gate_rejects_everywhere(hot, result_b, tmp_db, tmp_path)
+
+
+def test_unified_gate_rejects_incomplete_cli_actual_everywhere(config, result_b, tmp_db, tmp_path):
+    """CLI subset minus one applyable key must fail all promotion surfaces."""
+    req = config_knobs(config)
+    actual = managed_cli_actual_config(req)
+    actual.pop("max_num_seqs", None)
+    ev = managed_start_evidence(
+        process_pid=1, host="127.0.0.1", port=8000, observed_params=actual
     )
-    assert summary["promotable"] is False
-    assert is_promotable_summary(summary) is False
-
-    # --- executor ---
-    state = _executor_state()
-    with patch("inferops.agent.executor.get_result_by_id", return_value=hot), \
-         patch("inferops.agent.executor.run_benchmark"), \
-         patch("inferops.agent.executor.analyze_bottleneck",
-               return_value=MagicMock(bottleneck="compute-bound")), \
-         patch("inferops.agent.executor.compare_experiments",
-               return_value=MagicMock(delta_pct=400.0)):
-        out = executor_node(state)
-    assert out["best_summary"]["experiment_id"] == "sess_baseline"
-
-    # --- baseline seeding ---
-    with patch("inferops.agent.graph._run_baseline", return_value=(summary, "unknown")):
-        # force experiment_id for baseline shape
-        summary = {**summary, "experiment_id": "sess_baseline", "vs_baseline_pct": 0.0}
-    with patch("inferops.agent.graph._run_baseline", return_value=(summary, "unknown")):
-        st = prepare_initial_state("chat_short", "sess_", max_experiments=3)
-    assert st["best_summary"] is None
-
-    # --- DB / eval ---
-    save_result(hot, db_path=tmp_db)
-    save_result(result_b.model_copy(update={"experiment_id": "agent_x_good"}), db_path=tmp_db)
-    prom = query_results(top_k=10, db_path=tmp_db, promotable_only=True)
-    assert all(r["experiment_id"] != hot.experiment_id for r in prom)
-
-    # --- final report ---
-    fake_best = {
-        **summary,
-        "experiment_id": hot.experiment_id,
-        "promotable": False,
-        "failure_reason": "",
-    }
-    out_path = tmp_path / "r.md"
-    write_final_report(FinalReportInput(
-        workload_name="chat_short",
-        session_prefix="sess_",
-        experiment_summaries=[fake_best],
-        baseline_summary=fake_best,
-        best_summary=fake_best,
-        output_path=str(out_path),
-    ))
-    text = out_path.read_text()
-    assert "No deploy recommendation" in text
-    assert "Deploy experiment" not in text
+    hot = _build_wrongly_valid_hot_result(
+        config, requested_config=req, actual_config=actual, config_evidence=ev
+    )
+    _assert_unified_gate_rejects_everywhere(hot, result_b, tmp_db, tmp_path)
 
 
 def test_save_and_query_contract_columns(result_b, result_b_unevidenced, tmp_db):
