@@ -83,6 +83,50 @@ def test_live_observe_fails_closed_on_ttft_slo():
     assert fixture.observations[0]["slo_ok"] is False
 
 
+def _minimal_compare_report(*, commit_sha: str, planner_source_sha: str) -> dict:
+    return build_live_compare_report(
+        commit_sha=commit_sha,
+        planner={
+            "strategy": "planner",
+            "source": "ingested_report",
+            "source_sha": planner_source_sha,
+            "llm_boundary": "live_openrouter",
+            "tool_boundary": "managed_local_vllm",
+            "budget_used": 1,
+            "observations": [],
+            "best": {"experiment_id": "planner_baseline", "validity": "valid", "rps": 18.0},
+            "decision_kind": "no_reliable_improvement",
+        },
+        search_run=None,
+        fixture=None,
+        budget=10,
+        workload_name="chat_short",
+        model_name="Qwen/Qwen2.5-0.5B-Instruct",
+        max_ttft_ms=250.0,
+    )
+
+
+def test_markdown_warns_when_planner_and_live_shas_differ():
+    report = _minimal_compare_report(commit_sha="newsha", planner_source_sha="oldsha")
+    markdown = render_live_compare_markdown(report)
+
+    assert "Warning:" in markdown
+    assert "not on the same code version" in markdown
+    assert "`oldsha`" in markdown
+    assert "`newsha`" in markdown
+    assert "| planner | `oldsha` |" in markdown
+    assert "| online_local_search | `newsha` |" in markdown
+
+
+def test_markdown_no_sha_warning_when_shas_match():
+    report = _minimal_compare_report(commit_sha="samesha", planner_source_sha="samesha")
+    markdown = render_live_compare_markdown(report)
+
+    assert "not on the same code version" not in markdown
+    assert "| planner | `samesha` |" in markdown
+    assert "| online_local_search | `samesha` |" in markdown
+
+
 def test_ingested_planner_and_report_emit_honest_boundaries(tmp_path):
     meta = {
         "git_sha": "oldsha",
