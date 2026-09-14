@@ -1,7 +1,7 @@
 """Commit-level eval harness and Markdown dashboard generation.
 
 Modes:
-  - mock              Preset strategy simulation (random/greedy over ground-truth).
+  - mock              Fair-protocol simulation (default/random/online local search).
                       Does NOT invoke production build_graph / planner_node.
   - session           Score a persisted agent session by experiment-id prefix.
   - real_graph_offline  Production LangGraph planner path with fake LLM + stubbed
@@ -15,14 +15,23 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from inferops.eval.baselines import BaselineRun, run_greedy_agent, run_random_agent
+from inferops.eval.baselines import BaselineRun
 from inferops.eval.judge import judge_trajectory
 from inferops.eval.metrics import (
+    WORKLOAD_PRIMARY_METRIC,
     WorkloadScore,
+    OutcomeMetrics,
     aggregate_scores,
     composite_score,
     compute_efficiency,
     compute_outcome,
+)
+from inferops.eval.protocol import BudgetPolicy, HiddenResultFixture, is_valid_observation, primary_value
+from inferops.eval.strategies import (
+    StrategyRun,
+    run_default_strategy,
+    run_online_local_search,
+    run_random_strategy,
 )
 from inferops.eval.real_graph import (
     MODE_REAL_GRAPH_LLM,
@@ -49,35 +58,49 @@ def run_mock_eval(
     budget: int = 6,
     seed: int = 42,
 ) -> dict[str, Any]:
-    """Preset strategy simulation over ground-truth rows (NOT production planner).
+    """Fair-protocol strategy simulation over ground-truth rows (NOT production planner).
 
-    Uses ``run_random_agent`` / ``run_greedy_agent`` only. Trajectory ``node``
-    fields are baseline names — never planner / executor / reflector. Does not
-    call ``build_graph`` or ``planner_node``.
+    Runs ``default``, ``random``, and ``online_local_search`` via the shared
+    ``HiddenResultFixture`` / ``BudgetPolicy`` / observe-after-pick contract.
+    Does not call ``build_graph`` or ``planner_node``.
     """
     names = workloads or ALL_WORKLOAD_NAMES
-    strategies: dict[str, list[dict[str, Any]]] = {
-        "random_agent": [],
-        "greedy_agent": [],
-    }
+    strategy_names = ("default", "random", "online_local_search")
+    strategies: dict[str, list[dict[str, Any]]] = {name: [] for name in strategy_names}
 
     for wl_name in names:
         gt = load_ground_truth(wl_name, ground_truth_dir)
-        random_run = run_random_agent(gt, budget=budget, seed=seed)
-        greedy_run = run_greedy_agent(gt, budget=budget)
-        for run in (random_run, greedy_run):
-            strategies[run.agent_name].append(_score_baseline_run(gt, run))
+        fixture = _fixture_from_ground_truth(gt)
+        policy = BudgetPolicy(total_slots=budget)
+        wl = gt["workload_name"]
+        runs = {
+            "default": run_default_strategy(
+                fixture, policy, workload_name=wl, gt_optimum=gt
+            ),
+            "random": run_random_strategy(
+                fixture,
+                BudgetPolicy(total_slots=budget),
+                workload_name=wl,
+                seed=seed,
+                gt_optimum=gt,
+            ),
+            "online_local_search": run_online_local_search(
+                fixture,
+                BudgetPolicy(total_slots=budget),
+                workload_name=wl,
+                gt_optimum=gt,
+            ),
+        }
+        for name, run in runs.items():
+            strategies[name].append(_strategy_run_to_row(gt, run, budget=budget))
 
-    aggregates = {
-        name: aggregate_scores([_row_to_workload_score(row) for row in rows])
-        for name, rows in strategies.items()
-    }
+    aggregates = {name: _aggregate_protocol_rows(rows) for name, rows in strategies.items()}
 
     return {
         "commit_sha": commit_sha,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "mode": "mock",
-        "mode_label": "preset_strategy_simulation",
+        "mode_label": "fair_protocol_simulation",
         "budget": budget,
         "strategies": strategies,
         "aggregates": aggregates,
@@ -128,8 +151,8 @@ def render_markdown_report(report: dict[str, Any]) -> str:
     disclaimer = ""
     if mode == "mock":
         disclaimer = (
-            "\n> **Mock eval only (preset strategy simulation).** "
-            "random_agent / greedy_agent over ground-truth rows — "
+            "\n> **Mock eval only (fair protocol simulation).** "
+            "default / random / online_local_search over hidden ground-truth rows — "
             "**does not** invoke production `build_graph` / `planner_node`. "
             "Figures are **not** real measured performance claims.\n"
         )
@@ -164,32 +187,158 @@ def render_markdown_report(report: dict[str, Any]) -> str:
         disclaimer,
         "## Summary",
         "",
-        "| Strategy | Mean gap % | Mean runs | Mean composite |",
-        "|---|---:|---:|---:|",
     ]
-    for name, agg in sorted(report.get("aggregates", {}).items()):
-        lines.append(
-            f"| {name} | {agg.get('mean_gap_pct', 0):+.2f} | "
-            f"{agg.get('mean_n_experiments', 0):.1f} | {agg.get('mean_composite', 0):.4f} |"
-        )
+    if mode == "mock":
+        lines += [
+            "| Strategy | Success | Mean gap % | Mean 1st valid | Wasted | Paid | Composite |",
+            "|---|---:|---:|---:|---:|---:|---:|",
+        ]
+        for name, agg in sorted(report.get("aggregates", {}).items()):
+            success_pct = agg.get("mean_success_in_budget", 0.0) * 100
+            first_valid = agg.get("mean_first_valid_n")
+            first_valid_s = f"{first_valid:.1f}" if first_valid is not None else "—"
+            lines.append(
+                f"| {name} | {success_pct:.0f}% | {agg.get('mean_gap_pct', 0):+.2f} | "
+                f"{first_valid_s} | {agg.get('mean_wasted_trials', 0):.1f} | "
+                f"{agg.get('mean_n_paid', 0):.1f} | {agg.get('mean_composite', 0):.4f} |"
+            )
+    else:
+        lines += [
+            "| Strategy | Mean gap % | Mean runs | Mean composite |",
+            "|---|---:|---:|---:|",
+        ]
+        for name, agg in sorted(report.get("aggregates", {}).items()):
+            lines.append(
+                f"| {name} | {agg.get('mean_gap_pct', 0):+.2f} | "
+                f"{agg.get('mean_n_experiments', 0):.1f} | {agg.get('mean_composite', 0):.4f} |"
+            )
 
     lines += ["", "## Workloads", ""]
     for name, rows in sorted(report.get("strategies", {}).items()):
-        lines += [
-            f"### {name}",
-            "",
-            "| Workload | Metric | GT | Agent | Gap % | Runs | Traj | Composite |",
-            "|---|---|---:|---:|---:|---:|---:|---:|",
-        ]
-        for row in rows:
-            lines.append(
-                f"| {row['workload_name']} | {row['primary_metric']} | "
-                f"{row['ground_truth_value']:.3f} | {row['agent_value']:.3f} | "
-                f"{row['gap_pct']:+.2f} | {row['n_experiments']} | "
-                f"{row['trajectory_score']:.2f} | {row['composite']:.4f} |"
-            )
+        if mode == "mock":
+            lines += [
+                f"### {name}",
+                "",
+                "| Workload | Success | 1st valid | Gain | Wasted | Paid | Gap % | Composite |",
+                "|---|---:|---:|---:|---:|---:|---:|---:|",
+            ]
+            for row in rows:
+                success = "yes" if row.get("success_in_budget") else "no"
+                first_valid = row.get("first_valid_n")
+                first_valid_s = str(first_valid) if first_valid is not None else "—"
+                gain = row.get("confirmed_gain")
+                gain_s = f"{gain:.3f}" if gain is not None else "—"
+                gap = row.get("gap_pct")
+                gap_s = f"{gap:+.2f}" if gap is not None else "—"
+                lines.append(
+                    f"| {row['workload_name']} | {success} | {first_valid_s} | {gain_s} | "
+                    f"{row.get('wasted_trials', 0)} | {row.get('n_paid', 0)} | "
+                    f"{gap_s} | {row.get('composite', 0):.4f} |"
+                )
+        else:
+            lines += [
+                f"### {name}",
+                "",
+                "| Workload | Metric | GT | Agent | Gap % | Runs | Traj | Composite |",
+                "|---|---|---:|---:|---:|---:|---:|---:|",
+            ]
+            for row in rows:
+                lines.append(
+                    f"| {row['workload_name']} | {row['primary_metric']} | "
+                    f"{row['ground_truth_value']:.3f} | {row['agent_value']:.3f} | "
+                    f"{row['gap_pct']:+.2f} | {row['n_experiments']} | "
+                    f"{row['trajectory_score']:.2f} | {row['composite']:.4f} |"
+                )
         lines.append("")
     return "\n".join(lines)
+
+
+def _fixture_from_ground_truth(ground_truth: dict[str, Any]) -> HiddenResultFixture:
+    """Build a fair-eval fixture; GT sweep rows lack SLO contract fields by default."""
+    enriched = [
+        {
+            **row,
+            "validity_status": row.get("validity_status", "valid"),
+            "error_rate": row.get("error_rate", 0.01),
+            "has_config_evidence": row.get("has_config_evidence", True),
+            "bottleneck": row.get("bottleneck", "compute-bound"),
+        }
+        for row in ground_truth.get("experiments", [])
+    ]
+    return HiddenResultFixture.from_rows(enriched)
+
+
+def _strategy_run_to_row(
+    ground_truth: dict[str, Any],
+    run: StrategyRun,
+    *,
+    budget: int,
+) -> dict[str, Any]:
+    """Map a protocol ``StrategyRun`` to a harness report row."""
+    workload_name = run.workload_name
+    metric, direction = WORKLOAD_PRIMARY_METRIC[workload_name]
+    score = run.score
+    gt_val = float(ground_truth["best_value"])
+
+    agent_val = 0.0
+    best = run.ledger.best_valid(metric, direction)
+    if best is not None:
+        _cfg, best_obs = best
+        agent_val = primary_value(best_obs, metric)
+
+    gap_pct = score["gap_pct"]
+    if gap_pct is None:
+        if direction == "max":
+            gap_pct = (gt_val - agent_val) / gt_val * 100 if gt_val else 0.0
+        else:
+            gap_pct = (agent_val - gt_val) / gt_val * 100 if gt_val else 0.0
+        gap_pct = round(gap_pct, 2)
+
+    outcome = OutcomeMetrics(
+        workload_name=workload_name,
+        primary_metric=metric,
+        ground_truth_value=gt_val,
+        agent_value=agent_val,
+        gap_pct=gap_pct,
+    )
+    efficiency = compute_efficiency(score["n_paid"], wall_clock_s=0.0)
+    comp = composite_score(outcome, efficiency, budget_experiments=budget)
+
+    return {
+        "workload_name": workload_name,
+        "primary_metric": metric,
+        "ground_truth_value": gt_val,
+        "agent_value": agent_val,
+        "success_in_budget": score["success_in_budget"],
+        "first_valid_n": score["first_valid_n"],
+        "confirmed_gain": score["confirmed_gain"],
+        "wasted_trials": score["wasted_trials"],
+        "n_paid": score["n_paid"],
+        "gap_pct": gap_pct,
+        "composite": comp,
+        "n_experiments": score["n_paid"],
+    }
+
+
+def _aggregate_protocol_rows(rows: list[dict[str, Any]]) -> dict[str, float | None]:
+    if not rows:
+        return {}
+    n = len(rows)
+    first_valid_vals = [r["first_valid_n"] for r in rows if r.get("first_valid_n") is not None]
+    return {
+        "mean_success_in_budget": round(
+            sum(1.0 if r.get("success_in_budget") else 0.0 for r in rows) / n, 4
+        ),
+        "mean_gap_pct": round(sum(r.get("gap_pct") or 0.0 for r in rows) / n, 2),
+        "mean_first_valid_n": round(sum(first_valid_vals) / len(first_valid_vals), 1)
+        if first_valid_vals
+        else None,
+        "mean_wasted_trials": round(sum(r.get("wasted_trials", 0) for r in rows) / n, 1),
+        "mean_n_paid": round(sum(r.get("n_paid", 0) for r in rows) / n, 1),
+        "mean_n_experiments": round(sum(r.get("n_paid", 0) for r in rows) / n, 1),
+        "mean_wall_clock_min": 0.0,
+        "mean_composite": round(sum(r.get("composite", 0.0) for r in rows) / n, 4),
+    }
 
 
 def _score_baseline_run(ground_truth: dict[str, Any], run: BaselineRun) -> dict[str, Any]:

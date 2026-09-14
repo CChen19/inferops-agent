@@ -8,7 +8,7 @@ from inferops.eval.regression import regression_gate
 def _report(gap: float, composite: float) -> dict:
     return {
         "strategies": {
-            "greedy_agent": [
+            "online_local_search": [
                 {
                     "workload_name": "chat_short",
                     "gap_pct": gap,
@@ -63,7 +63,7 @@ def test_regression_gate_fails_when_strategy_missing():
 def _multi_report(*workloads: tuple[str, float, float]) -> dict:
     return {
         "strategies": {
-            "greedy_agent": [
+            "online_local_search": [
                 {
                     "workload_name": name,
                     "gap_pct": gap,

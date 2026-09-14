@@ -43,7 +43,7 @@ def test_mock_eval_does_not_call_build_graph_or_planner():
     mock_build.assert_not_called()
     mock_planner.assert_not_called()
     assert report["mode"] == "mock"
-    assert report["mode_label"] == "preset_strategy_simulation"
+    assert report["mode_label"] == "fair_protocol_simulation"
 
 
 def test_mock_trajectory_nodes_are_baseline_names_not_planner():

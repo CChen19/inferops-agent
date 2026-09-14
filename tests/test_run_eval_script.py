@@ -6,6 +6,27 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
+
+def test_mock_online_local_search_does_not_adopt_unread_t4096():
+    """Budget=2 fair local search must not clairvoyantly pick hidden 17.2 RPS t4096."""
+    from inferops.eval.harness import run_mock_eval
+
+    report = run_mock_eval(
+        commit_sha="t4096proof",
+        ground_truth_dir=Path("tests/fixtures/ground_truth"),
+        workloads=["chat_short"],
+        budget=2,
+        seed=7,
+    )
+    row = report["strategies"]["online_local_search"][0]
+    assert row["workload_name"] == "chat_short"
+    # Clairvoyant greedy hits t4096 (17.2); fair search tries sorted neighbor c1 (16.0).
+    assert row["agent_value"] == 16.0
+    assert row["ground_truth_value"] == 17.2
+    assert row["gap_pct"] == pytest.approx(6.98, abs=0.01)
+
 
 def test_run_eval_mock_writes_report(tmp_path):
     cmd = [

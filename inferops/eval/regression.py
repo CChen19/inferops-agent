@@ -23,7 +23,7 @@ def load_eval_json(path: str | Path) -> dict[str, Any]:
 def regression_gate(
     current: dict[str, Any],
     baseline: dict[str, Any],
-    strategy: str = "greedy_agent",
+    strategy: str = "online_local_search",
     max_outcome_regression_pct: float = 5.0,
     min_composite_delta: float = -0.05,
 ) -> GateResult:
