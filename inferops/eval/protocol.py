@@ -7,6 +7,7 @@ identical across runs.
 from __future__ import annotations
 
 import itertools
+import math
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -178,7 +179,13 @@ def is_valid_observation(observation: Observation) -> bool:
 
 
 def primary_value(observation: Observation, metric: str) -> float:
-    return float(observation.metrics.get(metric, 0.0))
+    """Return the primary metric as a finite float. Missing or non-numeric fails closed."""
+    if metric not in observation.metrics:
+        raise ValueError(f"missing primary metric {metric!r}")
+    value = observation.metrics[metric]
+    if type(value) not in (int, float) or not math.isfinite(value):
+        raise ValueError(f"primary metric {metric!r} is not a finite number: {value!r}")
+    return float(value)
 
 
 def is_better(
