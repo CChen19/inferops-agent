@@ -209,6 +209,44 @@ def test_wait_ready_still_times_out_without_cancel(config, monkeypatch):
     assert 0.5 <= elapsed < 2.0
 
 
+def test_wait_ready_health_get_uses_cancel_check_timeout(config, monkeypatch):
+    """Hung /health must be bounded by CANCEL_CHECK_S, not a hardcoded 3s GET."""
+    seen = {}
+
+    def _ok(*_a, **k):
+        seen["timeout"] = k.get("timeout")
+        return httpx.Response(200)
+
+    monkeypatch.setattr(vp.httpx, "get", _ok)
+    proc = _proc_with_fake_child(config)
+    assert proc.wait_ready() is True
+    assert seen["timeout"] == vp.CANCEL_CHECK_S
+    assert seen["timeout"] <= 0.25
+
+
+def test_wait_ready_abort_during_hung_health_get_is_subsecond(config, monkeypatch):
+    """Cancel during a hung health GET must not wait out the old 3s httpx timeout."""
+    monkeypatch.setattr(vp, "STARTUP_TIMEOUT_S", 6.0)
+
+    def _hung(*_a, **k):
+        timeout = k.get("timeout", 3)
+        time.sleep(float(timeout))
+        raise httpx.TimeoutException("hung health")
+
+    monkeypatch.setattr(vp.httpx, "get", _hung)
+    proc = _proc_with_fake_child(config)
+    timer = threading.Timer(0.05, ml.request_cancel)
+    timer.start()
+    try:
+        t0 = time.monotonic()
+        ready = proc.wait_ready_verbose(None)
+        elapsed = time.monotonic() - t0
+    finally:
+        timer.cancel()
+    assert ready is False
+    assert elapsed < 1.0, f"wait_ready waited {elapsed:.2f}s on hung health GET"
+
+
 def _racey_proc(config):
     """First _proc read is a live child; later reads are None (stop() on another thread)."""
     child = _FakeChild()

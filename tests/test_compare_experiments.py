@@ -57,3 +57,19 @@ def test_compare_ci_bounds_are_ordered(result, result_b):
         ))
 
     assert out.ci_low_pct <= out.ci_high_pct
+
+
+def test_compare_zero_baseline_raises_instead_of_silent_zero(result, result_b):
+    """val_a == 0 must fail closed — never invent delta_pct = 0.0."""
+    zero_a = result.model_copy(update={"throughput_rps": 0.0})
+    with patch(
+        "inferops.tools.compare_experiments.get_result_by_id",
+        side_effect=[zero_a, result_b],
+    ):
+        with pytest.raises(ValueError, match="baseline denominator is 0"):
+            compare_experiments(CompareExperimentsInput(
+                experiment_id_a="test_default",
+                experiment_id_b="test_big_batch",
+                metric="throughput_rps",
+                n_bootstrap=200,
+            ))
