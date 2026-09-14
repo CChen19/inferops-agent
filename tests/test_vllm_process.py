@@ -245,3 +245,17 @@ def test_exit_code_binds_proc_once(config):
     proc, reads = _racey_proc(config)
     assert proc.exit_code() is None
     assert reads["n"] == 1
+
+
+def test_pid_binds_proc_once(config):
+    """stop() can null _proc on another thread; must not re-read self._proc for .pid."""
+    proc, reads = _racey_proc(config)
+    assert proc.pid == 4242
+    assert reads["n"] == 1
+
+
+def test_stop_binds_proc_once(config):
+    """A racing second stop() can null _proc; must not re-read for poll/terminate/wait."""
+    proc, reads = _racey_proc(config)
+    proc.stop()  # must not AttributeError
+    assert reads["n"] == 1
