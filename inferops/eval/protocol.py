@@ -7,8 +7,9 @@ identical across runs.
 from __future__ import annotations
 
 import itertools
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any
 
 from inferops.agent.reflect_constraints import check_slo
 from inferops.agent.state import AGENT_SEARCH_SPACE
@@ -83,11 +84,13 @@ class SearchSpace:
         return [row for row in candidates if self.diff_count(row, config) == 1]
 
     def default_config(self) -> dict[str, Any]:
-        """Agent default: smallest batch, flags off; optional axes at first legal value."""
+        """Production default projected into this search space."""
         cfg: dict[str, Any] = {}
         for name, values in self.axes.items():
             if name == "max_num_batched_tokens":
                 cfg[name] = min(values)
+            elif name == "max_num_seqs" and 128 in values:
+                cfg[name] = 128
             elif name in ("enable_chunked_prefill", "enable_prefix_caching"):
                 cfg[name] = False if False in values else values[0]
             else:
