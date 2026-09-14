@@ -100,7 +100,7 @@ no GraphRAG.
 - SQLite + MLflow
 - Chroma + `BAAI/bge-base-zh-v1.5` (retrieval and existence citations only)
 - OpenRouter / DeepSeek / Anthropic LLM backends
-- pytest (**631** tests collected in this tree via `pytest --collect-only`)
+- pytest (**641** tests collected in this tree via `pytest --collect-only`)
 
 ## Quick start
 
@@ -134,6 +134,7 @@ debugging or an external server, start one separately:
 
 ```bash
 # Terminal 1 — external server (optional)
+export INFEROPS_VLLM_PYTHON=/path/to/vllm-dev/bin/python
 VLLM_GPU_MEM=0.65 bash scripts/start_vllm.sh 1.5B
 ```
 
@@ -162,7 +163,7 @@ baseline** when the gates do not clear.
 
 | Area | Current status |
 |---|---|
-| Unit / CPU tests | **631** collected (`pytest --collect-only` in this worktree) |
+| Unit / CPU tests | **641** collected (`pytest --collect-only` in this worktree) |
 | Golden workloads | 5 |
 | Grid-sweep ground truth | 60 rows |
 | Tool registry | 9 tools |
@@ -203,9 +204,9 @@ reports/       internship case pack, curated reports, local session reports
 
 ## Notes
 
-- vLLM typically runs from a separate conda environment named `vllm-dev`. Use
-  `INFEROPS_VLLM_PYTHON` or `VLLM_PYTHON` to select its interpreter. The agent
-  and UI use the project `.venv`.
+- vLLM typically runs from a separate conda environment named `vllm-dev`.
+  `INFEROPS_VLLM_PYTHON` or `VLLM_PYTHON` is **required** — `scripts/start_vllm.sh`
+  fails closed if neither is set. The agent and UI use the project `.venv`.
 - `VLLM_GPU_MEM=0.65` or a lower value may help on a 6 GB RTX 3060 when
   Windows/WSL already occupies VRAM.
 - The Chainlit benchmark path uses non-streaming vLLM requests to avoid an

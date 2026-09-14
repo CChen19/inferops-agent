@@ -26,8 +26,12 @@ story stay pinned to freeze SHA `2731bed` — do not retarget them here.
 | PR [#76](https://github.com/CChen19/inferops-agent/pull/76) honest README | `4202778` | Keep-baseline product story (does not rewrite live numbers) |
 | PR [#77](https://github.com/CChen19/inferops-agent/pull/77) README zh polish | `f88ab85` | Polish Chinese README tech wording; live claim boundaries unchanged |
 | PR [#78](https://github.com/CChen19/inferops-agent/pull/78) English README homepage | `16754b5` | English README as GitHub homepage; Chinese → `README.zh.md` |
+| PR [#79](https://github.com/CChen19/inferops-agent/pull/79) fail-closed missing primary | `50d2939` | Fail closed when primary metric is missing |
+| PR [#80](https://github.com/CChen19/inferops-agent/pull/80) closeout hygiene | `f04bb41` | After-freeze notes, gitignore live dumps, `.env.example` |
+| PR [#81](https://github.com/CChen19/inferops-agent/pull/81) portable vLLM Python | `a5b66e5` | Fail closed; no machine-local path fallback |
+| PR [#82](https://github.com/CChen19/inferops-agent/pull/82) Chainlit theme | `da95b13` | First visual pass; landing-page follow-up is a later PR |
 
-Current `origin/master` tip at time of this update: `16754b5` (through PR #78).
+Current `origin/master` tip at time of this update: `da95b13` (through PR #82).
 
 ## PR #64 memory pre-experiment (`cec13ef`)
 
