@@ -28,10 +28,12 @@ are not bugs to be hidden in an interview, they are the scope boundary.
 | Document citations are conditional on retrieval | PR #29: a retrieved source requires both the structured document source and matching rationale tag; with no retrieved sources, a document citation or source tag is rejected; forged sources are rejected |
 | Managed GPU work is serialized and unknown occupants are not killed | PR #30: `GPULease` uses a non-blocking file lock; busy and unknown-occupant paths fail closed without starting or stopping another process |
 | Cancellation is ownership-scoped | PR #30: the process-local registry stops registered owned children and releases their leases; foreign/unregistered processes are untouched in CPU tests |
+| Stop during model load fails closed | PR #32: a managed child is registered as owned immediately at spawn, before readiness polling; Stop makes the in-flight experiment never valid, stops the owned child, and releases its lease in CPU tests |
+| Readiness polling aborts after cancellation or Stop | PR #35: `wait_ready_verbose` aborts when `cancel_requested()` is true or `stop()` has cleared `_proc`, rather than polling a dead port until `STARTUP_TIMEOUT_S`; verified by deterministic CPU tests, not a live GPU timing |
 | Stale-child adoption is not automatic | `INFEROPS_ADOPT_STALE_MANAGED` is opt-in and defaults off; adoption also requires the stale lease record, child PID, dead owner, and recorded argv checks to match |
 
 These rows describe code paths and deterministic CPU tests merged on master at
-`25e159f`. They are not additional RTX 3060 trials and add no throughput,
+`1a119e7`. They are not additional RTX 3060 trials and add no throughput,
 latency, or `confirmed_gain` result.
 
 ## Known limits
@@ -114,9 +116,6 @@ observe-after-pick protocol score), no adoption-level winner can be declared.
 - Production resume depends on the local SQLite database and its stored
   checkpoint/task rows. Eval recovery goldens intentionally use `MemorySaver`
   and do not establish cross-process persistence.
-- Stop during the vLLM model-load window remains an open gap: the UI stop path
-  did not abort the in-flight experiment as valid-prevention. The owned-child
-  cancellation and Ctrl-C coverage must not be described as fixing that case.
 - `external` service mode cannot prove config application, so results there
   fall back to weaker evidence kinds.
 - Ledgers stay in each run's own `logs/` directory and are not committed, so
