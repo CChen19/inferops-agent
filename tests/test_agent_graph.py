@@ -107,6 +107,7 @@ def test_run_agent_initializes_state_and_invokes_graph(tmp_path):
 
     assert captured["state"]["experiments_remaining"] == 4
     assert captured["state"]["baseline_summary"] == baseline
+    assert captured["state"]["memory_db_path"] == str(tmp_path / "memory.db")
     assert captured["config"]["configurable"]["thread_id"] == "sess"
     assert final_state["stop_reason"] == "unit_test"
     assert conns
@@ -155,6 +156,7 @@ def test_prepare_initial_state_includes_baseline_and_best():
     assert state["tried_experiment_ids"] == ["sess_baseline"]
     assert state["current_bottleneck"] == "compute-bound"
     assert state["experiments_remaining"] == 4
+    assert "memory_db_path" not in state
 
 
 def test_prepare_initial_state_skips_best_when_baseline_unevidenced():

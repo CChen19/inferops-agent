@@ -91,6 +91,10 @@ class AgentState(TypedDict):
     # LangGraph message history (Planner read + write)
     messages: Annotated[list[BaseMessage], add_messages]
 
+    # Stage D: compatible prior-session hints (omitted unless a run sets db_path)
+    memory_db_path: NotRequired[str]
+    compatible_history: NotRequired[list[dict[str, Any]]]
+
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -282,9 +286,30 @@ def model_name_of(state: AgentState | dict[str, Any]) -> str | None:
     return task.model_name if task is not None else None
 
 
+_HISTORY_FAILURE_STATUSES = frozenset({"failed", "invalid", "oom"})
+
+
+def _history_failure_pair(row: dict[str, Any], param: str, value: Any) -> bool:
+    if row.get("param") is None:
+        return False
+    if str(row.get("param")) != str(param) or str(row.get("value")) != str(value):
+        return False
+    status = str(row.get("status") or "").lower()
+    notes = str(row.get("notes") or "").lower()
+    return status in _HISTORY_FAILURE_STATUSES or "oom" in notes or "out of memory" in notes
+
+
 def is_duplicate(state: AgentState, param: str, value: Any) -> bool:
-    """Return True if this (param, value) combo has already been tried."""
+    """Return True if this (param, value) combo has already been tried.
+
+    This-session ``experiment_summaries`` always count. Failed / invalid / OOM
+    pairs from compatible prior-session history also count. Successful prior
+    hints do not — they must not skip a confirmation campaign.
+    """
     for s in state["experiment_summaries"]:
         if s["param_changed"] == param and str(s["value_changed"]) == str(value):
+            return True
+    for row in state.get("compatible_history") or []:
+        if _history_failure_pair(row, param, value):
             return True
     return False
