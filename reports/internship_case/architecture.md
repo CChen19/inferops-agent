@@ -1,7 +1,7 @@
 # Architecture
 
 One pass through the system, in the order things actually happen. File
-references are to master at `19ad450` (through merged PR #54).
+references are to master at `15d5920` (through merged PR #60).
 
 ## 1. Task confirmation (`inferops/task.py`)
 
@@ -16,7 +16,7 @@ for clarification, never silently substituted. The same `task_conditions`
 mapping feeds the confirmation page, the executor, and the final report, so
 what the user approved and what the report claims cannot drift apart.
 
-## 2. Durable task state (`inferops/agent/graph.py`, `inferops/memory/db.py`)
+## 2. Durable task state and compatible history (`inferops/resume.py`, `inferops/memory/`)
 
 Production runs use a disk-backed LangGraph `SqliteSaver` and a stable thread id
 derived from the session prefix. `production_checkpointer` is a context manager
@@ -30,7 +30,27 @@ rerunning the baseline. Eval recovery goldens deliberately keep `MemorySaver`
 and stay disk-free, so this production persistence claim is not being
 projected onto the fixture harness.
 
-## 3. Planner (`inferops/agent/graph.py`, `inferops/agent/planner.py`, `inferops/citations.py`)
+PR #57 adds Chainlit-independent parsing and formatting helpers in
+`inferops/resume.py`; `tests/test_resume.py` does not import `app.py`. In chat,
+`resume <12-hex>`, `resume-task <12-hex>`, and a bare 12-hex task id bypass task
+drafting and confirmation and call `run_agent(..., resume_task_id=...)`. A
+resume command with no id is rejected before GPU budget is spent.
+
+When `memory_db_path` is present, PR #58 queries compatible history from another
+session with the same `model_name` and `workload_name`. GPU SKU is not stored or
+matched. These rows are `prior_session_hint` only: they cannot be cited as a
+this-run `citations.metric.run_id`, enter `experiment_summaries`, promotion, or
+`best_summary`, skip confirmation, or turn a prior success into a confirmed
+result. Failed, invalid, and OOM parameter pairs do count as duplicates. The
+CLI passes its database path into `run_agent`. PR #60 makes the Chainlit
+streaming path call `prepare_initial_state(..., db_path="inferops_memory.db")`,
+the same default used by `run_agent` and `save_task`, so both CLI and Chainlit
+streaming can load compatible sessions when that SQLite file contains them.
+`tests/test_app_prepare_db_path.py` AST-parses `app.py` without importing
+Chainlit and does not create or touch the database (a pre-existing gitignored
+file is allowed).
+
+## 3. Planner (`inferops/agent/planner.py`, `inferops/citations.py`, `inferops/rag/`)
 
 The compiled graph is small and deliberately so:
 
@@ -62,12 +82,18 @@ A small RAG corpus over vLLM concepts (PagedAttention, chunked prefill, prefix
 caching, scheduling) is available to the planner for phrasing hypotheses. It
 does not decide anything. Every proposed hypothesis must carry a structured
 metric citation whose `run_id`, metric name, and numeric value exactly exist in
-the summaries shown to the planner. A document citation and matching
-`[source: ...]` rationale tag are required if and only if retrieval returned
-sources; when retrieval returned none, inventing a source is rejected. Forged
-run ids, values, or document sources are rejected, with one retry. This is an
-existence gate, not a claim that the cited evidence semantically proves the
-hypothesis.
+the summaries shown to the planner. Retrieval now returns each Chroma
+`chunk_id`, source, and corpus version; index metadata uses
+`CORPUS_VERSION = "inferops-corpus-1"` (PR #59). The production source header
+remains `[source: {source}] §{section}`, followed by
+`chunk_id=... version=...` on the next line.
+
+When retrieval returns sources, a document citation and matching `[source: ...]`
+rationale tag are required, and `chunk_id`, source, and version must match one
+retrieved tuple exactly. Forged or missing fields are rejected with one retry.
+When retrieval returns none, document fields must still be omitted. This is an
+existence gate only; it does not claim that the cited chunk semantically
+supports the hypothesis.
 
 ## 4. Managed vLLM child (`inferops/tools/vllm_process.py`, `inferops/tools/managed_lifecycle.py`)
 
@@ -136,7 +162,9 @@ baseline/candidate pairs. A verdict can only be produced by
 that exact candidate — a confirmation computed for candidate A cannot promote
 candidate B. Below the reflect threshold (`IMPROVEMENT_THRESHOLD_PCT = 5.0`),
 confirmation is never even attempted, and three consecutive non-improving
-trials (`MAX_STREAK = 3`) stop the run.
+trials (`MAX_STREAK = 3`) stop the run. PR #57's reflector formatter makes the
+UI distinguish `continue`, `remeasure`, `rollback`, and `stop`; it changes
+presentation, not who owns the action.
 
 ## 7. DecisionReport (`inferops/decision.py`)
 
@@ -203,3 +231,21 @@ as `tool_unavailable` and leaves `vs_baseline_pct` as `None` (PR #49).
   `vs_baseline_pct` regressions.
 - A remote `VLLM_HOST` whose RTT exceeds `CANCEL_CHECK_S` (0.25 s) would never
   succeed `wait_ready`.
+- `_run_resumed_task` catches every `ValueError` and can say no GPU budget was
+  spent even if a mid-run `ValueError` occurred after GPU work. `resume nope`
+  also takes the missing-id error path rather than becoming a task draft.
+- Resume calls `run_agent` without streaming, so reflector updates are not shown
+  while a resumed run is in progress.
+- The PR #60 AST test pins the literal `db_path` keyword in `app.py`; it is not
+  a runtime proof that `prepare_initial_state` threads that value into
+  `memory_db_path`. Graph tests cover that threading, while CI still does not
+  import `app.py` because Chainlit is absent. GPU SKU is not stored or matched
+  for compatible-history lookup.
+- `_recover_param_value` can mis-attribute a failed historical row with two
+  non-default knobs when its id has no `_<knob>_` token.
+- A Chroma index built before PR #59 lacks version metadata and fail-closes
+  document-citing hypotheses until rebuilt. No index is checked into the repo.
+- A corpus body containing line-start `[source: x] §y` immediately followed by
+  a `chunk_id=... version=...` line can still be parsed as an available
+  document ref; this extends the pre-existing `sources_from_context` exposure
+  to the full tuple.

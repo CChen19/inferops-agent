@@ -44,10 +44,17 @@ are not bugs to be hidden in an interview, they are the scope boundary.
 | Compare fails closed on a zero baseline denominator | PR #49: `compare_experiments._delta_pct` raises `ValueError` if baseline `sa == 0` instead of inventing `0.0%`; executor records compare as `tool_unavailable` and leaves `vs_baseline_pct` as `None`; CPU tests |
 | Executive Summary prints stored vs-baseline precision | PR #50: Best observed change uses `_fmt_vs_baseline` (e.g. `+3.77%`), same as the Experiment Log; missing stays `n/a`, never `+0.0%`; CPU tests, not a rewrite of the live case artifact |
 | Remaining `vs_baseline_pct` printers preserve stored precision | PR #54: Chainlit live-result and all-experiments displays use tested helpers from `inferops.tools.final_report`; graph run summary, executor completion, and `scripts/run_agent.py` result print `+3.77%` rather than `+3.8%`; missing is `n/a` or `unavailable`, never invented `+0.0%`; CPU tests, not a new GPU report |
+| Chat can resume a persisted task without redrafting it | PR #57: Chainlit-independent helpers in `inferops/resume.py` parse `resume <12-hex>`, `resume-task <12-hex>`, and bare 12-hex ids; valid commands call `run_agent(..., resume_task_id=...)`, while a missing id spends no GPU budget; `tests/test_resume.py` does not import `app.py` |
+| Reflector actions are distinct in UI text | PR #57: `format_reflector_update` distinguishes `continue`, `remeasure`, `rollback`, and `stop`; CPU formatting tests, not a GPU run |
+| Compatible history is scoped and hint-only | PR #58: `query_compatible_history` matches another session with the same model and workload (not GPU SKU) only when `memory_db_path` is present; results carry `claim_level=prior_session_hint` and cannot be this-run metric citations or enter experiment summaries, best selection, or promotion |
+| Compatible history cannot bypass confirmation | PR #58: failed, invalid, and OOM parameter pairs count as duplicates, but a prior success does not short-circuit confirmation; CLI `run_agent` passes `db_path`; eval goldens remain `MemorySaver` and disk-free |
+| Chainlit streaming can load compatible history | PR #60: `app.py` passes `db_path="inferops_memory.db"` to `prepare_initial_state`, matching the `run_agent` / `save_task` default; `tests/test_app_prepare_db_path.py` AST-parses rather than importing `app.py` and does not create or touch the database, while graph tests cover threading `db_path` into `memory_db_path` |
+| Retrieval carries stable document identity fields | PR #59: Chroma query results include `chunk_id`, source, and metadata version `inferops-corpus-1`; rendering keeps `[source: {source}] §{section}` and adds `chunk_id=... version=...` on the next line; no checked-in Chroma index |
+| Document citations bind to an exact retrieved chunk | PR #59: with retrieved sources, `valid_structured_citations` requires matching `(chunk_id, source, version)` and rejects forged or missing fields; empty RAG still omits document fields; existence-only, not semantic support |
 | Stale-child adoption is not automatic | `INFEROPS_ADOPT_STALE_MANAGED` is opt-in and defaults off; adoption also requires the stale lease record, child PID, dead owner, and recorded argv checks to match |
 
 These rows describe code paths, deterministic CPU tests, and repo hygiene
-merged on master at `19ad450`. They are not additional RTX 3060 trials and add
+merged on master at `15d5920`. They are not additional RTX 3060 trials and add
 no throughput, latency, or `confirmed_gain` result.
 
 ## Known limits
@@ -153,3 +160,19 @@ observe-after-pick protocol score), no adoption-level winner can be declared.
   recognition of the abort.
 - A remote `VLLM_HOST` whose RTT exceeds `CANCEL_CHECK_S` (0.25 s) would never
   succeed `wait_ready`.
+- `_run_resumed_task` catches every `ValueError`, so its "No GPU budget was
+  spent" message can be false if a resumed run raises after doing GPU work.
+  `resume nope` also follows the no-id error path instead of drafting a task.
+- Resume uses non-streaming `run_agent`, so reflector updates do not appear
+  during a resumed run.
+- The PR #60 AST test is a source-level pin of the literal `db_path` keyword,
+  not runtime proof that `prepare_initial_state` threads it into
+  `memory_db_path`; graph tests cover that threading. CI still does not import
+  `app.py` because Chainlit is absent. GPU SKU remains unstored and unmatched.
+- `_recover_param_value` can mis-attribute a failed compatible-history row with
+  two non-default knobs and no `_<knob>_` token in its id.
+- Pre-PR #59 Chroma indexes have no version metadata and therefore fail closed
+  for every document-citing hypothesis until rebuilt.
+- Corpus body text containing a line-start `[source: x] §y` plus a following
+  `chunk_id=... version=...` line can be parsed as an available ref. This is the
+  pre-existing source-header exposure extended to the tuple.
