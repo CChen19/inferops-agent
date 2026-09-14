@@ -11,6 +11,7 @@ from inferops.eval.memory_preexperiment import (
     OTHER_MODEL,
     WORKLOAD,
     configs_equal,
+    eval_fingerprint,
     is_lasting_config_failure,
     load_prior_config_failures,
     meets_business_goal,
@@ -88,6 +89,7 @@ def test_compatible_history_excludes_other_model(tmp_path):
         workload_name=WORKLOAD,
         exclude_session_id="curr_",
         db_path=db,
+        current_fingerprint=eval_fingerprint(MODEL),
     )
     assert rows == []
     priors = load_prior_config_failures(
@@ -113,6 +115,7 @@ def test_history_hint_skips_failed_param_value(tmp_path):
         workload_name=WORKLOAD,
         exclude_session_id="curr_",
         db_path=db,
+        current_fingerprint=eval_fingerprint(MODEL),
     )
     assert rows
     assert is_history_failure(rows[0])
@@ -190,10 +193,13 @@ def test_full_report_disclaimer_and_no_gpu_claim(tmp_path):
     assert "scripted" in report["disclaimer"].lower()
     assert "not a live gpu" in report["disclaimer"].lower()
     assert report["llm_boundary"] == "scripted_fixed_proposal_order"
+    reusable = next(s for s in report["scenarios"] if s["scenario"] == "reusable")
+    assert "scenario override of GT" in (reusable.get("scenario_note") or "")
     assert (tmp_path / "out" / "mempretest.json").exists()
     assert (tmp_path / "out" / "mempretest.md").exists()
     md = (tmp_path / "out" / "mempretest.md").read_text()
     assert "Disclaimer" in md
+    assert "scenario override of GT" in md
     assert "nvidia" not in md.lower()
     _assert_no_repo_root_sqlite()
 

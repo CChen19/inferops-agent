@@ -12,8 +12,9 @@ Groups (independent temp SQLite copies per run):
   B — deterministic exact failed-config filter (lasting config failures only)
   C — existing ``query_compatible_history`` + ``is_history_failure`` hints
 
-Compatibility for B/C environment matching: model_name + workload_name.
-Hardware SKU is not matched by ``query_compatible_history`` on this SHA.
+Compatibility for B/C environment matching: model_name + workload_name +
+hardware fingerprint (gpu_name, gpu_memory_total_gb capacity, vllm_version,
+model, engine). Eval injects complete fingerprint constants — never nvidia-smi.
 """
 
 from __future__ import annotations
@@ -36,6 +37,7 @@ from inferops.eval.protocol import (
 )
 from inferops.eval.runner import load_ground_truth
 from inferops.memory.db import init_db, save_result
+from inferops.memory.hardware import HardwareFingerprint, fingerprint_from_hardware
 from inferops.memory.history import is_history_failure, query_compatible_history
 from inferops.schemas import (
     ExperimentConfig,
@@ -64,6 +66,27 @@ OTHER_MODEL = "Qwen/Qwen2.5-1.5B-Instruct"
 WORKLOAD = "chat_short"
 CURRENT_SESSION = "curr_"
 PRIOR_SESSION = "prior_"
+
+# Injected complete fingerprint for CPU eval — never call nvidia-smi here.
+EVAL_GPU_NAME = "Eval Mock GPU"
+EVAL_GPU_MEM_GB = 6.0
+EVAL_VLLM_VERSION = "0.0-eval-mock"
+
+
+def eval_hardware_info(model_name: str = MODEL) -> HardwareInfo:
+    return HardwareInfo(
+        model_name=model_name,
+        engine="vllm",
+        vllm_version=EVAL_VLLM_VERSION,
+        gpu_name=EVAL_GPU_NAME,
+        gpu_memory_total_gb=EVAL_GPU_MEM_GB,
+    )
+
+
+def eval_fingerprint(model_name: str = MODEL) -> HardwareFingerprint:
+    fp = fingerprint_from_hardware(eval_hardware_info(model_name))
+    assert fp is not None, "eval fingerprint constants must be complete"
+    return fp
 
 # Explicit business goal: named GT best config (primary >= best_value).
 GOAL_CONFIG = {
@@ -216,7 +239,7 @@ def seed_prior_failure(
         config_evidence=None,
         status=status,
         notes=notes,
-        hardware=HardwareInfo(model_name=model_name, engine="vllm", gpu_name=None),
+        hardware=eval_hardware_info(model_name),
     )
     init_db(db_path)
     save_result(result, db_path=db_path)
@@ -411,6 +434,7 @@ def run_group(
             exclude_session_id=CURRENT_SESSION,
             db_path=db_path,
             top_k=32,
+            current_fingerprint=eval_fingerprint(MODEL),
         )
         if group == "C"
         else []
@@ -559,7 +583,16 @@ def run_scenario(
             "primary_metric": "throughput_rps",
             "primary_min": GOAL_PRIMARY_MIN,
         },
-        "compatibility": "model_name + workload_name (no GPU SKU match on this SHA)",
+        "compatibility": (
+            "model_name + workload_name + complete hardware fingerprint "
+            "(eval injects constants; no GPU probe)"
+        ),
+        "scenario_note": (
+            "reusable OOM on t2048_c1_p0 is a scenario override of GT "
+            "(GT row is valid 16.0 rps), not a published GPU failure."
+            if scenario == "reusable"
+            else None
+        ),
         "groups": group_results,
     }
 
@@ -638,6 +671,10 @@ def render_markdown_report(report: dict[str, Any]) -> str:
             "",
             f"- Business goal: {sc['business_goal']['definition']}",
             f"- Compatibility: {sc['compatibility']}",
+        ]
+        if sc.get("scenario_note"):
+            lines.append(f"- Note: {sc['scenario_note']}")
+        lines += [
             "",
             "| Group | Goal met | Wasted before goal | Rejected w/o exec | "
             "Executes | Exec failures | 1st qualified N | Wrongly filtered | Paid |",
