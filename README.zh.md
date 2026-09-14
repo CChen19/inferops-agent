@@ -90,7 +90,7 @@ SQLite 历史记录和硬件 fingerprint 已实现。PR #64 只是 CPU A/B/C 预
 - SQLite + MLflow
 - Chroma + `BAAI/bge-base-zh-v1.5`（只用于检索和存在性引用校验）
 - OpenRouter / DeepSeek / Anthropic LLM 后端
-- pytest（本分支通过 `pytest --collect-only` 收集 **631** 个测试；CI 运行同一测试集）
+- pytest（本分支通过 `pytest --collect-only` 收集 **641** 个测试；CI 运行同一测试集）
 
 ## 快速开始
 
@@ -123,6 +123,7 @@ INFEROPS_LLM=openrouter
 
 ```bash
 # Terminal 1 — external server (optional)
+export INFEROPS_VLLM_PYTHON=/path/to/vllm-dev/bin/python
 VLLM_GPU_MEM=0.65 bash scripts/start_vllm.sh 1.5B
 ```
 
@@ -150,7 +151,7 @@ UI 会解析 workload，运行或加载 baseline，展示 agent 步骤，并把 
 
 | 项目 | 当前状态 |
 |---|---|
-| Unit / CPU tests | **631** collected（本分支运行 `pytest --collect-only`） |
+| Unit / CPU tests | **641** collected（本分支运行 `pytest --collect-only`） |
 | Golden workloads | 5 |
 | Grid-sweep ground truth | 60 rows |
 | Tool registry | 9 tools |
@@ -191,8 +192,9 @@ reports/       internship case pack、整理后的报告和本地 session 报告
 
 ## 运行说明
 
-- vLLM 通常运行在单独的 `vllm-dev` conda 环境中，可通过
-  `INFEROPS_VLLM_PYTHON` 或 `VLLM_PYTHON` 指定解释器；agent 和 UI 使用项目 `.venv`。
+- vLLM 通常运行在单独的 `vllm-dev` conda 环境中。
+  `INFEROPS_VLLM_PYTHON` 或 `VLLM_PYTHON` **必须设置** — 二者皆空时
+  `scripts/start_vllm.sh` 会 fail closed 退出；agent 和 UI 使用项目 `.venv`。
 - 在 6 GB RTX 3060 上，如果 Windows/WSL 已占用较多显存，可使用
   `VLLM_GPU_MEM=0.65` 或更低的值。
 - Chainlit benchmark 路径使用非流式 vLLM 请求，以避开调试期间观察到的
