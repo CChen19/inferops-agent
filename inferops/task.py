@@ -17,6 +17,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from inferops.eval.metrics import WORKLOAD_PRIMARY_METRIC
+from inferops.resume import format_resume_help
 from inferops.schemas import InferenceEngine, WorkloadSpec, compute_workload_hash
 from workloads.definitions import ALL_WORKLOADS
 
@@ -526,6 +527,7 @@ def format_task_confirmation(task: OptimizationTask) -> str:
             "Nothing has been benchmarked yet.",
             "",
             f"- **Task id:** `{cond['task_id']}`",
+            f"- {format_resume_help(cond['task_id'])}",
             f"- **Model:** `{cond['model_name']}`",
             f"- **GPU hint:** `{cond['gpu_hint'] or 'not specified'}`",
             f"- **Service mode:** `{cond['service_mode']}`",

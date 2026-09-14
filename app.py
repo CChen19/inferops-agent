@@ -28,10 +28,17 @@ from inferops.agent.graph import (
     make_llm,
     prepare_initial_state,
     production_checkpointer,
+    run_agent,
     session_thread_id,
 )
 from inferops.agent.intent import Intent, interpret_user_request
-from inferops.memory.db import init_db, save_task, update_task_status
+from inferops.memory.db import get_task, init_db, save_task, update_task_status
+from inferops.resume import (
+    format_reflector_update,
+    format_resume_help,
+    is_resume_command,
+    parse_resume_task_id,
+)
 from inferops.task import (
     ServiceControlMode,
     TaskStatus,
@@ -68,7 +75,7 @@ rejected or sent back for clarification before any GPU budget is spent.
 Target QPS is a **measured throughput goal**. Offered arrival-rate scheduling
 is not implemented (load is concurrency-limited).
 
-Type your scenario to begin.
+Type your scenario to begin, or `resume <task_id>` to continue a saved task.
 """
 
 _LLM_BACKEND = os.getenv("INFEROPS_LLM", "openrouter")
@@ -128,6 +135,9 @@ async def on_stop():
             "next cancel check (never `valid`) and stop its own child; no further "
             "experiment will start. An external vLLM you run yourself is never touched."
         ]
+    if task_id:
+        lines.append("")
+        lines.append(format_resume_help(task_id))
     await cl.Message(content="\n".join(lines)).send()
 
 
@@ -166,9 +176,83 @@ async def _ask_user_confirm() -> bool:
     return str(value) == "confirm"
 
 
+async def _run_resumed_task(llm, resume_task_id: str) -> None:
+    """Continue a persisted task. No new draft/confirm. Missing id → no GPU."""
+    stored = get_task(resume_task_id)
+    if stored is None:
+        await cl.Message(
+            content=(
+                f"**Cannot resume.** No persisted task found for "
+                f"`{resume_task_id}`.\n\n"
+                f"{format_resume_help(resume_task_id)} "
+                "No GPU budget was spent."
+            )
+        ).send()
+        return
+
+    cl.user_session.set("confirmed_task", stored.confirmed_task)
+    await cl.Message(
+        content=(
+            f"Resuming task `{resume_task_id}` from the persisted checkpoint "
+            f"(session `{stored.session_prefix}`). Skipping a new draft/confirm."
+        )
+    ).send()
+
+    t_start = time.time()
+    clear_cancel()
+    try:
+        final_state = await asyncio.to_thread(
+            run_agent,
+            None,
+            llm,
+            resume_task_id=resume_task_id,
+        )
+    except ValueError as exc:
+        await cl.Message(
+            content=f"**Cannot resume.** {exc}\n\nNo GPU budget was spent."
+        ).send()
+        return
+    except Exception as exc:
+        err = str(exc)
+        if type(exc).__name__ == "TaskCancelled":
+            update_task_status(resume_task_id, "cancelled")
+            await cl.Message(content=f"**Run cancelled.** `{err[:300]}`").send()
+            return
+        update_task_status(resume_task_id, "failed")
+        if "GPU busy" in err or "Refusing managed start" in err:
+            await cl.Message(
+                content=(
+                    f"**Managed start refused — nothing was started or stopped.**\n\n`{err[:600]}`"
+                )
+            ).send()
+            return
+        await cl.Message(content=f"**Agent error:** `{err[:300]}`").send()
+        return
+
+    elapsed = time.time() - t_start
+    workload = str(final_state.get("workload_name") or "")
+    prefix = str(final_state.get("session_prefix") or stored.session_prefix)
+    await _send_final_report(final_state, workload, elapsed, prefix)
+
+
 @cl.on_message
 async def on_message(message: cl.Message):
     llm = make_llm(_LLM_BACKEND)
+    text = message.content or ""
+    resume_id = parse_resume_task_id(text)
+    if resume_id is not None:
+        await _run_resumed_task(llm, resume_id)
+        return
+    if is_resume_command(text):
+        await cl.Message(
+            content=(
+                "**Cannot resume.** Need a 12-character task id.\n\n"
+                "Use `resume <task_id>` in chat or "
+                "`inferops agent --resume-task <task_id>` in the CLI. "
+                "No GPU budget was spent."
+            )
+        ).send()
+        return
 
     thinking = cl.Message(content="Drafting an optimization task…")
     await thinking.send()
@@ -201,6 +285,9 @@ async def on_message(message: cl.Message):
         confirmed_task=task.model_dump(mode="json"),
         status="confirmed",
     )
+    await cl.Message(
+        content=f"Task `{task.task_id}` saved. {format_resume_help(task.task_id)}"
+    ).send()
 
     if task.service_mode == ServiceControlMode.EXTERNAL and not await _vllm_is_running():
         update_task_status(task.task_id, "blocked_external")
@@ -357,17 +444,18 @@ async def _handle_node_event(node_name: str, patch: dict[str, Any] | None):
             await cl.Message(content=_format_live_result_message(s)).send()
 
     elif node_name == "reflector":
+        next_action = patch.get("next_action") or (
+            "stop" if patch.get("should_stop") else "continue"
+        )
         if patch.get("should_stop"):
-            reason = patch.get("stop_reason", "")
-            await cl.Message(content=f"⏹ **Done.** {reason}").send()
-        else:
-            streak = patch.get("no_improvement_streak", 0)
-            await cl.Message(
-                content=(
-                    f"🔄 **Reflector:** continuing — no-improvement streak {streak}, "
-                    "trying next hypothesis…"
-                )
-            ).send()
+            next_action = "stop"
+        await cl.Message(
+            content=format_reflector_update(
+                next_action,
+                stop_reason=str(patch.get("stop_reason") or ""),
+                streak=int(patch.get("no_improvement_streak") or 0),
+            )
+        ).send()
 
 
 async def _send_final_report(
