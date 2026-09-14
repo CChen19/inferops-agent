@@ -35,12 +35,17 @@ are not bugs to be hidden in an interview, they are the scope boundary.
 | Crash/exit helpers bind the child handle once | PR #39: `is_crashed()` and `exit_code()` bind `proc = self._proc` once so a racing `stop()` cannot AttributeError on `.poll()`; `test_is_crashed_binds_proc_once` and `test_exit_code_binds_proc_once` in `tests/test_vllm_process.py`; CPU tests, not a live GPU timing |
 | Eval RAG stub must parse via production sources | PR #40: `tests/test_eval_planner_strategy.py` asserts `sources_from_context` on the RAG stub context; tests only, not a GPU measurement |
 | Summaries persist the vs-baseline denominator | PR #42: `ExperimentSummary.baseline_primary` stores the denominator used for `vs_baseline_pct`; `summary_from_result` writes it, including `0.0` when the gain is left `None`; CPU tests, not a rewrite of the live case artifact |
-| Experiment Log prints stored vs-baseline and TTFT p99 | PR #44: `write_final_report` prints `vs_baseline_pct` at stored precision (`+3.77%`, not `+3.8%`) and includes a `ttft_p99` column; Executive Summary still uses `+:.1f`; CPU tests, not a new GPU report |
+| Experiment Log prints stored vs-baseline and TTFT p99 | PR #44: `write_final_report` prints `vs_baseline_pct` at stored precision (`+3.77%`, not `+3.8%`) and includes a `ttft_p99` column; CPU tests, not a new GPU report |
 | `pid` and `stop()` bind the child handle once | PR #43: `pid` and `stop()` bind `proc = self._proc` once so a racing `stop()` cannot AttributeError; `test_pid_binds_proc_once` and `test_stop_binds_proc_once` in `tests/test_vllm_process.py`; CPU tests, not a live GPU timing |
+| Production checkpointer closes the SQLite connection | PR #45: `production_checkpointer` is a context manager that closes the `SqliteSaver` connection; `test_production_checkpointer_closes_connection` in `tests/test_agent_graph.py`; `run_eval` session test uses `cwd=tmp_path` so the default db cannot leak into the worktree; eval goldens stay `MemorySaver` / disk-free |
+| RAG eval test asserts parsed available sources | PR #46: RAG eval wraps `valid_structured_citations` and asserts `args[2] == {"test_doc"}`; ledger is `[baseline, trial]`; tests only |
+| Readiness health GET is bounded by `CANCEL_CHECK_S` | PR #48: `wait_ready_verbose` uses `httpx.get(..., timeout=CANCEL_CHECK_S)` (0.25 s), not 3 s; `health_ok()` remains a separate one-shot with `timeout_s=2.0`; CPU tests, not a live GPU timing |
+| Compare fails closed on a zero baseline denominator | PR #49: `compare_experiments._delta_pct` raises `ValueError` if baseline `sa == 0` instead of inventing `0.0%`; executor records compare as `tool_unavailable` and leaves `vs_baseline_pct` as `None`; CPU tests |
+| Executive Summary prints stored vs-baseline precision | PR #50: Best observed change uses `_fmt_vs_baseline` (e.g. `+3.77%`), same as the Experiment Log; missing stays `n/a`, never `+0.0%`; CPU tests, not a rewrite of the live case artifact |
 | Stale-child adoption is not automatic | `INFEROPS_ADOPT_STALE_MANAGED` is opt-in and defaults off; adoption also requires the stale lease record, child PID, dead owner, and recorded argv checks to match |
 
 These rows describe code paths, deterministic CPU tests, and repo hygiene
-merged on master at `4c5379b`. They are not additional RTX 3060 trials and add
+merged on master at `8a9d53f`. They are not additional RTX 3060 trials and add
 no throughput, latency, or `confirmed_gain` result.
 
 ## Known limits
@@ -132,7 +137,10 @@ observe-after-pick protocol score), no adoption-level winner can be declared.
 - Ledgers stay in each run's own `logs/` directory and are not committed
   (`.gitignore` also ignores `logs/*.json`, PR #38), so full re-audit requires
   access to the original machine.
-- The Executive Summary still formats Best observed change as `+:.1f`. PR #44
-  only changed the Experiment Log; 3.77 still headlines as +3.8%.
-- Readiness health polling still uses a blocking `httpx.get(..., timeout=3)`
-  between abort checks. Cancel/Stop does not interrupt that GET.
+- CLI/UI vs-baseline sites in `app.py`, `graph.py`, `executor.py`, and
+  `scripts/run_agent.py` still format as `+:.1f`. Those are not covered by
+  PR #50.
+- A remote `VLLM_HOST` whose RTT exceeds `CANCEL_CHECK_S` (0.25 s) would never
+  succeed `wait_ready`.
+- `.gitignore` covers `inferops_memory.db` but not the SQLite `-wal`/`-shm`
+  sidecars.

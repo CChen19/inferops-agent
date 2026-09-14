@@ -1,7 +1,7 @@
 # Architecture
 
 One pass through the system, in the order things actually happen. File
-references are to master at `4c5379b` (after merged PRs #41–#44).
+references are to master at `8a9d53f` (through merged PR #50).
 
 ## 1. Task confirmation (`inferops/task.py`)
 
@@ -19,12 +19,16 @@ what the user approved and what the report claims cannot drift apart.
 ## 2. Durable task state (`inferops/agent/graph.py`, `inferops/memory/db.py`)
 
 Production runs use a disk-backed LangGraph `SqliteSaver` and a stable thread id
-derived from the session prefix. The same SQLite database has a `tasks` table
-that preserves the confirmed task payload, task id, session prefix, thread id,
-and lifecycle status. `inferops agent --resume-task <task_id>` reloads that
-identity and continues from the stored checkpoint instead of rerunning the
-baseline. Eval recovery goldens deliberately keep `MemorySaver`, so this
-production persistence claim is not being projected onto the fixture harness.
+derived from the session prefix. `production_checkpointer` is a context manager
+that closes that SQLite connection when the run ends (PR #45). The
+`run_eval` session test uses `cwd=tmp_path` so a default-db open cannot leak
+`inferops_memory.db` into the worktree. The same SQLite database has a `tasks`
+table that preserves the confirmed task payload, task id, session prefix,
+thread id, and lifecycle status. `inferops agent --resume-task <task_id>`
+reloads that identity and continues from the stored checkpoint instead of
+rerunning the baseline. Eval recovery goldens deliberately keep `MemorySaver`
+and stay disk-free, so this production persistence claim is not being
+projected onto the fixture harness.
 
 ## 3. Planner (`inferops/agent/graph.py`, `inferops/agent/planner.py`, `inferops/citations.py`)
 
@@ -90,8 +94,9 @@ binds `proc = self._proc` once before calling `poll()`, so a racing `stop()`
 cannot AttributeError on a cleared handle (PR #37). `is_crashed()`,
 `exit_code()`, `pid`, and `stop()` do the same one-bind (PRs #39 and #43).
 These are merged code paths covered by deterministic CPU tests, not new GPU
-measurements. Readiness still issues a blocking `httpx.get(..., timeout=3)`
-between abort checks; that GET is not cancelled mid-call.
+measurements. The readiness `/health` GET is bounded by `CANCEL_CHECK_S`
+(0.25 s), not a hardcoded 3 s (PR #48). `health_ok()` remains a separate
+one-shot with `timeout_s=2.0`.
 
 ## 5. Evidence and the promotion gate (`inferops/schemas.py`, `state.py`)
 
@@ -150,9 +155,12 @@ UI, so the UI cannot show a friendlier story than the file.
 `ExperimentSummary` now persists `baseline_primary`, the denominator used for
 `vs_baseline_pct` (PR #42). The Experiment Log prints that stored percentage
 at stored precision and includes a `ttft_p99` column (PR #44). The Executive
-Summary headline still formats the same field as `+:.1f` (so 3.77 still
-renders as +3.8% there). The published live case artifact predates these
-changes and is not rewritten by them.
+Summary headline uses the same `_fmt_vs_baseline` helper (PR #50), so 3.77
+prints as `+3.77%` and a missing value prints as `n/a`, never `+0.0%`. The
+published live case artifact predates these changes and is not rewritten by
+them. A zero baseline denominator in `compare_experiments` raises `ValueError`
+instead of inventing `0.0%`; the executor records compare as
+`tool_unavailable` and leaves `vs_baseline_pct` as `None` (PR #49).
 
 ## Known limits of this architecture
 
@@ -174,7 +182,10 @@ changes and is not rewritten by them.
   multi-GPU paths are untested here.
 - `external` service mode cannot prove config application the way `managed` can;
   externally-launched servers fall back to weaker evidence kinds.
-- The Executive Summary still prints Best observed change as `+:.1f`. PR #44
-  only changed the Experiment Log; the headline round-off remains.
-- Readiness health polling still uses a blocking `httpx.get(..., timeout=3)`
-  between abort checks. Cancel/Stop does not interrupt that GET.
+- CLI/UI vs-baseline sites in `app.py`, `graph.py`, `executor.py`, and
+  `scripts/run_agent.py` still format as `+:.1f`. Those are not covered by
+  PR #50.
+- A remote `VLLM_HOST` whose RTT exceeds `CANCEL_CHECK_S` (0.25 s) would never
+  succeed `wait_ready`.
+- `.gitignore` covers `inferops_memory.db` but not the SQLite `-wal`/`-shm`
+  sidecars.
