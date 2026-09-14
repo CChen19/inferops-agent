@@ -1,4 +1,4 @@
-"""CPU tests for Stage D compatible prior-session history."""
+"""CPU tests for Stage D compatible prior-session history + hardware fingerprint."""
 
 from __future__ import annotations
 
@@ -9,13 +9,26 @@ from unittest.mock import MagicMock, patch
 from inferops.agent.planner import _validate_hypotheses, planner_node
 from inferops.agent.state import initial_state, is_duplicate
 from inferops.memory.db import save_result
-from inferops.memory.history import CLAIM_LEVEL, query_compatible_history
-from inferops.schemas import ExperimentValidityStatus
+from inferops.memory.hardware import HardwareFingerprint
+from inferops.memory.history import CLAIM_LEVEL, _recover_param_value, query_compatible_history
+from inferops.schemas import ExperimentValidityStatus, HardwareInfo
 from inferops.task import default_task_for_workload
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _MODEL = "Qwen/Qwen2.5-0.5B-Instruct"
 _OTHER_MODEL = "Qwen/Qwen2.5-1.5B-Instruct"
+_FP: HardwareFingerprint = {
+    "gpu_name": "NVIDIA GeForce RTX 3060 Laptop GPU",
+    "gpu_memory_total_gb": 6.0,
+    "model_name": _MODEL,
+    "engine": "vllm",
+    "vllm_version": "0.6.0",
+}
+_FP_OTHER: HardwareFingerprint = {
+    **_FP,
+    "gpu_name": "NVIDIA A100-SXM4-40GB",
+    "gpu_memory_total_gb": 40.0,
+}
 
 
 def _assert_no_repo_root_sqlite() -> None:
@@ -27,6 +40,18 @@ def _assert_no_repo_root_sqlite() -> None:
         assert not (_REPO_ROOT / name).exists(), f"leaked {name} into repo root"
 
 
+def _hw(**overrides) -> HardwareInfo:
+    base = dict(
+        model_name=_MODEL,
+        engine="vllm",
+        vllm_version="0.6.0",
+        gpu_name="NVIDIA GeForce RTX 3060 Laptop GPU",
+        gpu_memory_total_gb=6.0,
+    )
+    base.update(overrides)
+    return HardwareInfo(**base)
+
+
 def _row(
     result,
     *,
@@ -36,6 +61,7 @@ def _row(
     status,
     notes="",
     throughput_rps=None,
+    hardware=None,
     **cfg_update,
 ):
     cfg = result.config.model_copy(update={"experiment_id": experiment_id, **cfg_update})
@@ -46,6 +72,7 @@ def _row(
         "run_id": run_id,
         "status": status,
         "notes": notes,
+        "hardware": hardware if hardware is not None else _hw(model_name=cfg.model_name),
     }
     if throughput_rps is not None:
         update["throughput_rps"] = throughput_rps
@@ -77,6 +104,7 @@ def test_query_includes_compatible_prior_and_excludes_other_model_and_current(
         max_num_seqs=256,
         max_num_batched_tokens=2048,
         workload=workload,
+        hardware=_hw(model_name=_OTHER_MODEL),
     )
     current = _row(
         result,
@@ -98,6 +126,7 @@ def test_query_includes_compatible_prior_and_excludes_other_model_and_current(
         workload_name="chat_short",
         exclude_session_id="current_",
         db_path=db,
+        current_fingerprint=_FP,
     )
     run_ids = {r["run_id"] for r in rows}
     assert "run_prior_ok" in run_ids
@@ -108,6 +137,115 @@ def test_query_includes_compatible_prior_and_excludes_other_model_and_current(
     assert prior["param"] == "max_num_batched_tokens"
     assert prior["value"] == 4096
     _assert_no_repo_root_sqlite()
+
+
+def test_hardware_mismatch_and_unknown_excluded_from_ranking(result, workload, tmp_path):
+    db = tmp_path / "history.db"
+    match = _row(
+        result,
+        experiment_id="prior_max_num_seqs_64",
+        session_id="prior_",
+        run_id="run_match",
+        status=ExperimentValidityStatus.VALID,
+        model_name=_MODEL,
+        max_num_seqs=64,
+        workload=workload,
+    )
+    mismatch = _row(
+        result,
+        experiment_id="prior_a100_max_num_seqs_64",
+        session_id="a100_",
+        run_id="run_mismatch",
+        status=ExperimentValidityStatus.VALID,
+        model_name=_MODEL,
+        max_num_seqs=64,
+        workload=workload,
+        hardware=_hw(gpu_name="NVIDIA A100-SXM4-40GB", gpu_memory_total_gb=40.0),
+    )
+    legacy = _row(
+        result,
+        experiment_id="prior_legacy_max_num_seqs_64",
+        session_id="legacy_",
+        run_id="run_legacy",
+        status=ExperimentValidityStatus.VALID,
+        model_name=_MODEL,
+        max_num_seqs=64,
+        workload=workload,
+        hardware=_hw(gpu_name=None, gpu_memory_total_gb=None, vllm_version=None),
+    )
+    save_result(match, db_path=db)
+    save_result(mismatch, db_path=db)
+    save_result(legacy, db_path=db)
+
+    rows = query_compatible_history(
+        model_name=_MODEL,
+        workload_name="chat_short",
+        exclude_session_id="now_",
+        db_path=db,
+        current_fingerprint=_FP,
+    )
+    run_ids = {r["run_id"] for r in rows}
+    assert run_ids == {"run_match"}
+
+    # Incomplete current fingerprint → nothing ranked
+    assert (
+        query_compatible_history(
+            model_name=_MODEL,
+            workload_name="chat_short",
+            exclude_session_id="now_",
+            db_path=db,
+            current_fingerprint=None,
+        )
+        == []
+    )
+    _assert_no_repo_root_sqlite()
+
+
+def test_multi_knob_diff_does_not_guess_param(result, workload, tmp_path):
+    db = tmp_path / "history.db"
+    # Two non-default knobs; experiment_id lacks _max_num_seqs_ token.
+    multi = _row(
+        result,
+        experiment_id="prior_session_trial_r3",
+        session_id="prior_",
+        run_id="run_multi",
+        status=ExperimentValidityStatus.FAILED,
+        notes="CUDA out of memory",
+        model_name=_MODEL,
+        max_num_seqs=256,
+        max_num_batched_tokens=4096,
+        workload=workload,
+    )
+    save_result(multi, db_path=db)
+    rows = query_compatible_history(
+        model_name=_MODEL,
+        workload_name="chat_short",
+        exclude_session_id="now_",
+        db_path=db,
+        current_fingerprint=_FP,
+    )
+    assert len(rows) == 1
+    assert rows[0]["param"] is None
+    assert rows[0]["value"] is None
+    state = initial_state("chat_short", "now_")
+    state["compatible_history"] = rows
+    # Unknown param must not suppress an untried pair
+    assert is_duplicate(state, "max_num_seqs", 256) is False
+    assert is_duplicate(state, "max_num_batched_tokens", 4096) is False
+    _assert_no_repo_root_sqlite()
+
+
+def test_single_knob_diff_still_recovers():
+    cfg = {
+        "model_name": _MODEL,
+        "max_num_seqs": 256,
+        "max_num_batched_tokens": 2048,
+        "enable_chunked_prefill": False,
+        "enable_prefix_caching": False,
+    }
+    param, value = _recover_param_value("anything", cfg)
+    assert param == "max_num_seqs"
+    assert value == 256
 
 
 def test_citing_history_run_id_as_metric_fails_this_session_gate(result, tmp_path, workload):
@@ -130,6 +268,7 @@ def test_citing_history_run_id_as_metric_fails_this_session_gate(result, tmp_pat
         workload_name="chat_short",
         exclude_session_id="now_",
         db_path=db,
+        current_fingerprint=_FP,
     )
     assert any(r["run_id"] == "run_prior_metric" for r in history)
 
@@ -188,6 +327,7 @@ def test_failed_history_pair_is_duplicate(result, workload, tmp_path):
         workload_name="chat_short",
         exclude_session_id="now_",
         db_path=db,
+        current_fingerprint=_FP,
     )
     state = initial_state("chat_short", "now_")
     state["compatible_history"] = history
@@ -236,7 +376,7 @@ def test_planner_skips_history_without_memory_db_path(monkeypatch):
 
 
 def test_planner_prompt_includes_prior_history_and_does_not_cite_it(
-    result, workload, tmp_path
+    result, workload, tmp_path, monkeypatch
 ):
     db = tmp_path / "history.db"
     prior = _row(
@@ -276,6 +416,10 @@ def test_planner_prompt_includes_prior_history_and_does_not_cite_it(
     state["experiment_summaries"] = [state["baseline_summary"]]
     state["current_bottleneck"] = "compute-bound"
 
+    monkeypatch.setenv("INFEROPS_GPU_NAME", _FP["gpu_name"])
+    monkeypatch.setenv("INFEROPS_GPU_MEM_GB", "6.0")
+    monkeypatch.setenv("VLLM_VERSION", _FP["vllm_version"])
+
     captured: dict[str, str] = {}
 
     def capture(messages):
@@ -308,6 +452,7 @@ def test_planner_prompt_includes_prior_history_and_does_not_cite_it(
         patch_out = planner_node(state, llm)
 
     assert "PRIOR COMPATIBLE HISTORY" in captured["user"]
+    assert "hardware fingerprint" in captured["user"]
     assert "citations.metric.run_id" in captured["user"]
     assert "run_prior_hint" in captured["user"]
     assert patch_out["hypotheses"] == []
