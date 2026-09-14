@@ -111,6 +111,14 @@ def compare_experiments(inp: CompareExperimentsInput) -> ComparisonResult:
     val_a = _stat(samples_a, inp.metric)
     val_b = _stat(samples_b, inp.metric)
 
+    def _delta_pct(sb: float, sa: float) -> float:
+        if sa == 0:
+            raise ValueError(
+                f"Cannot compare '{inp.metric}': baseline denominator is 0 — "
+                "refusing silent 0% gain"
+            )
+        return (sb - sa) / sa * 100
+
     # Bootstrap the delta distribution
     rng = random.Random(42)
     delta_dist: list[float] = []
@@ -119,14 +127,14 @@ def compare_experiments(inp: CompareExperimentsInput) -> ComparisonResult:
         boot_b = rng.choices(samples_b, k=len(samples_b))
         sa = _stat(boot_a, inp.metric)
         sb = _stat(boot_b, inp.metric)
-        delta_dist.append((sb - sa) / sa * 100 if sa != 0 else 0)
+        delta_dist.append(_delta_pct(sb, sa))
 
     delta_dist.sort()
     alpha = (1 - inp.confidence) / 2
     ci_low = delta_dist[int(alpha * inp.n_bootstrap)]
     ci_high = delta_dist[int((1 - alpha) * inp.n_bootstrap)]
 
-    delta_pct = (val_b - val_a) / val_a * 100 if val_a != 0 else 0.0
+    delta_pct = _delta_pct(val_b, val_a)
     lower_is_better = inp.metric in _LOWER_IS_BETTER
 
     # Significant if CI doesn't straddle zero
