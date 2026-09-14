@@ -239,10 +239,12 @@ def test_empty_actual_with_critical_evidence_not_valid_or_promotable(config):
     assert is_promotable(result) is False
 
 
-def test_partial_cli_actual_insufficient_evidence(config):
-    """P1-1: managed CLI-only actual cannot claim valid while non-CLI keys remain."""
+def test_cli_actual_is_valid_when_schema_only_keys_remain(config):
+    """Unapplied schema defaults (scheduler/TP) do not block managed promotion."""
     req = config_knobs(config)
     actual = managed_cli_actual_config(req)
+    assert "scheduler_policy" in req
+    assert "tensor_parallel_size" in req
     assert "scheduler_policy" not in actual
     assert "tensor_parallel_size" not in actual
     assert set(actual) <= MANAGED_CLI_EVIDENCED_KEYS
@@ -251,10 +253,10 @@ def test_partial_cli_actual_insufficient_evidence(config):
         process_pid=1, host="127.0.0.1", port=8000, observed_params=actual
     )
     status = derive_status(evidence=ev, actual_config=actual, requested_config=req)
-    assert status == ExperimentValidityStatus.INSUFFICIENT_EVIDENCE
+    assert status == ExperimentValidityStatus.VALID
 
     result = ExperimentResult(
-        experiment_id="cli_only",
+        experiment_id="cli_applyable",
         config=config,
         total_requests=10,
         successful_requests=10,
@@ -270,7 +272,19 @@ def test_partial_cli_actual_insufficient_evidence(config):
         config_evidence=ev,
         status=status,
     )
-    assert is_promotable(result) is False
+    assert is_promotable(result) is True
+
+
+def test_incomplete_cli_actual_still_insufficient(config):
+    """Missing an applyable CLI key still cannot be valid."""
+    req = config_knobs(config)
+    actual = managed_cli_actual_config(req)
+    actual.pop("max_num_seqs", None)
+    ev = managed_start_evidence(
+        process_pid=1, host="127.0.0.1", port=8000, observed_params=actual
+    )
+    status = derive_status(evidence=ev, actual_config=actual, requested_config=req)
+    assert status == ExperimentValidityStatus.INSUFFICIENT_EVIDENCE
 
 
 def test_mismatched_actual_is_invalid_not_promotable(config):
@@ -321,9 +335,9 @@ def test_is_promotable_requires_actual_and_evidence(result_b, result_b_unevidenc
 def test_unified_gate_rejects_valid_looking_partial_everywhere(config, result_b, tmp_db, tmp_path):
     """Same counterexample must fail executor, baseline, eval, AND report."""
     req = config_knobs(config)
-    actual = managed_cli_actual_config(req)  # missing non-CLI keys
+    actual: dict = {}  # empty actual must never promote, even if status is stamped valid
     ev = managed_start_evidence(
-        process_pid=1, host="127.0.0.1", port=8000, observed_params=actual
+        process_pid=1, host="127.0.0.1", port=8000, observed_params=managed_cli_actual_config(req)
     )
     # Intentionally stamp status=valid to simulate inconsistent older writers
     hot = ExperimentResult(

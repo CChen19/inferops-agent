@@ -66,8 +66,9 @@ CONFIG_KNOB_KEYS: tuple[str, ...] = (
 )
 
 # Keys that vllm_process._build_cmd actually passes on the CLI.
-# Anything else (e.g. scheduler_policy, tensor_parallel_size) is NOT evidenced
-# by a managed start until item ② can verify instance knobs.
+# Schema-only fields (scheduler_policy, tensor_parallel_size) stay on
+# ExperimentConfig for later search, but do not block promotion until they
+# are actually launched.
 MANAGED_CLI_EVIDENCED_KEYS: frozenset[str] = frozenset(
     {
         "model_name",
@@ -305,6 +306,18 @@ def managed_cli_actual_config(requested: dict[str, Any]) -> dict[str, Any]:
     return {k: requested[k] for k in MANAGED_CLI_EVIDENCED_KEYS if k in requested}
 
 
+def applyable_requested_config(requested: dict[str, Any] | None) -> dict[str, Any]:
+    """Requested knobs the current managed path can evidence.
+
+    Full ``requested_config`` may still snapshot every schema field. Promotion
+    and ``derive_status`` only require this subset so unused defaults cannot
+    keep every managed run at ``insufficient_evidence``.
+    """
+    if not requested:
+        return {}
+    return managed_cli_actual_config(requested)
+
+
 def compute_workload_hash(workload: WorkloadSpec) -> str:
     """Content hash of workload shape (excludes prompt text body size noise)."""
     payload = {
@@ -378,15 +391,18 @@ def is_promotable(result: ExperimentResult) -> bool:
     Requires ALL of:
       - status == valid
       - critical config evidence present
-      - actual_config covers every requested knob (no missing keys)
+      - actual_config covers every *applyable* requested knob (CLI-evidenced)
       - at least one successful request (all-failed workloads are not promotable)
-    High scores alone never suffice. Empty/partial actual never promotes.
+    High scores alone never suffice. Empty actual never promotes. Schema-only
+    fields that were never launched do not block.
     """
     if result.status != ExperimentValidityStatus.VALID:
         return False
     if not has_critical_config_evidence(result.config_evidence):
         return False
-    requested = result.requested_config or config_knobs(result.config)
+    requested = applyable_requested_config(
+        result.requested_config or config_knobs(result.config)
+    )
     if not actual_covers_requested(requested, result.actual_config):
         return False
     if result.successful_requests <= 0:
@@ -405,8 +421,10 @@ def derive_status(
     """Derive contract status from evidence + actual/requested config.
 
     Never returns valid unless evidence is critical AND actual covers every
-    requested key. Missing keys → insufficient_evidence (not a match).
-    Mismatched shared keys → invalid. Zero successes → failed.
+    applyable requested key (managed CLI knobs). Schema-only keys in the full
+    snapshot are ignored for this check. Missing applyable keys →
+    insufficient_evidence. Mismatched shared applyable keys → invalid.
+    Zero successes → failed.
     """
     if failed:
         return ExperimentValidityStatus.FAILED
@@ -416,14 +434,14 @@ def derive_status(
         return ExperimentValidityStatus.INSUFFICIENT_EVIDENCE
     if actual_config is None:
         return ExperimentValidityStatus.INSUFFICIENT_EVIDENCE
-    if requested_config:
-        if actual_has_mismatch(requested_config, actual_config):
+    applyable = applyable_requested_config(requested_config)
+    if applyable:
+        if actual_has_mismatch(applyable, actual_config):
             return ExperimentValidityStatus.INVALID
-        if not actual_covers_requested(requested_config, actual_config):
-            # Partial actual (e.g. CLI-only managed keys) → not valid yet.
+        if not actual_covers_requested(applyable, actual_config):
             return ExperimentValidityStatus.INSUFFICIENT_EVIDENCE
     else:
-        # No requested snapshot → cannot claim valid application.
+        # No applyable snapshot → cannot claim valid application.
         return ExperimentValidityStatus.INSUFFICIENT_EVIDENCE
     return ExperimentValidityStatus.VALID
 
@@ -441,8 +459,7 @@ def managed_start_evidence(
     """Evidence for CLI knobs actually passed when bench_runner started vLLM.
 
     `observed_params` must be the CLI-evidenced subset only — never the full
-    requested dict (non-CLI knobs are unverified until item ② verifies them
-    with complete coverage).
+    requested dict. Schema-only knobs are not claimed as applied.
     """
     if instance_id is None:
         instance_id = (

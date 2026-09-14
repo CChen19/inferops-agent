@@ -188,7 +188,7 @@
     {
       "id": "insufficient_evidence_cli_only_not_promotable",
       "source": "error_memory_goldens",
-      "expected_behavior": "CLI-only actual (missing non-CLI knobs) is insufficient_evidence. ① stays closed.",
+      "expected_behavior": "Incomplete CLI actual (missing an applyable knob) is insufficient_evidence. ① stays closed.",
       "judge_rule": "error_memory.cli_only_not_promotable",
       "reviewer": "eval",
       "holdout": false
