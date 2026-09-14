@@ -22,6 +22,13 @@ def _fmt_metric(v: Any, spec: str) -> str:
     return format(float(v), spec)
 
 
+def _fmt_vs_baseline(v: Any) -> str:
+    """Render vs_baseline_pct at stored precision so the printed value is citable."""
+    if v is None:
+        return _fmt_metric(v, "+")
+    return f"{_fmt_metric(v, '+')}%"
+
+
 class FinalReportInput(BaseModel):
     workload_name: str = Field(description="Workload that was optimized")
     session_prefix: str = Field(description="Experiment ID prefix for this session")
@@ -134,8 +141,8 @@ def write_final_report(inp: FinalReportInput) -> FinalReportOutput:
             lines += [
                 "## Experiment Log",
                 "",
-                "| # | experiment_id | run_id | mlflow | status | param | value | rps | vs baseline | failure_reason |",
-                "|---|---|---|---|---|---|---|---|---|---|",
+                "| # | experiment_id | run_id | mlflow | status | param | value | rps | ttft_p99 | vs baseline | failure_reason |",
+                "|---|---|---|---|---|---|---|---|---|---|---|",
             ]
             for i, s in enumerate(inp.experiment_summaries, 1):
                 reason = (s.get("failure_reason") or "").replace("|", "/")
@@ -149,8 +156,8 @@ def write_final_report(inp: FinalReportInput) -> FinalReportOutput:
                     f"| {s.get('param_changed') or '—'} "
                     f"| {s.get('value_changed', '')} "
                     f"| {_fmt_metric(s.get('throughput_rps'), '.3f')} "
-                    f"| {_fmt_metric(s.get('vs_baseline_pct'), '+.1f')}"
-                    f"{'%' if s.get('vs_baseline_pct') is not None else ''} "
+                    f"| {_fmt_metric(s.get('ttft_p99_ms'), '')} "
+                    f"| {_fmt_vs_baseline(s.get('vs_baseline_pct'))} "
                     f"| {reason or '—'} |"
                 )
             lines.append("")
