@@ -298,18 +298,29 @@ def render_live_compare_markdown(report: dict[str, Any]) -> str:
     if report.get("blocked_reason"):
         lines += [f"## Blocked\n\n{report['blocked_reason']}", ""]
 
+    planner_sha = _arm_code_sha("planner", report["arms"]["planner"], report)
+    search_sha = _arm_code_sha("online_local_search", report["arms"]["online_local_search"], report)
+
+    lines += ["## Arms", ""]
+    if planner_sha and search_sha and planner_sha != search_sha:
+        lines += [
+            "> **Warning:** Arms are not on the same code version. "
+            f"Planner was ingested from `{planner_sha}`; "
+            f"live search ran at `{search_sha}`.",
+            "",
+        ]
+
     lines += [
-        "## Arms",
-        "",
-        "| Arm | LLM boundary | Tool boundary | Budget used | Best ID | "
+        "| Arm | Code SHA | LLM boundary | Tool boundary | Budget used | Best ID | "
         "Validity | RPS | TTFT p99 | Decision |",
-        "|---|---|---|---:|---|---|---:|---:|---|",
+        "|---|---|---|---|---:|---|---|---:|---:|---|",
     ]
     for name in ("planner", "online_local_search"):
         arm = report["arms"][name]
         best = arm.get("best") or {}
         lines.append(
-            f"| {name} | {arm.get('llm_boundary')} | {arm.get('tool_boundary')} | "
+            f"| {name} | {_fmt_sha(_arm_code_sha(name, arm, report))} | "
+            f"{arm.get('llm_boundary')} | {arm.get('tool_boundary')} | "
             f"{arm.get('budget_used', 0)} | {best.get('experiment_id') or '—'} | "
             f"{best.get('validity') or '—'} | {_fmt(best.get('rps'))} | "
             f"{_fmt(best.get('ttft_p99_ms'))} | {arm.get('decision_kind') or '—'} |"
@@ -417,6 +428,16 @@ def _float_or_none(value: str) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _arm_code_sha(name: str, arm: dict[str, Any], report: dict[str, Any]) -> str | None:
+    if name == "planner":
+        return arm.get("source_sha") or arm.get("git_sha")
+    return report.get("commit_sha")
+
+
+def _fmt_sha(value: str | None) -> str:
+    return "—" if not value else f"`{value}`"
 
 
 def _fmt(value: Any) -> str:
