@@ -83,6 +83,23 @@ def test_write_final_report_improvement_none_when_vs_baseline_missing(tmp_path):
     assert "n/a" in text
 
 
+def _experiment_log_section(text: str) -> str:
+    _, rest = text.split("## Experiment Log", 1)
+    for marker in ("\n## ", "\n### "):
+        if marker in rest:
+            rest = rest.split(marker, 1)[0]
+            break
+    return rest
+
+
+def _experiment_log_row(text: str, experiment_id: str) -> list[str]:
+    for line in _experiment_log_section(text).splitlines():
+        if f"`{experiment_id}`" not in line:
+            continue
+        return [cell.strip() for cell in line.strip().strip("|").split("|")]
+    raise AssertionError(f"no Experiment Log row for {experiment_id}")
+
+
 def test_write_final_report_includes_experiment_table(tmp_path):
     out_path = tmp_path / "r.md"
     inp = FinalReportInput(
@@ -95,11 +112,68 @@ def test_write_final_report_includes_experiment_table(tmp_path):
     )
     write_final_report(inp)
     text = out_path.read_text()
+    log = _experiment_log_section(text)
 
     assert "Experiment Log" in text
     assert "sess_baseline" in text
     assert "sess_chunked_v2" in text
-    assert "+14.7%" in text
+    assert "+14.7%" in log
+    assert "| ttft_p99 |" in log
+
+
+def test_experiment_log_renders_vs_baseline_at_stored_precision(tmp_path):
+    """Stored vs_baseline_pct must print as-is so the report is citable."""
+    summary = {**_BEST, "vs_baseline_pct": 3.77}
+    out_path = tmp_path / "precision.md"
+    write_final_report(
+        FinalReportInput(
+            workload_name="chat_short",
+            session_prefix="s_",
+            experiment_summaries=[_BASELINE, summary],
+            baseline_summary=_BASELINE,
+            best_summary=summary,
+            output_path=str(out_path),
+        )
+    )
+    cells = _experiment_log_row(out_path.read_text(), "sess_chunked_v2")
+    assert cells[9] == "+3.77%"
+    assert "+3.8%" not in cells[9]
+
+
+def test_experiment_log_includes_ttft_p99(tmp_path):
+    summary = {**_BEST, "ttft_p99_ms": 93.8}
+    out_path = tmp_path / "ttft.md"
+    write_final_report(
+        FinalReportInput(
+            workload_name="chat_short",
+            session_prefix="s_",
+            experiment_summaries=[_BASELINE, summary],
+            baseline_summary=_BASELINE,
+            best_summary=summary,
+            output_path=str(out_path),
+        )
+    )
+    cells = _experiment_log_row(out_path.read_text(), "sess_chunked_v2")
+    assert cells[8] == "93.8"
+
+
+def test_experiment_log_missing_ttft_stays_non_numeric(tmp_path):
+    missing = {**_BEST, "ttft_p99_ms": None}
+    out_path = tmp_path / "ttft_missing.md"
+    write_final_report(
+        FinalReportInput(
+            workload_name="chat_short",
+            session_prefix="s_",
+            experiment_summaries=[_BASELINE, missing],
+            baseline_summary=_BASELINE,
+            best_summary=missing,
+            output_path=str(out_path),
+        )
+    )
+    cells = _experiment_log_row(out_path.read_text(), "sess_chunked_v2")
+    assert cells[8] in {"n/a", "—", ""}
+    with pytest.raises(ValueError):
+        float(cells[8])
 
 
 def test_write_final_report_includes_citations(tmp_path):
