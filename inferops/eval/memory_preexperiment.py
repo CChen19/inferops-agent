@@ -126,13 +126,6 @@ _CONFIG_KNOBS = (
     "enable_chunked_prefill",
     "enable_prefix_caching",
 )
-_TRANSIENT_NOTE_MARKERS = (
-    "timeout",
-    "not ready",
-    "spawn error",
-    "spawn failed",
-    "connection refused",
-)
 _OOM_MARKERS = ("oom", "out of memory", "cuda out of memory")
 
 
@@ -140,7 +133,8 @@ def is_lasting_config_failure(*, status: str, notes: str) -> bool:
     """True only for lasting *config* failures — not transient timeout/spawn.
 
     OOM (including during startup) counts as a lasting bad config.
-    Generic ``failed`` without OOM/invalid does **not** permanently blacklist.
+    Generic ``failed`` without OOM/invalid (including timeout/spawn) does
+    **not** permanently blacklist.
     """
     s = (status or "").lower()
     n = (notes or "").lower()
@@ -148,8 +142,6 @@ def is_lasting_config_failure(*, status: str, notes: str) -> bool:
         return True
     if s == "invalid":
         return True
-    if any(m in n for m in _TRANSIENT_NOTE_MARKERS):
-        return False
     return False
 
 
@@ -588,9 +580,9 @@ def run_scenario(
             "(eval injects constants; no GPU probe)"
         ),
         "scenario_note": (
-            "reusable OOM on t2048_c1_p0 is a scenario override of GT "
+            "OOM on t2048_c1_p0 is a scenario override of GT "
             "(GT row is valid 16.0 rps), not a published GPU failure."
-            if scenario == "reusable"
+            if scenario in ("reusable", "irrelevant")
             else None
         ),
         "groups": group_results,
