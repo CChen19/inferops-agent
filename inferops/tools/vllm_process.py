@@ -36,6 +36,7 @@ STARTUP_TIMEOUT_S = 180  # CUDA graph compilation can be slow
 HEALTH_POLL_S = 3
 # Between /health probes the wait loop sleeps in short slices so a Stop
 # (cancel flag / stop()) is noticed within this many seconds, not HEALTH_POLL_S.
+# Health GETs use the same budget so a hung /health cannot stall abort for 3s.
 CANCEL_CHECK_S = 0.25
 
 # Alias kept for tests / call sites; source of truth is schemas.
@@ -515,7 +516,7 @@ class VLLMProcess:
             if self._wait_should_abort():
                 return False
             try:
-                r = httpx.get(url, timeout=3)
+                r = httpx.get(url, timeout=CANCEL_CHECK_S)
                 if r.status_code == 200:
                     return True
             except Exception:
