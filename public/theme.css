@@ -1,15 +1,20 @@
 /* ==========================================================================
-   InferOps Custom Theme — Local vLLM Tuning & Serving-Ops Assistant
+   InferOps Custom Theme — Precision Engineering & Serving-Ops UI
    ========================================================================== */
 
 /* --------------------------------------------------------------------------
-   1. Theme Variables (Light & Dark)
+   1. Google Fonts Import (Inter & JetBrains Mono)
+   -------------------------------------------------------------------------- */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap');
+
+/* --------------------------------------------------------------------------
+   2. Theme Variables (Precision Dark & Crisp Light)
    -------------------------------------------------------------------------- */
 :root {
   --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-  --font-mono: 'JetBrains Mono', 'Fira Code', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  --font-mono: 'JetBrains Mono', 'Geist Mono', 'Fira Code', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 
-  /* Base Light Theme: Technical Lab Paper */
+  /* Base Light Theme */
   --background: 210 30% 98%;
   --foreground: 222 47% 11%;
   --card: 0 0% 100%;
@@ -48,57 +53,66 @@
 }
 
 .dark,
-[data-theme="dark"] {
-  /* Dark Theme: Deep Serving-Ops Slate / Obsidian (#090d16 / #0f172a) */
-  --background: 224 35% 8%;
+[data-theme="dark"],
+body {
+  /* Dark Theme: Precision Obsidian & Deep Telemetry Slate */
+  --background: 224 45% 6%;
   --foreground: 210 40% 98%;
-  --card: 222 35% 12%;
+  --card: 222 35% 10%;
   --card-foreground: 210 40% 98%;
-  --popover: 222 35% 12%;
+  --popover: 222 35% 10%;
   --popover-foreground: 210 40% 98%;
 
   /* High-Contrast Electric Cyan */
   --primary: 199 89% 48%;
   --primary-foreground: 0 0% 100%;
 
-  --secondary: 222 25% 17%;
+  --secondary: 222 25% 15%;
   --secondary-foreground: 210 40% 98%;
-  --muted: 222 25% 17%;
+  --muted: 222 25% 15%;
   --muted-foreground: 215 20% 65%;
-  --accent: 222 25% 20%;
+  --accent: 222 25% 18%;
   --accent-foreground: 210 40% 98%;
 
   --destructive: 0 75% 58%;
   --destructive-foreground: 0 0% 100%;
 
-  --border: 222 25% 18%;
-  --input: 222 25% 18%;
+  --border: 222 25% 16%;
+  --input: 222 25% 16%;
   --ring: 199 89% 48%;
 
-  --sidebar-background: 224 35% 7%;
+  --sidebar-background: 224 45% 5%;
   --sidebar-foreground: 210 40% 98%;
   --sidebar-primary: 199 89% 48%;
   --sidebar-primary-foreground: 0 0% 100%;
-  --sidebar-accent: 222 25% 17%;
+  --sidebar-accent: 222 25% 15%;
   --sidebar-accent-foreground: 210 40% 98%;
-  --sidebar-border: 222 25% 18%;
+  --sidebar-border: 222 25% 16%;
   --sidebar-ring: 199 89% 48%;
 }
 
 /* --------------------------------------------------------------------------
-   2. Typography & Base Polish
+   3. Global Layout & Typography
    -------------------------------------------------------------------------- */
-body {
-  font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
-  text-rendering: optimizeLegibility;
-  -webkit-font-smoothing: antialiased;
+* {
+  box-sizing: border-box;
 }
 
-code, kbd, samp, pre {
+body {
+  font-family: var(--font-sans) !important;
+  font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11', 'ss01', 'ss02' !important;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background-color: #060911 !important;
+  color: #f1f5f9;
+}
+
+code, kbd, samp, pre, .mono {
   font-family: var(--font-mono) !important;
 }
 
-/* Smooth custom scrollbars */
+/* Responsive custom scrollbars */
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
@@ -107,143 +121,378 @@ code, kbd, samp, pre {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(148, 163, 184, 0.25);
+  background: rgba(148, 163, 184, 0.2);
   border-radius: 9999px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(148, 163, 184, 0.45);
+  background: rgba(148, 163, 184, 0.4);
 }
 
 /* --------------------------------------------------------------------------
-   3. Header Bar & Navigation
+   4. Full-Width Layout Expansion (Overrides narrow columns)
+   -------------------------------------------------------------------------- */
+main,
+.chat-container,
+[role="main"],
+.inferops-wide-ready {
+  max-width: 1140px !important;
+  width: 100% !important;
+  margin-left: auto !important;
+  margin-right: auto !important;
+  padding-left: 1rem !important;
+  padding-right: 1rem !important;
+}
+
+/* Ensure message list and composer span the wide container */
+.step,
+[data-step-type],
+#chat-input-container,
+div:has(> #chat-input),
+form:has(#chat-input) {
+  max-width: 1100px !important;
+  width: 100% !important;
+  margin-left: auto !important;
+  margin-right: auto !important;
+}
+
+/* --------------------------------------------------------------------------
+   5. Header Polish
    -------------------------------------------------------------------------- */
 header,
 .header {
-  border-bottom: 1px solid hsl(var(--border)) !important;
-  backdrop-filter: blur(12px) !important;
-  -webkit-backdrop-filter: blur(12px) !important;
-}
-
-.dark header,
-.dark .header {
-  background: rgba(11, 15, 25, 0.85) !important;
-  border-bottom: 1px solid rgba(30, 41, 59, 0.8) !important;
+  background: rgba(6, 9, 17, 0.85) !important;
+  border-bottom: 1px solid rgba(30, 41, 59, 0.7) !important;
+  backdrop-filter: blur(16px) !important;
+  -webkit-backdrop-filter: blur(16px) !important;
+  height: 3.5rem !important;
 }
 
 /* --------------------------------------------------------------------------
-   4. Chat Messages & Hierarchy
+   6. Landing Page Visual Elements
    -------------------------------------------------------------------------- */
-/* User message styling */
-[data-step-type="user_message"] > div,
-.user-message {
-  background: rgba(14, 165, 233, 0.08) !important;
-  border: 1px solid rgba(14, 165, 233, 0.22) !important;
-  border-radius: 0.75rem !important;
-  padding: 0.75rem 1rem !important;
-  transition: border-color 0.15s ease;
+.inferops-landing {
+  width: 100%;
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 1.25rem 0.5rem 2.5rem;
 }
 
-.dark [data-step-type="user_message"] > div {
-  background: rgba(14, 165, 233, 0.09) !important;
-  border: 1px solid rgba(56, 189, 248, 0.25) !important;
+/* Hero Section */
+.hero-section {
+  text-align: center;
+  padding: 1rem 0 2rem;
 }
 
-/* Assistant message typography and markdown container */
-[data-step-type="assistant_message"],
-.step {
+.hero-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.3rem 0.85rem;
+  background: rgba(14, 165, 233, 0.08);
+  border: 1px solid rgba(56, 189, 248, 0.25);
+  border-radius: 9999px;
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: #38bdf8;
+  margin-bottom: 1.25rem;
+  box-shadow: 0 0 15px rgba(14, 165, 233, 0.12);
+}
+
+.badge-dot {
+  width: 7px;
+  height: 7px;
+  background-color: #10b981;
+  border-radius: 9999px;
+  box-shadow: 0 0 8px #10b981;
+  animation: pulse-dot 2s infinite ease-in-out;
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.5; transform: scale(0.85); }
+}
+
+.hero-title {
+  font-size: 2.5rem !important;
+  font-weight: 800 !important;
+  letter-spacing: -0.035em !important;
+  line-height: 1.15 !important;
+  color: #f8fafc !important;
+  margin: 0 0 0.85rem 0 !important;
+}
+
+.gradient-text {
+  background: linear-gradient(135deg, #38bdf8 0%, #818cf8 60%, #34d399 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  display: inline-block;
+}
+
+.hero-description {
+  font-size: 1.05rem;
+  line-height: 1.65;
+  color: #94a3b8;
+  max-width: 720px;
+  margin: 0 auto;
+}
+
+/* Diagram Card Section */
+.diagram-section {
+  background: #090e1a;
+  border: 1px solid #1e293b;
+  border-radius: 1rem;
+  padding: 1.25rem 1.5rem;
+  margin-bottom: 2rem;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+
+.diagram-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 1px solid rgba(30, 41, 59, 0.8);
+  padding-bottom: 0.85rem;
+  margin-bottom: 1.25rem;
+}
+
+.diagram-title-group {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.diagram-icon {
+  color: #38bdf8;
+  font-size: 1.1rem;
+}
+
+.diagram-title {
   font-size: 0.95rem;
-  line-height: 1.6;
+  font-weight: 600;
+  color: #f1f5f9;
+  letter-spacing: -0.01em;
 }
 
-/* Headings in chat & readme */
-.prose h1, .prose h2, .prose h3,
-.markdown-body h1, .markdown-body h2, .markdown-body h3 {
-  font-weight: 700;
-  letter-spacing: -0.02em;
-  color: hsl(var(--foreground));
+.diagram-legend {
+  display: flex;
+  align-items: center;
+  gap: 1.25rem;
 }
 
-.prose h1, .markdown-body h1 {
-  font-size: 1.5rem;
-  margin-top: 0.5rem;
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.75rem;
+  color: #94a3b8;
+  font-weight: 500;
+}
+
+.legend-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 9999px;
+}
+.dot-cyan { background: #38bdf8; }
+.dot-amber { background: #fbbf24; }
+.dot-emerald { background: #34d399; }
+
+.pipeline-svg {
+  width: 100%;
+  height: auto;
+  display: block;
+  border-radius: 0.5rem;
+}
+
+/* Operational Guarantees (Pillars Grid) */
+.pillars-section {
+  margin-bottom: 2rem;
+}
+
+.pillars-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 1rem;
+}
+
+.pillar-card {
+  background: #0b1120;
+  border: 1px solid #1e293b;
+  border-radius: 0.75rem;
+  padding: 1.25rem;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  display: flex;
+  flex-direction: column;
+}
+
+.pillar-card:hover {
+  transform: translateY(-2px);
+  border-color: rgba(56, 189, 248, 0.35);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+
+.card-amber:hover { border-color: rgba(245, 158, 11, 0.4); }
+.card-emerald:hover { border-color: rgba(16, 185, 129, 0.4); }
+
+.pillar-icon {
+  font-size: 1.35rem;
   margin-bottom: 0.75rem;
 }
 
-.prose h2, .markdown-body h2 {
-  font-size: 1.25rem;
-  margin-top: 1.25rem;
-  margin-bottom: 0.5rem;
-  border-bottom: 1px solid hsl(var(--border));
-  padding-bottom: 0.35rem;
+.pillar-title {
+  font-size: 0.95rem !important;
+  font-weight: 600 !important;
+  color: #f8fafc !important;
+  margin: 0 0 0.5rem 0 !important;
+  letter-spacing: -0.015em !important;
 }
 
-.prose h3, .markdown-body h3 {
-  font-size: 1.05rem;
-  margin-top: 1rem;
-  margin-bottom: 0.35rem;
+.pillar-desc {
+  font-size: 0.85rem;
+  line-height: 1.55;
+  color: #94a3b8;
+  margin: 0;
+  flex-grow: 1;
 }
 
-/* Blockquotes: Telemetry and safety callout boxes */
+.pillar-desc code {
+  font-size: 0.8em !important;
+  background: rgba(56, 189, 248, 0.1) !important;
+  border: 1px solid rgba(56, 189, 248, 0.2) !important;
+  color: #38bdf8 !important;
+  padding: 0.1em 0.35em !important;
+  border-radius: 0.25rem !important;
+}
+
+/* Scenarios Grid */
+.scenarios-section {
+  margin-bottom: 2rem;
+}
+
+.scenarios-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 0.85rem;
+}
+
+.scenarios-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: #f1f5f9;
+  letter-spacing: -0.01em;
+}
+
+.scenarios-subtitle {
+  font-size: 0.8rem;
+  color: #64748b;
+}
+
+.scenarios-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 0.85rem;
+}
+
+.scenario-card {
+  background: #090e1a;
+  border: 1px solid #1e293b;
+  border-radius: 0.65rem;
+  padding: 0.9rem 1rem;
+  cursor: pointer;
+  transition: all 0.18s cubic-bezier(0.4, 0, 0.2, 1);
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.scenario-card:hover {
+  background: #0f172a;
+  border-color: #38bdf8;
+  transform: translateY(-2px);
+  box-shadow: 0 6px 18px rgba(14, 165, 233, 0.15);
+}
+
+.scenario-badge {
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #38bdf8;
+}
+
+.scenario-text {
+  font-size: 0.82rem;
+  color: #cbd5e1;
+  line-height: 1.45;
+  font-family: var(--font-mono);
+}
+
+/* --------------------------------------------------------------------------
+   7. Chat Messages & Telemetry Callouts (No Double Frames)
+   -------------------------------------------------------------------------- */
+/* User message bubble */
+[data-step-type="user_message"] > div,
+.user-message {
+  background: rgba(14, 165, 233, 0.08) !important;
+  border: 1px solid rgba(56, 189, 248, 0.25) !important;
+  border-radius: 0.75rem !important;
+  padding: 0.85rem 1.15rem !important;
+}
+
+/* Assistant message container */
+[data-step-type="assistant_message"],
+.step {
+  font-size: 0.95rem;
+  line-height: 1.65;
+  margin-bottom: 1.25rem;
+}
+
+/* Blockquotes: Single clean frame, no overflow */
 .prose blockquote,
-.markdown-body blockquote {
+.markdown-body blockquote,
+blockquote {
   border-left: 3px solid #0ea5e9 !important;
-  background: rgba(14, 165, 233, 0.06) !important;
-  border-radius: 0 0.5rem 0.5rem 0 !important;
-  padding: 0.6rem 0.9rem !important;
-  margin: 0.75rem 0 !important;
-  color: hsl(var(--foreground)) !important;
+  background: rgba(14, 165, 233, 0.07) !important;
+  border-radius: 0 0.6rem 0.6rem 0 !important;
+  padding: 0.8rem 1.1rem !important;
+  margin: 0.85rem 0 !important;
+  color: #e2e8f0 !important;
+  word-break: break-word !important;
+  overflow: hidden !important;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15) !important;
 }
 
-.dark .prose blockquote,
-.dark .markdown-body blockquote {
-  border-left: 3px solid #38bdf8 !important;
-  background: rgba(14, 165, 233, 0.09) !important;
-}
-
-/* Inline code formatting */
+/* Inline Code Formatting */
 .prose :not(pre) > code,
 .markdown-body :not(pre) > code,
 p > code,
 li > code {
   font-family: var(--font-mono) !important;
-  font-size: 0.875em !important;
-  background: rgba(14, 165, 233, 0.1) !important;
-  border: 1px solid rgba(14, 165, 233, 0.22) !important;
-  color: #0284c7 !important;
+  font-size: 0.86em !important;
+  background: rgba(56, 189, 248, 0.1) !important;
+  border: 1px solid rgba(56, 189, 248, 0.22) !important;
+  color: #38bdf8 !important;
   padding: 0.15em 0.4em !important;
   border-radius: 0.35rem !important;
 }
 
-.dark .prose :not(pre) > code,
-.dark .markdown-body :not(pre) > code,
-.dark p > code,
-.dark li > code {
-  background: rgba(56, 189, 248, 0.12) !important;
-  border: 1px solid rgba(56, 189, 248, 0.25) !important;
-  color: #38bdf8 !important;
-}
-
-/* Code blocks (pre / code) */
+/* Code Blocks (pre / code) */
 .prose pre,
 .markdown-body pre,
 pre {
-  background: #080d1a !important;
-  border: 1px solid #1e293b !important;
-  border-radius: 0.625rem !important;
-  padding: 0.85rem 1rem !important;
-  font-family: var(--font-mono) !important;
-  font-size: 0.875rem !important;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
-}
-
-.dark .prose pre,
-.dark .markdown-body pre {
   background: #070b14 !important;
   border: 1px solid #1e293b !important;
+  border-radius: 0.625rem !important;
+  padding: 0.9rem 1.1rem !important;
+  font-family: var(--font-mono) !important;
+  font-size: 0.875rem !important;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+  overflow-x: auto !important;
 }
 
 /* --------------------------------------------------------------------------
-   5. Optimization Report Tables
+   8. Tables & Optimization Reports
    -------------------------------------------------------------------------- */
 .prose table,
 .markdown-body table,
@@ -251,29 +500,33 @@ table {
   width: 100% !important;
   border-collapse: separate !important;
   border-spacing: 0 !important;
-  border: 1px solid hsl(var(--border)) !important;
-  border-radius: 0.5rem !important;
+  border: 1px solid #1e293b !important;
+  border-radius: 0.6rem !important;
   overflow: hidden !important;
-  margin: 1rem 0 !important;
+  margin: 1.1rem 0 !important;
   font-size: 0.875rem !important;
+  background: #090e1a !important;
 }
 
 .prose th,
 .markdown-body th,
 th {
-  background: hsl(var(--muted)) !important;
-  color: hsl(var(--foreground)) !important;
+  background: #0f172a !important;
+  color: #f8fafc !important;
   font-weight: 600 !important;
   text-align: left !important;
-  padding: 0.6rem 0.85rem !important;
-  border-bottom: 1px solid hsl(var(--border)) !important;
+  padding: 0.65rem 0.95rem !important;
+  border-bottom: 1px solid #1e293b !important;
+  font-family: var(--font-mono) !important;
+  font-size: 0.82rem !important;
 }
 
 .prose td,
 .markdown-body td,
 td {
-  padding: 0.55rem 0.85rem !important;
-  border-bottom: 1px solid hsl(var(--border)) !important;
+  padding: 0.6rem 0.95rem !important;
+  border-bottom: 1px solid rgba(30, 41, 59, 0.6) !important;
+  color: #cbd5e1 !important;
 }
 
 .prose tr:last-child td,
@@ -281,15 +534,14 @@ td {
   border-bottom: none !important;
 }
 
-.dark .prose tr:nth-child(even),
-.dark .markdown-body tr:nth-child(even) {
-  background: rgba(30, 41, 59, 0.25) !important;
+.prose tr:nth-child(even),
+.markdown-body tr:nth-child(even) {
+  background: rgba(15, 23, 42, 0.4) !important;
 }
 
 /* --------------------------------------------------------------------------
-   6. Action Buttons (Confirm and run / Cancel)
+   9. Action Buttons (Confirm and run / Cancel)
    -------------------------------------------------------------------------- */
-/* Primary Confirm Action Button */
 button#confirm,
 button[name="confirm"],
 button[id*="confirm"],
@@ -299,8 +551,8 @@ button[name*="confirm"] {
   border: 1px solid #38bdf8 !important;
   font-weight: 600 !important;
   border-radius: 0.5rem !important;
-  padding: 0.5rem 1.1rem !important;
-  box-shadow: 0 2px 10px rgba(14, 165, 233, 0.35) !important;
+  padding: 0.55rem 1.25rem !important;
+  box-shadow: 0 2px 12px rgba(14, 165, 233, 0.4) !important;
   transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1) !important;
 }
 
@@ -308,11 +560,10 @@ button#confirm:hover,
 button[name="confirm"]:hover,
 button[id*="confirm"]:hover {
   background: linear-gradient(135deg, #38bdf8, #0ea5e9) !important;
-  box-shadow: 0 4px 16px rgba(14, 165, 233, 0.5) !important;
+  box-shadow: 0 4px 18px rgba(14, 165, 233, 0.55) !important;
   transform: translateY(-1px);
 }
 
-/* Secondary / Cancel Action Button */
 button#cancel,
 button[name="cancel"],
 button[id*="cancel"],
@@ -322,7 +573,7 @@ button[name*="cancel"] {
   border: 1px solid rgba(239, 68, 68, 0.3) !important;
   font-weight: 500 !important;
   border-radius: 0.5rem !important;
-  padding: 0.5rem 1.1rem !important;
+  padding: 0.55rem 1.25rem !important;
   transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1) !important;
 }
 
@@ -336,67 +587,62 @@ button[id*="cancel"]:hover {
 }
 
 /* --------------------------------------------------------------------------
-   7. Composer & Chat Input
+   10. Composer & Command Bar Input
    -------------------------------------------------------------------------- */
-/* Composer input box container */
 #chat-input-container,
 div:has(> #chat-input),
 form:has(#chat-input) {
-  border-radius: 0.875rem !important;
-  border: 1px solid hsl(var(--border)) !important;
-  transition: border-color 0.2s ease, box-shadow 0.2s ease !important;
-}
-
-.dark #chat-input-container,
-.dark div:has(> #chat-input),
-.dark form:has(#chat-input) {
-  background: #111827 !important;
+  background: #0c1220 !important;
   border: 1px solid #1e293b !important;
+  border-radius: 0.875rem !important;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.4) !important;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease !important;
+  padding: 0.4rem 0.6rem !important;
 }
 
 #chat-input-container:focus-within,
 div:has(> #chat-input:focus),
 form:has(#chat-input:focus) {
   border-color: #0ea5e9 !important;
-  box-shadow: 0 0 0 2px rgba(14, 165, 233, 0.35) !important;
+  box-shadow: 0 0 0 2px rgba(14, 165, 233, 0.3), 0 8px 32px rgba(14, 165, 233, 0.15) !important;
 }
 
-/* Textarea inside composer */
 #chat-input {
+  font-family: var(--font-sans) !important;
   font-size: 0.95rem !important;
-  line-height: 1.5 !important;
+  line-height: 1.55 !important;
+  color: #f8fafc !important;
 }
 
-/* Send Button (#chat-submit): Clean Cyan / Telemetry Accent, NO PINK */
 #chat-submit {
   background: linear-gradient(135deg, #0ea5e9, #0284c7) !important;
   color: #ffffff !important;
   border: none !important;
   border-radius: 9999px !important;
-  box-shadow: 0 2px 8px rgba(14, 165, 233, 0.3) !important;
+  box-shadow: 0 2px 10px rgba(14, 165, 233, 0.35) !important;
   transition: all 0.2s ease !important;
 }
 
 #chat-submit:hover:not(:disabled) {
   background: linear-gradient(135deg, #38bdf8, #0ea5e9) !important;
-  box-shadow: 0 4px 12px rgba(14, 165, 233, 0.5) !important;
+  box-shadow: 0 4px 14px rgba(14, 165, 233, 0.55) !important;
   transform: scale(1.05);
 }
 
 #chat-submit:disabled {
-  background: hsl(var(--muted)) !important;
-  color: hsl(var(--muted-foreground)) !important;
+  background: #1e293b !important;
+  color: #64748b !important;
   box-shadow: none !important;
   opacity: 0.5;
 }
 
-/* Stop Button (#stop-button): Amber / Red halt indicator */
+/* Stop Button */
 #stop-button {
   background: #ef4444 !important;
   color: #ffffff !important;
   border: none !important;
   border-radius: 9999px !important;
-  box-shadow: 0 0 12px rgba(239, 68, 68, 0.45) !important;
+  box-shadow: 0 0 12px rgba(239, 68, 68, 0.5) !important;
   transition: all 0.2s ease !important;
 }
 
@@ -406,26 +652,12 @@ form:has(#chat-input:focus) {
 }
 
 /* --------------------------------------------------------------------------
-   8. Watermark & Footer
+   11. Watermark & Footer
    -------------------------------------------------------------------------- */
 .watermark,
 [id*="watermark"],
 footer p {
-  color: hsl(var(--muted-foreground)) !important;
+  color: #64748b !important;
   font-size: 0.75rem !important;
   letter-spacing: 0.02em !important;
 }
-
-/* --------------------------------------------------------------------------
-   9. Readme Sheet / Dialog Modal Visuals
-   -------------------------------------------------------------------------- */
-[role="dialog"] {
-  border-radius: 0.75rem !important;
-  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5), 0 8px 10px -6px rgba(0, 0, 0, 0.5) !important;
-}
-
-.dark [role="dialog"] {
-  background: #0f172a !important;
-  border: 1px solid #1e293b !important;
-}
-
