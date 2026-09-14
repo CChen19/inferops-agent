@@ -282,6 +282,7 @@ def prepare_initial_state(
     session_prefix: str,
     max_experiments: int = 8,
     task: OptimizationTask | dict | None = None,
+    db_path: Path | str | None = None,
 ) -> AgentState:
     """
     Build an AgentState with the baseline experiment already run or loaded.
@@ -322,6 +323,8 @@ def prepare_initial_state(
     state["current_bottleneck"] = baseline_bottleneck
     state["experiments_remaining"] = max(0, max_experiments - 1)
     state["started_at_s"] = time.time()
+    if db_path is not None:
+        state["memory_db_path"] = str(Path(db_path))
     return state
 
 
@@ -441,6 +444,7 @@ def run_agent(
                 prefix,
                 max_experiments=max_experiments,
                 task=resolved_task,
+                db_path=db_file,
             )
 
         update_task_status(resolved_task.task_id, "running", db_path=db_file)

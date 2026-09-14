@@ -22,6 +22,7 @@ from inferops.agent.state import (
     AgentState,
     Hypothesis,
     is_duplicate,
+    model_name_of,
 )
 from inferops.citations import sources_from_context, valid_structured_citations
 
@@ -33,9 +34,11 @@ _SYSTEM = """\
 You are an expert vLLM inference optimization engineer. Your task is to find the best \
 serving configuration for a specific workload on an RTX 3060 Laptop (6 GB VRAM, WSL2).
 
-You will be shown experiment history, relevant documentation excerpts, and asked to \
-generate hypotheses for the next parameter change. Each hypothesis MUST:
-  1. Cite an exact run_id, metric name, and metric value from the history.
+You will be shown this-run experiment history, optional prior-session hints, \
+relevant documentation excerpts, and asked to generate hypotheses for the next \
+parameter change. Each hypothesis MUST:
+  1. Cite an exact run_id, metric name, and metric value from this-run \
+EXPERIMENT HISTORY only — never from PRIOR COMPATIBLE HISTORY.
   2. If knowledge chunks are provided, cite one of their sources and repeat it in \
 the rationale as a [source: <document>] tag. If none are provided, do not invent one.
   3. Change exactly ONE parameter.
@@ -62,7 +65,7 @@ BEST SO FAR:
 EXPERIMENT HISTORY (most recent first):
 {history_table}
 
-ALREADY TRIED — do NOT repeat these (param, value) pairs:
+{prior_history_section}ALREADY TRIED — do NOT repeat these (param, value) pairs:
 {tried_pairs}
 
 TUNABLE PARAMETERS (safe ranges for RTX 3060):
@@ -158,11 +161,39 @@ def _build_history_table(summaries: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def _tried_pairs(summaries: list[dict]) -> str:
+def _tried_pairs(summaries: list[dict], history_rows: list[dict] | None = None) -> str:
     pairs = [
         f"  {s['param_changed']}={s['value_changed']}" for s in summaries if s.get("param_changed")
     ]
+    for row in history_rows or []:
+        if row.get("param") is None:
+            continue
+        status = str(row.get("status") or "").lower()
+        notes = str(row.get("notes") or "").lower()
+        if status in {"failed", "invalid", "oom"} or "oom" in notes or "out of memory" in notes:
+            pairs.append(
+                f"  {row['param']}={row['value']}  (prior session failure — do not retry)"
+            )
     return "\n".join(pairs) if pairs else "  (none)"
+
+
+def _prior_history_section(rows: list[dict]) -> str:
+    if not rows:
+        return ""
+    lines = [
+        "PRIOR COMPATIBLE HISTORY (compatible = same model_name + workload_name, "
+        "other session_id only. GPU SKU is not stored on experiment rows and is not matched.):",
+        "These run_ids are NOT this-run metric evidence; do not cite them as "
+        "citations.metric.run_id. They must not skip a confirmation campaign.",
+    ]
+    for row in rows:
+        lines.append(
+            f"  run_id={row.get('run_id') or ''} session_id={row.get('session_id') or ''} "
+            f"status={row.get('status') or ''} param={row.get('param')} value={row.get('value')} "
+            f"throughput_rps={row.get('throughput_rps')} notes={row.get('notes') or ''} "
+            f"claim_level={row.get('claim_level')}"
+        )
+    return "\n".join(lines) + "\n\n"
 
 
 def _citation_summaries(state: AgentState) -> list[dict]:
@@ -287,6 +318,20 @@ def planner_node(state: AgentState, llm) -> dict:
         else (2 if state["experiments_remaining"] <= 4 else 3)
     )
 
+    history_rows: list[dict] = []
+    db_path = state.get("memory_db_path")
+    model_name = model_name_of(state)
+    if db_path and model_name:
+        from inferops.memory.history import query_compatible_history
+
+        history_rows = query_compatible_history(
+            model_name=model_name,
+            workload_name=state["workload_name"],
+            exclude_session_id=state["session_prefix"],
+            db_path=db_path,
+        )
+    state = {**state, "compatible_history": history_rows}
+
     knowledge_context = _retrieve_knowledge(
         bottleneck=state["current_bottleneck"],
         workload=state["workload_name"],
@@ -318,7 +363,8 @@ def planner_node(state: AgentState, llm) -> dict:
         baseline_line=_fmt_summary(state["baseline_summary"]),
         best_line=_fmt_summary(state["best_summary"]),
         history_table=_build_history_table(state["experiment_summaries"]),
-        tried_pairs=_tried_pairs(state["experiment_summaries"]),
+        prior_history_section=_prior_history_section(history_rows),
+        tried_pairs=_tried_pairs(state["experiment_summaries"], history_rows),
         batched_values=str(AGENT_SEARCH_SPACE["max_num_batched_tokens"]),
         seqs_values=str(AGENT_SEARCH_SPACE["max_num_seqs"]),
         knowledge_context=knowledge_context,
@@ -414,4 +460,5 @@ def planner_node(state: AgentState, llm) -> dict:
         "hypotheses": state["hypotheses"] + new_hypotheses,
         "trajectory": state["trajectory"] + [trajectory_step],
         "messages": [AIMessage(content=response.content)],
+        "compatible_history": history_rows,
     }

@@ -89,7 +89,7 @@ def test_new_checkpointer_instance_resumes_without_second_baseline(tmp_path):
     baseline_calls: list[str] = []
     benchmark_calls: list[str] = []
 
-    def prepare(workload_name, prefix, max_experiments=8, task=None):
+    def prepare(workload_name, prefix, max_experiments=8, task=None, db_path=None):
         baseline_calls.append(prefix)
         state = initial_state(
             workload_name,
@@ -106,6 +106,8 @@ def test_new_checkpointer_instance_resumes_without_second_baseline(tmp_path):
             current_bottleneck="compute-bound",
             experiments_remaining=1,
         )
+        if db_path is not None:
+            state["memory_db_path"] = str(db_path)
         return state
 
     def planner(state, llm=None):
