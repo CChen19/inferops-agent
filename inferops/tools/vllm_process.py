@@ -426,7 +426,8 @@ class VLLMProcess:
 
     @property
     def pid(self) -> int | None:
-        return self._proc.pid if self._proc is not None else None
+        proc = self._proc
+        return proc.pid if proc is not None else None
 
     def identity(self) -> InstanceIdentity:
         return InstanceIdentity(
@@ -572,15 +573,16 @@ class VLLMProcess:
 
     def stop(self) -> None:
         """Terminate the managed child if still running (never leave orphans)."""
-        if self._proc is None:
+        proc = self._proc
+        if proc is None:
             return
-        if self._proc.poll() is None:
-            self._proc.terminate()
+        if proc.poll() is None:
+            proc.terminate()
             try:
-                self._proc.wait(timeout=15)
+                proc.wait(timeout=15)
             except subprocess.TimeoutExpired:
-                self._proc.kill()
-                self._proc.wait()
+                proc.kill()
+                proc.wait()
         self._proc = None
 
     def __enter__(self) -> "VLLMProcess":
