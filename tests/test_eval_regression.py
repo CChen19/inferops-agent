@@ -58,3 +58,58 @@ def test_regression_gate_fails_when_strategy_missing():
 
     assert gate.passed is False
     assert "No current rows" in gate.failures[0]
+
+
+def _multi_report(*workloads: tuple[str, float, float]) -> dict:
+    return {
+        "strategies": {
+            "greedy_agent": [
+                {
+                    "workload_name": name,
+                    "gap_pct": gap,
+                    "composite": composite,
+                }
+                for name, gap, composite in workloads
+            ]
+        }
+    }
+
+
+def test_regression_gate_fails_on_missing_baseline_workload():
+    gate = regression_gate(
+        current=_multi_report(("chat_short", 3.0, 0.92), ("chat_long", 4.0, 0.91)),
+        baseline=_multi_report(("chat_short", 3.0, 0.92)),
+    )
+
+    assert gate.passed is False
+    assert any("No baseline row for workload 'chat_long'" in msg for msg in gate.failures)
+
+
+def test_regression_gate_fails_on_missing_current_workload():
+    gate = regression_gate(
+        current=_multi_report(("chat_short", 3.0, 0.92)),
+        baseline=_multi_report(("chat_short", 3.0, 0.92), ("chat_long", 4.0, 0.91)),
+    )
+
+    assert gate.passed is False
+    assert any("No current row for workload 'chat_long'" in msg for msg in gate.failures)
+
+
+def test_regression_gate_fails_on_nan_gap_pct():
+    gate = regression_gate(
+        current=_report(gap=float("nan"), composite=0.92),
+        baseline=_report(gap=3.0, composite=0.92),
+    )
+
+    assert gate.passed is False
+    assert any("gap_pct is NaN" in msg for msg in gate.failures)
+
+
+def test_regression_gate_fails_on_nan_composite():
+    gate = regression_gate(
+        current=_report(gap=3.0, composite=0.92),
+        baseline=_report(gap=3.0, composite=float("nan")),
+    )
+
+    assert gate.passed is False
+    assert any("composite is NaN" in msg for msg in gate.failures)

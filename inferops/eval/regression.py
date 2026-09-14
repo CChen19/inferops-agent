@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -39,10 +40,20 @@ def regression_gate(
     if failures:
         return GateResult(False, failures, warnings)
 
-    for workload, cur in current_rows.items():
+    all_workloads = sorted(set(current_rows) | set(baseline_rows))
+    for workload in all_workloads:
+        cur = current_rows.get(workload)
         prev = baseline_rows.get(workload)
+        if cur is None:
+            failures.append(f"No current row for workload '{workload}'")
+            continue
         if prev is None:
-            warnings.append(f"No baseline row for workload '{workload}'")
+            failures.append(f"No baseline row for workload '{workload}'")
+            continue
+
+        metric_failures = _metric_failures(strategy, workload, cur, prev)
+        if metric_failures:
+            failures.extend(metric_failures)
             continue
 
         gap_delta = cur["gap_pct"] - prev["gap_pct"]
@@ -60,6 +71,26 @@ def regression_gate(
             )
 
     return GateResult(not failures, failures, warnings)
+
+
+def _metric_failures(
+    strategy: str,
+    workload: str,
+    current: dict[str, Any],
+    baseline: dict[str, Any],
+) -> list[str]:
+    failures: list[str] = []
+    for side, row in (("current", current), ("baseline", baseline)):
+        for field in ("gap_pct", "composite"):
+            value = row.get(field)
+            prefix = f"{strategy}/{workload} {side} {field}"
+            if value is None:
+                failures.append(f"{prefix} is None")
+            elif not isinstance(value, (int, float)):
+                failures.append(f"{prefix} is non-numeric")
+            elif isinstance(value, float) and math.isnan(value):
+                failures.append(f"{prefix} is NaN")
+    return failures
 
 
 def _rows_by_workload(report: dict[str, Any], strategy: str) -> dict[str, dict[str, Any]]:
