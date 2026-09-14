@@ -1,7 +1,7 @@
 # Architecture
 
 One pass through the system, in the order things actually happen. File
-references are to master at `8a9d53f` (through merged PR #50).
+references are to master at `ca8e3fb` (through merged PRs #51–#53).
 
 ## 1. Task confirmation (`inferops/task.py`)
 
@@ -93,10 +93,16 @@ to poll a dead port until `STARTUP_TIMEOUT_S` (PR #35). `_wait_should_abort`
 binds `proc = self._proc` once before calling `poll()`, so a racing `stop()`
 cannot AttributeError on a cleared handle (PR #37). `is_crashed()`,
 `exit_code()`, `pid`, and `stop()` do the same one-bind (PRs #39 and #43).
-These are merged code paths covered by deterministic CPU tests, not new GPU
-measurements. The readiness `/health` GET is bounded by `CANCEL_CHECK_S`
-(0.25 s), not a hardcoded 3 s (PR #48). `health_ok()` remains a separate
-one-shot with `timeout_s=2.0`.
+`test_stop_binds_proc_once` now also asserts that this bound fake child was
+terminated (PR #52), strengthening the CPU coverage of the existing production
+`stop()` behavior rather than adding a GPU timing. These are merged code paths
+covered by deterministic CPU tests, not new GPU measurements.
+
+The readiness `/health` GET is bounded by `CANCEL_CHECK_S` (0.25 s), not a
+hardcoded 3 s (PR #48). Cancel/Stop does not interrupt that GET mid-call:
+`_wait_should_abort()` is checked between polls, and the request timeout only
+caps how long recognition of an abort can be delayed. `health_ok()` remains a
+separate one-shot with `timeout_s=2.0`.
 
 ## 5. Evidence and the promotion gate (`inferops/schemas.py`, `state.py`)
 
@@ -187,5 +193,3 @@ instead of inventing `0.0%`; the executor records compare as
   PR #50.
 - A remote `VLLM_HOST` whose RTT exceeds `CANCEL_CHECK_S` (0.25 s) would never
   succeed `wait_ready`.
-- `.gitignore` covers `inferops_memory.db` but not the SQLite `-wal`/`-shm`
-  sidecars.
