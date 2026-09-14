@@ -33,10 +33,14 @@ are not bugs to be hidden in an interview, they are the scope boundary.
 | Readiness abort binds the child handle once | PR #37: `_wait_should_abort` binds `proc = self._proc` once so a racing `stop()` cannot AttributeError on `.poll()`; `test_wait_should_abort_binds_proc_once` in `tests/test_vllm_process.py`; CPU tests, not a live GPU timing |
 | Identity and ledger leftovers stay untracked | PR #38: `.gitignore` includes `logs/*.json` so identity/ledger JSON under `logs/` stays untracked; repo hygiene, not a GPU measurement |
 | Crash/exit helpers bind the child handle once | PR #39: `is_crashed()` and `exit_code()` bind `proc = self._proc` once so a racing `stop()` cannot AttributeError on `.poll()`; `test_is_crashed_binds_proc_once` and `test_exit_code_binds_proc_once` in `tests/test_vllm_process.py`; CPU tests, not a live GPU timing |
+| Eval RAG stub must parse via production sources | PR #40: `tests/test_eval_planner_strategy.py` asserts `sources_from_context` on the RAG stub context; tests only, not a GPU measurement |
+| Summaries persist the vs-baseline denominator | PR #42: `ExperimentSummary.baseline_primary` stores the denominator used for `vs_baseline_pct`; `summary_from_result` writes it, including `0.0` when the gain is left `None`; CPU tests, not a rewrite of the live case artifact |
+| Experiment Log prints stored vs-baseline and TTFT p99 | PR #44: `write_final_report` prints `vs_baseline_pct` at stored precision (`+3.77%`, not `+3.8%`) and includes a `ttft_p99` column; Executive Summary still uses `+:.1f`; CPU tests, not a new GPU report |
+| `pid` and `stop()` bind the child handle once | PR #43: `pid` and `stop()` bind `proc = self._proc` once so a racing `stop()` cannot AttributeError; `test_pid_binds_proc_once` and `test_stop_binds_proc_once` in `tests/test_vllm_process.py`; CPU tests, not a live GPU timing |
 | Stale-child adoption is not automatic | `INFEROPS_ADOPT_STALE_MANAGED` is opt-in and defaults off; adoption also requires the stale lease record, child PID, dead owner, and recorded argv checks to match |
 
 These rows describe code paths, deterministic CPU tests, and repo hygiene
-merged on master at `c20997c`. They are not additional RTX 3060 trials and add
+merged on master at `4c5379b`. They are not additional RTX 3060 trials and add
 no throughput, latency, or `confirmed_gain` result.
 
 ## Known limits
@@ -68,13 +72,17 @@ triggered. Consequences to state plainly:
   (`DEFAULT_MIN_REL_DELTA`), so on a 10-slot budget a confirmed adoption costs
   most of the budget.
 
-### The percentage basis is not fully published
+### The live-case percentage basis is still not fully published
 
-The report's `vs_baseline_pct` is computed against the `baseline_primary` passed
-in at that step, which the published artifact does not record. Recomputing from
-the two rounded rps values in the table does not reproduce `3.77`. The number of
-record is `3.77%`; the exact denominator is **unknown** and should not be
-back-derived.
+The live case report's `vs_baseline_pct` was computed against the
+`baseline_primary` passed in at that step, which `live_3060_case_v2` does not
+record. Recomputing from the two rounded rps values in the table does not
+reproduce `3.77`. The number of record is `3.77%`; the exact denominator in
+that artifact is **unknown** and should not be back-derived.
+
+Merged code now persists `baseline_primary` on `ExperimentSummary` (PR #42).
+That does not rewrite the published live artifact. Future reports can cite the
+denominator; this case still cannot.
 
 ### Hardware scope: one 6 GB laptop GPU
 
@@ -124,7 +132,7 @@ observe-after-pick protocol score), no adoption-level winner can be declared.
 - Ledgers stay in each run's own `logs/` directory and are not committed
   (`.gitignore` also ignores `logs/*.json`, PR #38), so full re-audit requires
   access to the original machine.
-- `_wait_should_abort`, `is_crashed()`, and `exit_code()` bind `_proc` once
-  (PRs #37 and #39), but `pid` and `stop()` still double-read `self._proc`.
-  A concurrent `stop()` can still race those paths. Do not describe that as
-  fixed.
+- The Executive Summary still formats Best observed change as `+:.1f`. PR #44
+  only changed the Experiment Log; 3.77 still headlines as +3.8%.
+- Readiness health polling still uses a blocking `httpx.get(..., timeout=3)`
+  between abort checks. Cancel/Stop does not interrupt that GET.

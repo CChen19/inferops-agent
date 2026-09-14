@@ -1,7 +1,7 @@
 # Architecture
 
 One pass through the system, in the order things actually happen. File
-references are to master at `c20997c` (after merged PR #39).
+references are to master at `4c5379b` (after merged PRs #41–#44).
 
 ## 1. Task confirmation (`inferops/task.py`)
 
@@ -87,10 +87,11 @@ is released (PR #32). Readiness polling also aborts when cancellation is
 requested or `stop()` has cleared the managed process, rather than continuing
 to poll a dead port until `STARTUP_TIMEOUT_S` (PR #35). `_wait_should_abort`
 binds `proc = self._proc` once before calling `poll()`, so a racing `stop()`
-cannot AttributeError on a cleared handle (PR #37). `is_crashed()` and
-`exit_code()` do the same one-bind (PR #39). These are merged code paths
-covered by deterministic CPU tests, not new GPU measurements. `pid` and
-`stop()` still double-read `self._proc`; that race is not closed.
+cannot AttributeError on a cleared handle (PR #37). `is_crashed()`,
+`exit_code()`, `pid`, and `stop()` do the same one-bind (PRs #39 and #43).
+These are merged code paths covered by deterministic CPU tests, not new GPU
+measurements. Readiness still issues a blocking `httpx.get(..., timeout=3)`
+between abort checks; that GET is not cancelled mid-call.
 
 ## 5. Evidence and the promotion gate (`inferops/schemas.py`, `state.py`)
 
@@ -146,6 +147,13 @@ naming every rejected candidate and the reason, and evidence links with
 (`render_decision_markdown`) drives both the Markdown report and the Chainlit
 UI, so the UI cannot show a friendlier story than the file.
 
+`ExperimentSummary` now persists `baseline_primary`, the denominator used for
+`vs_baseline_pct` (PR #42). The Experiment Log prints that stored percentage
+at stored precision and includes a `ttft_p99` column (PR #44). The Executive
+Summary headline still formats the same field as `+:.1f` (so 3.77 still
+renders as +3.8% there). The published live case artifact predates these
+changes and is not rewritten by them.
+
 ## Known limits of this architecture
 
 - Only the eight `MANAGED_CLI_EVIDENCED_KEYS` knobs can be applied and proven.
@@ -166,6 +174,7 @@ UI, so the UI cannot show a friendlier story than the file.
   multi-GPU paths are untested here.
 - `external` service mode cannot prove config application the way `managed` can;
   externally-launched servers fall back to weaker evidence kinds.
-- `_wait_should_abort`, `is_crashed()`, and `exit_code()` bind `_proc` once
-  (PRs #37 and #39), but `pid` and `stop()` still double-read `self._proc`.
-  That race is not closed.
+- The Executive Summary still prints Best observed change as `+:.1f`. PR #44
+  only changed the Experiment Log; the headline round-off remains.
+- Readiness health polling still uses a blocking `httpx.get(..., timeout=3)`
+  between abort checks. Cancel/Stop does not interrupt that GET.
