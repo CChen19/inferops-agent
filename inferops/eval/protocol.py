@@ -174,8 +174,25 @@ class SLOPolicy:
         return bool(SLOPolicy.check(observation)["ok"])
 
 
-def is_valid_observation(observation: Observation) -> bool:
-    return observation.validity_status == "valid" and SLOPolicy.is_ok(observation)
+def is_valid_observation(observation: Observation, metric: str | None = None) -> bool:
+    """Usable observation: valid status, SLO ok, config evidence, usable primary.
+
+    When ``metric`` is provided, the primary must pass ``primary_value``
+    (missing / non-finite / non-numeric / bool fail closed). Rows that fail
+    remain in the ledger — callers must not delete them to pretty the score.
+    """
+    if observation.validity_status != "valid":
+        return False
+    if not observation.config_evidence:
+        return False
+    if not SLOPolicy.is_ok(observation):
+        return False
+    if metric is not None:
+        try:
+            primary_value(observation, metric)
+        except ValueError:
+            return False
+    return True
 
 
 def primary_value(observation: Observation, metric: str) -> float:
@@ -249,9 +266,10 @@ class TrialLedger:
         metric: str | None = None,
         direction: str | None = None,
     ) -> int | None:
-        del metric, direction  # validity + SLO only; metric ranking is strategy-local
+        del direction  # ranking direction is strategy-local; usability needs metric
         for record in self.records:
-            if record.observation and is_valid_observation(record.observation):
+            obs = record.observation
+            if obs is not None and is_valid_observation(obs, metric):
                 return record.step
         return None
 
@@ -263,7 +281,7 @@ class TrialLedger:
             if record.kind == "baseline" or not record.paid or record.duplicate:
                 continue
             obs = record.observation
-            if obs is None or not is_valid_observation(obs):
+            if obs is None or not is_valid_observation(obs, metric):
                 wasted += 1
                 continue
             if best is None:
@@ -284,7 +302,7 @@ class TrialLedger:
         best_obs: Observation | None = None
         for record in self.records:
             obs = record.observation
-            if obs is None or not is_valid_observation(obs):
+            if obs is None or not is_valid_observation(obs, metric):
                 continue
             if best_obs is None or is_better(obs, best_obs, metric, direction):
                 best_cfg = record.config

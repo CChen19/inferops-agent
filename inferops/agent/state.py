@@ -289,30 +289,37 @@ def model_name_of(state: AgentState | dict[str, Any]) -> str | None:
     return task.model_name if task is not None else None
 
 
-_HISTORY_FAILURE_STATUSES = frozenset({"failed", "invalid", "oom"})
+def _proposed_search_config(state: AgentState, param: str, value: Any) -> dict[str, Any]:
+    """Baseline search knobs with a single (param, value) override applied."""
+    from inferops.memory.history import normalize_search_config
 
-
-def _history_failure_pair(row: dict[str, Any], param: str, value: Any) -> bool:
-    if row.get("param") is None:
-        return False
-    if str(row.get("param")) != str(param) or str(row.get("value")) != str(value):
-        return False
-    status = str(row.get("status") or "").lower()
-    notes = str(row.get("notes") or "").lower()
-    return status in _HISTORY_FAILURE_STATUSES or "oom" in notes or "out of memory" in notes
+    base: dict[str, Any] = {}
+    summary = state.get("baseline_summary") or {}
+    requested = summary.get("requested_config")
+    if isinstance(requested, dict):
+        base = requested
+    proposed = normalize_search_config(base)
+    if param in proposed or param in AGENT_SEARCH_SPACE:
+        proposed[param] = value
+    return proposed
 
 
 def is_duplicate(state: AgentState, param: str, value: Any) -> bool:
-    """Return True if this (param, value) combo has already been tried.
+    """Return True if this candidate should not be executed again.
 
-    This-session ``experiment_summaries`` always count. Failed / invalid / OOM
-    pairs from compatible prior-session history also count. Successful prior
-    hints do not — they must not skip a confirmation campaign.
+    This-session ``experiment_summaries`` always count as already-tried
+    (param, value). Cross-session hard filter only suppresses lasting config
+    failures of the *identical full* search-knob config in compatible history
+    — not a shared recovered knob, and not transient/evidence failures.
+    Successful prior hints do not skip confirmation.
     """
+    from inferops.memory.history import history_row_suppresses_config
+
     for s in state["experiment_summaries"]:
         if s["param_changed"] == param and str(s["value_changed"]) == str(value):
             return True
+    proposed = _proposed_search_config(state, param, value)
     for row in state.get("compatible_history") or []:
-        if _history_failure_pair(row, param, value):
+        if history_row_suppresses_config(row, proposed):
             return True
     return False

@@ -211,7 +211,7 @@ def run_planner_strategy(
         baseline_primary=baseline_primary,
     )
     best_cfg, best_obs = default_cfg, default_obs
-    if not is_valid_observation(default_obs):
+    if not is_valid_observation(default_obs, metric):
         best_obs = None  # type: ignore[assignment]
     summaries: list[ExperimentSummary] = [baseline_summary]
     current_cfg = default_cfg
@@ -273,9 +273,9 @@ def run_planner_strategy(
             baseline_primary=baseline_primary,
         )
         summaries.append(trial_summary)
-        if is_valid_observation(obs) and is_better(obs, current_obs, metric, direction):
+        if is_valid_observation(obs, metric) and is_better(obs, current_obs, metric, direction):
             current_cfg, current_obs = chosen, obs
-        if is_valid_observation(obs) and (
+        if is_valid_observation(obs, metric) and (
             best_obs is None or is_better(obs, best_obs, metric, direction)
         ):
             best_cfg, best_obs = chosen, obs

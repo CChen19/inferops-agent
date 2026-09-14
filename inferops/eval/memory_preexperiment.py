@@ -10,9 +10,9 @@ only. Offline GT replay; no GPU; no live OpenRouter.
 Groups (independent temp SQLite copies per run):
   A — no cross-session memory (current-task history only)
   B — deterministic exact failed-config filter (lasting config failures only)
-  C — existing ``query_compatible_history`` + ``is_history_failure`` hints
+  C — existing ``query_compatible_history`` + lasting-config-failure full-config filter
 
-Compatibility for B/C environment matching: model_name + workload_name +
+Compatibility for B/C environment matching: model_name + workload_hash +
 hardware fingerprint (gpu_name, gpu_memory_total_gb capacity, vllm_version,
 model, engine). Eval injects complete fingerprint constants — never nvidia-smi.
 """
@@ -38,7 +38,11 @@ from inferops.eval.protocol import (
 from inferops.eval.runner import load_ground_truth
 from inferops.memory.db import init_db, save_result
 from inferops.memory.hardware import HardwareFingerprint, fingerprint_from_hardware
-from inferops.memory.history import is_history_failure, query_compatible_history
+from inferops.memory.history import (
+    history_row_suppresses_config,
+    is_lasting_config_failure,
+    query_compatible_history,
+)
 from inferops.schemas import (
     ExperimentConfig,
     ExperimentResult,
@@ -49,6 +53,7 @@ from inferops.schemas import (
     ModelSize,
     SchedulerPolicy,
     WorkloadSpec,
+    compute_workload_hash,
     config_knobs,
 )
 
@@ -126,23 +131,6 @@ _CONFIG_KNOBS = (
     "enable_chunked_prefill",
     "enable_prefix_caching",
 )
-_OOM_MARKERS = ("oom", "out of memory", "cuda out of memory")
-
-
-def is_lasting_config_failure(*, status: str, notes: str) -> bool:
-    """True only for lasting *config* failures — not transient timeout/spawn.
-
-    OOM (including during startup) counts as a lasting bad config.
-    Generic ``failed`` without OOM/invalid (including timeout/spawn) does
-    **not** permanently blacklist.
-    """
-    s = (status or "").lower()
-    n = (notes or "").lower()
-    if any(m in n for m in _OOM_MARKERS) or s == "oom":
-        return True
-    if s == "invalid":
-        return True
-    return False
 
 
 def configs_equal(left: dict[str, Any], right: dict[str, Any]) -> bool:
@@ -151,7 +139,7 @@ def configs_equal(left: dict[str, Any], right: dict[str, Any]) -> bool:
 
 def meets_business_goal(obs: Observation, *, primary_metric: str = "throughput_rps") -> bool:
     """Valid+SLO and primary metric reaches the documented GT threshold."""
-    if not is_valid_observation(obs):
+    if not is_valid_observation(obs, primary_metric):
         return False
     return primary_value(obs, primary_metric) >= GOAL_PRIMARY_MIN
 
@@ -169,6 +157,10 @@ def _workload_spec(name: str = WORKLOAD) -> WorkloadSpec:
         input_len=64,
         output_len=64,
     )
+
+
+def eval_workload_hash(name: str = WORKLOAD) -> str:
+    return compute_workload_hash(_workload_spec(name))
 
 
 def _config_for(
@@ -244,16 +236,18 @@ def load_prior_config_failures(
     model_name: str,
     workload_name: str,
     exclude_session_id: str,
+    workload_hash: str | None = None,
 ) -> list[dict[str, Any]]:
     """Load prior rows that are lasting config failures under the same environment."""
     init_db(db_path)
     from inferops.memory.db import _connect
 
+    required_hash = workload_hash or eval_workload_hash(workload_name)
     with _connect(db_path) as conn:
         rows = conn.execute(
             """
-            SELECT experiment_id, workload_name, config_json, result_json,
-                   status, session_id, run_id
+            SELECT experiment_id, workload_name, workload_hash, config_json,
+                   result_json, status, session_id, run_id
             FROM experiments
             WHERE workload_name = ?
               AND json_extract(config_json, '$.model_name') = ?
@@ -264,6 +258,9 @@ def load_prior_config_failures(
 
     out: list[dict[str, Any]] = []
     for row in rows:
+        stored_hash = row["workload_hash"]
+        if not stored_hash or stored_hash != required_hash:
+            continue
         try:
             config = json.loads(row["config_json"] or "{}")
             result = json.loads(row["result_json"] or "{}")
@@ -281,6 +278,7 @@ def load_prior_config_failures(
                 "config": {k: config.get(k) for k in _CONFIG_KNOBS},
                 "model_name": config.get("model_name"),
                 "workload_name": row["workload_name"],
+                "workload_hash": stored_hash,
                 "status": status,
                 "notes": notes,
                 "session_id": row["session_id"],
@@ -302,16 +300,8 @@ def should_skip_history_hint(
     proposed: dict[str, Any],
     history_rows: list[dict[str, Any]],
 ) -> bool:
-    """Group C: mirror production ``is_history_failure`` on recovered (param, value)."""
-    for row in history_rows:
-        if not is_history_failure(row):
-            continue
-        param = row.get("param")
-        if param is None:
-            continue
-        if proposed.get(param) == row.get("value"):
-            return True
-    return False
+    """Group C: mirror production lasting full-config filter."""
+    return any(history_row_suppresses_config(row, proposed) for row in history_rows)
 
 
 @dataclass
@@ -415,6 +405,7 @@ def run_group(
             model_name=MODEL,
             workload_name=WORKLOAD,
             exclude_session_id=CURRENT_SESSION,
+            workload_hash=eval_workload_hash(),
         )
         if group == "B"
         else []
@@ -427,6 +418,7 @@ def run_group(
             db_path=db_path,
             top_k=32,
             current_fingerprint=eval_fingerprint(MODEL),
+            workload_hash=eval_workload_hash(),
         )
         if group == "C"
         else []
@@ -480,7 +472,7 @@ def run_group(
         paid = True
         ledger.add(config=proposed, observation=obs, paid=paid, kind="trial")
         tried.add(key)
-        failed_obs = not is_valid_observation(obs)
+        failed_obs = not is_valid_observation(obs, "throughput_rps")
         if failed_obs:
             execute_failure_count += 1
         proposal_log.append(
@@ -576,7 +568,7 @@ def run_scenario(
             "primary_min": GOAL_PRIMARY_MIN,
         },
         "compatibility": (
-            "model_name + workload_name + complete hardware fingerprint "
+            "model_name + workload_hash + complete hardware fingerprint "
             "(eval injects constants; no GPU probe)"
         ),
         "scenario_note": (
@@ -627,7 +619,7 @@ def run_memory_preexperiment(
         "groups": {
             "A": "no cross-session memory",
             "B": "exact lasting config-failure filter (not transient)",
-            "C": "query_compatible_history + is_history_failure hints",
+            "C": "query_compatible_history + lasting full-config failure filter",
         },
         "scenarios": scenario_rows,
     }
@@ -693,8 +685,8 @@ def render_markdown_report(report: dict[str, Any]) -> str:
         "not \"a valid baseline exists\".",
         "- Group B should help on **reusable** lasting OOM failures and must "
         "not blacklist on **transient** timeout/spawn notes.",
-        "- Group C uses existing history-failure hints (broader than B); "
-        "wrongful filters of a feasible config are recorded.",
+        "- Group C shares production's lasting full-config filter; transient "
+        "timeout must not skip a feasible config.",
         "- **no_history** / **irrelevant** should not make B/C worse than A.",
         "",
     ]

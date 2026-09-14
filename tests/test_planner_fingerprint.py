@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 
 from inferops.agent.planner import planner_node
 from inferops.agent.state import initial_state
-from inferops.schemas import HardwareInfo, InferenceEngine
+from inferops.schemas import HardwareInfo, InferenceEngine, compute_workload_hash
 from inferops.task import default_task_for_workload
 
 
@@ -81,4 +81,5 @@ def test_planner_fallback_fingerprint_uses_confirmed_task_engine(monkeypatch, tm
         "probe_nvidia": True,
     }
     assert query_kwargs["current_fingerprint"] is None
+    assert query_kwargs["workload_hash"] == compute_workload_hash(task.workload)
     assert patch_out["compatible_history"] == []
