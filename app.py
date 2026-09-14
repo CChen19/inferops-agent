@@ -316,6 +316,7 @@ async def on_message(message: cl.Message):
             session_prefix,
             task.experiment_budget,
             task,
+            db_path="inferops_memory.db",
         )
         final_state: dict[str, Any] = state
 
