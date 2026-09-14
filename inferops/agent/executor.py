@@ -32,6 +32,7 @@ from inferops.agent.confirm_campaign import (
     run_confirmation_campaign,
     search_winner_state_pack,
 )
+from inferops.agent.planner import _fmt_vs_baseline
 from inferops.agent.recovery import (
     CODE_ACK_LOST,
     STAGE_ANALYZE,
@@ -75,6 +76,13 @@ from inferops.tools.compare_experiments import CompareExperimentsInput, compare_
 from inferops.tools.run_benchmark import RunBenchmarkInput, run_benchmark
 
 console = Console()
+
+
+def _fmt_executor_vs(vs: float | None) -> str:
+    """Done-line vs_baseline. Missing stays unavailable — never +0.0%."""
+    if vs is None:
+        return "unavailable"
+    return _fmt_vs_baseline(vs)
 
 # Optional eval stubs (tool edges only). None → production callables.
 _run_benchmark_override: Callable[[RunBenchmarkInput], Any] | None = None
@@ -442,7 +450,7 @@ def executor_node(state: AgentState) -> dict:
         traj_step["task_conditions"] = task_conditions(task)
 
     vs_log = summary.get("vs_baseline_pct")
-    vs_txt = f"{vs_log:+.1f}%" if vs_log is not None else "unavailable"
+    vs_txt = _fmt_executor_vs(vs_log)
     primary_txt = (
         f"{current_primary:.3f}" if current_primary is not None else "n/a"
     )

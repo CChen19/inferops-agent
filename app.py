@@ -39,7 +39,12 @@ from inferops.task import (
     format_task_blockers,
     format_task_confirmation,
 )
-from inferops.tools.final_report import FinalReportInput, write_final_report
+from inferops.tools.final_report import (
+    FinalReportInput,
+    _format_all_experiments_table,
+    _format_live_result_message,
+    write_final_report,
+)
 from inferops.tools.managed_lifecycle import (
     cancel_owned_children,
     clear_cancel,
@@ -349,16 +354,7 @@ async def _handle_node_event(node_name: str, patch: dict[str, Any] | None):
                     )
                 ).send()
                 return
-            improvement = s.get("vs_baseline_pct", 0)
-            icon = "✅" if improvement > 0 else ("➡️" if improvement == 0 else "⬇️")
-            await cl.Message(
-                content=(
-                    f"{icon} **Result:** `{s['experiment_id']}`\n"
-                    f"  • throughput = **{s['throughput_rps']:.3f} RPS** ({improvement:+.1f}% vs baseline)\n"
-                    f"  • TTFT p99 = {s['ttft_p99_ms']:.1f} ms\n"
-                    f"  • bottleneck = `{s['bottleneck']}`"
-                )
-            ).send()
+            await cl.Message(content=_format_live_result_message(s)).send()
 
     elif node_name == "reflector":
         if patch.get("should_stop"):
@@ -433,28 +429,12 @@ async def _send_final_report(
     lines += render_decision_markdown(decision)
     lines.append("")
 
-    def _fmt(v: Any, spec: str) -> str:
-        if v is None:
-            return "n/a"
-        return format(float(v), spec)
-
     if summaries:
         lines += [
             "### All Experiments",
             "",
-            "| Experiment | param | value | rps | ttft_p99 | bottleneck | vs_baseline |",
-            "|---|---|---|---|---|---|---|",
+            *_format_all_experiments_table(summaries),
         ]
-        for s in summaries:
-            lines.append(
-                f"| `{s['experiment_id']}` | {s.get('param_changed') or 'baseline'} "
-                f"| {s.get('value_changed', '')} "
-                f"| {_fmt(s.get('throughput_rps'), '.3f')} "
-                f"| {_fmt(s.get('ttft_p99_ms'), '.1f')}ms "
-                f"| {s.get('bottleneck', 'unknown')} "
-                f"| {_fmt(s.get('vs_baseline_pct'), '+.1f')}"
-                f"{'%' if s.get('vs_baseline_pct') is not None else ''} |"
-            )
 
     await cl.Message(content="\n".join(lines)).send()
 

@@ -19,6 +19,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from inferops.agent.graph import make_llm, run_agent
+from inferops.agent.planner import _fmt_vs_baseline
 from inferops.agent.state import WORKLOAD_PRIMARY_METRIC
 
 VALID_WORKLOADS = list(WORKLOAD_PRIMARY_METRIC.keys())
@@ -64,21 +65,32 @@ def main() -> None:
         resume_task_id=args.resume_task,
     )
 
+    print(format_result_report(final_state, args.llm))
+
+
+def format_result_report(final_state: dict, llm: str) -> str:
+    """CLI RESULT block. vs_baseline_pct prints at stored precision; None stays n/a."""
     resolved_workload = final_state["workload_name"]
     primary = WORKLOAD_PRIMARY_METRIC[resolved_workload]
     best = final_state.get("best_summary")
     baseline = final_state.get("baseline_summary")
-
-    print("\n=== RESULT ===")
-    print(f"Workload:    {resolved_workload}")
-    print(f"LLM:         {args.llm}")
-    print(f"Experiments: {len(final_state['tried_experiment_ids'])}")
-    print(f"Stop reason: {final_state['stop_reason']}")
+    lines = [
+        "",
+        "=== RESULT ===",
+        f"Workload:    {resolved_workload}",
+        f"LLM:         {llm}",
+        f"Experiments: {len(final_state['tried_experiment_ids'])}",
+        f"Stop reason: {final_state['stop_reason']}",
+    ]
     if baseline and best:
-        print(f"Baseline {primary}: {baseline[primary]:.3f}")
-        print(f"Best     {primary}: {best[primary]:.3f}  ({best['vs_baseline_pct']:+.1f}%)")
-        if best["param_changed"]:
-            print(f"Best config:  {best['param_changed']}={best['value_changed']}")
+        lines.append(f"Baseline {primary}: {baseline[primary]:.3f}")
+        lines.append(
+            f"Best     {primary}: {best[primary]:.3f}  "
+            f"({_fmt_vs_baseline(best.get('vs_baseline_pct'))})"
+        )
+        if best.get("param_changed"):
+            lines.append(f"Best config:  {best['param_changed']}={best['value_changed']}")
+    return "\n".join(lines)
 
 
 if __name__ == "__main__":
