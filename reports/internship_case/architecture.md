@@ -1,7 +1,7 @@
 # Architecture
 
 One pass through the system, in the order things actually happen. File
-references are to this worktree at `11d19b7`.
+references are to master at `25e159f` (after merged PRs #28–#30).
 
 ## 1. Task confirmation (`inferops/task.py`)
 
@@ -16,7 +16,17 @@ for clarification, never silently substituted. The same `task_conditions`
 mapping feeds the confirmation page, the executor, and the final report, so
 what the user approved and what the report claims cannot drift apart.
 
-## 2. Planner (`inferops/agent/graph.py`, `inferops/agent/planner.py`)
+## 2. Durable task state (`inferops/agent/graph.py`, `inferops/memory/db.py`)
+
+Production runs use a disk-backed LangGraph `SqliteSaver` and a stable thread id
+derived from the session prefix. The same SQLite database has a `tasks` table
+that preserves the confirmed task payload, task id, session prefix, thread id,
+and lifecycle status. `inferops agent --resume-task <task_id>` reloads that
+identity and continues from the stored checkpoint instead of rerunning the
+baseline. Eval recovery goldens deliberately keep `MemorySaver`, so this
+production persistence claim is not being projected onto the fixture harness.
+
+## 3. Planner (`inferops/agent/graph.py`, `inferops/agent/planner.py`, `inferops/citations.py`)
 
 The compiled graph is small and deliberately so:
 
@@ -46,20 +56,32 @@ AGENT_SEARCH_SPACE = {
 
 A small RAG corpus over vLLM concepts (PagedAttention, chunked prefill, prefix
 caching, scheduling) is available to the planner for phrasing hypotheses. It
-does not decide anything.
+does not decide anything. Every proposed hypothesis must carry a structured
+metric citation whose `run_id`, metric name, and numeric value exactly exist in
+the summaries shown to the planner. A document citation and matching
+`[source: ...]` rationale tag are required if and only if retrieval returned
+sources; when retrieval returned none, inventing a source is rejected. Forged
+run ids, values, or document sources are rejected, with one retry. This is an
+existence gate, not a claim that the cited evidence semantically proves the
+hypothesis.
 
-## 3. Managed vLLM child (`inferops/tools/vllm_process.py`)
+## 4. Managed vLLM child (`inferops/tools/vllm_process.py`, `inferops/tools/managed_lifecycle.py`)
 
-In `managed` mode the agent launches and owns the vLLM server as a subprocess
-with an explicit argv (`_build_cmd`), then benchmarks against it.
+In `managed` mode the agent first takes a non-blocking file lock for the single
+GPU, then launches and owns the vLLM server as a subprocess with an explicit
+argv (`_build_cmd`) and benchmarks against it. A second managed task fails
+closed with holder information; it does not start or stop anything.
 
 Readiness is not trust. After `/health` returns 200, the agent calls
 `assert_listener_bound_to_child`: the PID listening on the port must equal the
-managed child PID, or the run is never valid. If a previous occupant of the port
-cannot be stopped (`still_listening = True`), the agent refuses to spawn a
-replacement rather than race a stale server.
+managed child PID, or the run is never valid. A healthy listener this task did
+not spawn is treated as an unknown occupant and is not stopped. The sole
+recovery exception is a child strictly matched to a stale InferOps lease record,
+and even that stop-and-relaunch path is opt-in via
+`INFEROPS_ADOPT_STALE_MANAGED`; the default is off. Cancel and graph abort stop
+only children registered as owned by this process and release their leases.
 
-## 4. Evidence and the promotion gate (`inferops/schemas.py`, `state.py`)
+## 5. Evidence and the promotion gate (`inferops/schemas.py`, `state.py`)
 
 The `actual_config` is not the requested config. It is parsed back out of the
 launch command line (`parse_vllm_cli_knobs`) and filtered to
@@ -77,7 +99,7 @@ Evidence kinds that are never sufficient on their own include
 full gate; a row claiming `valid` without `promotable=True` is rejected.
 Missing metrics stay `None` and are never rewritten to `0.0`.
 
-## 5. Confirmation (`inferops/metrics/confirm.py`, `agent/reflect_constraints.py`)
+## 6. Confirmation (`inferops/metrics/confirm.py`, `agent/reflect_constraints.py`)
 
 A candidate that looks good enough is not adopted on one measurement. The
 reflector routes to `remeasure`, which builds a repeat campaign of interleaved
@@ -93,7 +115,7 @@ candidate B. Below the reflect threshold (`IMPROVEMENT_THRESHOLD_PCT = 5.0`),
 confirmation is never even attempted, and three consecutive non-improving
 trials (`MAX_STREAK = 3`) stop the run.
 
-## 6. DecisionReport (`inferops/decision.py`)
+## 7. DecisionReport (`inferops/decision.py`)
 
 Every run ends in exactly one of four outcomes:
 
@@ -123,8 +145,13 @@ UI, so the UI cannot show a friendlier story than the file.
 - Confirmation is the only path to adoption, and it is expensive in budget
   slots; below the 5% reflect threshold it never triggers, so small real gains
   are systematically left unadopted.
-- The LangGraph checkpointer is an in-process `MemorySaver`. Resume works within
-  a process via a session thread id, not across restarts.
+- Production checkpointing and confirmed-task metadata are local SQLite state;
+  eval recovery goldens still use in-memory `MemorySaver` fixtures.
+- The file lock serializes managed work on one GPU, but it does not make the
+  hardware measurements more generalizable or eliminate run-to-run drift.
+- Stop during the vLLM model-load window remains an open gap: the UI stop path
+  has not yet been shown to abort that in-flight experiment as valid-prevention.
+  Do not describe this as fixed by the owned-child cancellation work.
 - Trials run sequentially on one GPU. Thermal and clock drift across a session
   are not measured or compensated.
 - Hardware scope is one RTX 3060 Laptop with 6 GB VRAM, so larger models and
