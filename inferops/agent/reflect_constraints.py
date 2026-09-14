@@ -27,6 +27,7 @@ from inferops.metrics import (
     is_confirmed_promotable,
     verdict_from_ledgers,
 )
+from inferops.task import MetricConstraint, compare_op
 
 NextAction = Literal["continue", "remeasure", "rollback", "stop"]
 
@@ -75,17 +76,101 @@ class ReflectConclusion:
     cited_run_ids: list[str] = field(default_factory=list)
 
 
-def check_slo(summary: dict[str, Any] | None) -> dict[str, Any]:
-    """Deterministic SLO. Missing ``error_rate`` is fail-closed (not SLO-ok)."""
+def _normalize_constraints(
+    constraints: list[MetricConstraint] | list[dict[str, Any]] | None,
+) -> list[MetricConstraint] | None:
+    if constraints is None:
+        return None
+    out: list[MetricConstraint] = []
+    for item in constraints:
+        if isinstance(item, MetricConstraint):
+            out.append(item)
+        else:
+            out.append(MetricConstraint.model_validate(item))
+    return out
+
+
+def check_slo(
+    summary: dict[str, Any] | None,
+    constraints: list[MetricConstraint] | list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Deterministic SLO. Missing required metrics are fail-closed.
+
+    Without ``constraints`` this keeps the legacy error_rate-only check.
+    With constraints (from OptimizationTask), every listed metric must be
+    present and satisfy its operator — a throughput gain that violates a
+    latency bound is not SLO-ok and must not be recommended.
+    """
     if not summary:
-        return {"ok": False, "error_rate": None, "reason": "no_summary"}
-    if "error_rate" not in summary or summary.get("error_rate") is None:
-        return {"ok": False, "error_rate": None, "reason": "error_rate_missing_fail_closed"}
+        return {
+            "ok": False,
+            "error_rate": None,
+            "reason": "no_summary",
+            "violations": [{"reason": "no_summary"}],
+        }
+
+    parsed = _normalize_constraints(constraints)
+    if parsed is None:
+        if "error_rate" not in summary or summary.get("error_rate") is None:
+            return {
+                "ok": False,
+                "error_rate": None,
+                "reason": "error_rate_missing_fail_closed",
+                "violations": [{"metric": "error_rate", "reason": "missing"}],
+            }
+        err = summary.get("error_rate")
+        limit = slo_max_error_rate()
+        if err > limit:
+            return {
+                "ok": False,
+                "error_rate": err,
+                "reason": "error_rate_exceeds_slo",
+                "violations": [
+                    {
+                        "metric": "error_rate",
+                        "op": "<=",
+                        "limit": limit,
+                        "observed": err,
+                        "reason": "error_rate_exceeds_slo",
+                    }
+                ],
+            }
+        return {"ok": True, "error_rate": err, "reason": "slo_ok", "violations": []}
+
+    violations: list[dict[str, Any]] = []
+    for constraint in parsed:
+        observed = summary.get(constraint.metric)
+        if observed is None:
+            violations.append(
+                {
+                    "metric": constraint.metric,
+                    "op": constraint.op.value,
+                    "limit": constraint.value,
+                    "observed": None,
+                    "reason": f"{constraint.metric}_missing_fail_closed",
+                }
+            )
+            continue
+        if not compare_op(constraint.op, float(observed), constraint.value):
+            violations.append(
+                {
+                    "metric": constraint.metric,
+                    "op": constraint.op.value,
+                    "limit": constraint.value,
+                    "observed": observed,
+                    "reason": f"{constraint.metric}_violates_constraint",
+                }
+            )
+
     err = summary.get("error_rate")
-    limit = slo_max_error_rate()
-    if err > limit:
-        return {"ok": False, "error_rate": err, "reason": "error_rate_exceeds_slo"}
-    return {"ok": True, "error_rate": err, "reason": "slo_ok"}
+    if not violations:
+        return {"ok": True, "error_rate": err, "reason": "slo_ok", "violations": []}
+    return {
+        "ok": False,
+        "error_rate": err,
+        "reason": violations[0]["reason"],
+        "violations": violations,
+    }
 
 
 def is_candidate_summary(summary: dict[str, Any] | None) -> bool:
@@ -289,6 +374,9 @@ def conclude_experiment(
     bound_run_ids: list[str] | None = None,
     bound_target: dict[str, Any] | None = None,
     last_recovery: dict[str, Any] | None = None,
+    constraints: list[MetricConstraint] | list[dict[str, Any]] | None = None,
+    elapsed_s: float | None = None,
+    time_limit_s: float | None = None,
 ) -> ReflectConclusion:
     """Priority-ordered Reflect rules. Deterministic; no LLM."""
 
@@ -305,10 +393,11 @@ def conclude_experiment(
         bound_target=bound_target,
     ):
         decision = None
-    slo = check_slo(latest) if is_candidate_summary(latest) else {
+    slo = check_slo(latest, constraints) if is_candidate_summary(latest) else {
         "ok": True,
         "error_rate": (latest or {}).get("error_rate") if latest else None,
         "reason": "baseline_or_no_candidate",
+        "violations": [],
     }
     duplicate = is_duplicate_candidate(
         summaries, latest, last_skip_reason=last_skip_reason
@@ -345,6 +434,8 @@ def conclude_experiment(
         "recovery_stage": (last_recovery or {}).get("stage"),
         "recovery_code": (last_recovery or {}).get("code"),
         "recovery_result_persisted": bool((last_recovery or {}).get("result_persisted")),
+        "elapsed_s": elapsed_s,
+        "time_limit_s": time_limit_s,
         **_confirmation_fields(decision, result=last_result, promoted=False),
     }
 
@@ -465,7 +556,20 @@ def conclude_experiment(
             reason="slo_breach",
         )
 
-    # 4b. Budget — only after fail-closed validity / SLO. A last-slot
+    # 4b. Wall-clock limit from OptimizationTask (after fail-closed SLO).
+    if (
+        time_limit_s is not None
+        and elapsed_s is not None
+        and elapsed_s > time_limit_s
+    ):
+        return _done(
+            "stop",
+            stop=True,
+            stop_reason="time_limit_exceeded",
+            reason="time_limit_exceeded",
+        )
+
+    # 4c. Budget — only after fail-closed validity / SLO. A last-slot
     # confirmation may still promote; SLO / validity cannot be skipped.
     if budget <= 0:
         if would_promote:

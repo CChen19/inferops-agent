@@ -18,6 +18,16 @@ def test_cli_help_lists_commands():
     assert "memory" in result.output
 
 
+def test_agent_rejects_unsupported_model():
+    result = runner.invoke(
+        app,
+        ["agent", "--workload", "chat_short", "--model", "Llama-3-70B"],
+    )
+
+    assert result.exit_code != 0
+    assert "Llama-3-70B" in result.output
+
+
 def test_agent_rejects_unknown_workload():
     result = runner.invoke(app, ["agent", "--workload", "not_a_workload"])
 

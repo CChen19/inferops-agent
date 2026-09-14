@@ -319,7 +319,7 @@ async def run_load(
         input_len_target=workload.input_len,
         output_len_target=workload.output_len,
         distribution=workload.distribution,
-        arrival_rps=workload.rps,
+        arrival_rps=workload.rps,  # recorded only; run_load does not schedule this rate
         warmup_requests=warmup_requests,
         stream_response=stream_response,
         sampling_temperature=0.0,

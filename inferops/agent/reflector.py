@@ -28,6 +28,7 @@ Routing (``route_after_reflector``):
 
 from __future__ import annotations
 
+import time
 from typing import Any, Literal
 
 from inferops.agent.confirm_campaign import (
@@ -48,7 +49,7 @@ from inferops.agent.reflect_constraints import (
     resolve_confirmation,
     summarize_config_diff,
 )
-from inferops.agent.state import AgentState, WORKLOAD_PRIMARY_METRIC, pending_hypotheses
+from inferops.agent.state import AgentState, primary_metric_of, pending_hypotheses, task_of
 
 # Re-export legacy names so existing tests keep importing them.
 from inferops.agent.reflect_constraints import (  # noqa: F401
@@ -97,6 +98,18 @@ def _repend_hypothesis(hypotheses: list[dict[str, Any]], hyp: dict[str, Any] | N
     ]
 
 
+def _task_kwargs(state: AgentState) -> dict[str, Any]:
+    task = task_of(state)
+    started = state.get("started_at_s")
+    elapsed = (time.time() - started) if started else None
+    return {
+        "primary_metric": primary_metric_of(state),
+        "constraints": list(task.constraints) if task is not None else None,
+        "elapsed_s": elapsed,
+        "time_limit_s": task.time_limit_s if task is not None else None,
+    }
+
+
 def reflector_node(state: AgentState) -> dict:
     """Evaluate the most recent experiment and update control flags."""
 
@@ -104,6 +117,7 @@ def reflector_node(state: AgentState) -> dict:
     recovery = state.get("last_recovery")
     latest = current_attempt_latest(summaries, recovery)
     this_attempt_failed = bool(recovery and recovery.get("this_attempt_failed"))
+    extra = _task_kwargs(state)
     # Budget-only stop is still recorded even with no summaries.
     if state["experiments_remaining"] <= 0:
         conclusion = conclude_experiment(
@@ -119,10 +133,10 @@ def reflector_node(state: AgentState) -> dict:
             last_result=state.get("last_result") if not this_attempt_failed or latest is not None else None,
             confirmation_decision=state.get("confirmation_decision"),
             repeat_ledgers=state.get("repeat_ledgers"),
-            primary_metric=WORKLOAD_PRIMARY_METRIC[state["workload_name"]],
             bound_run_ids=state.get("confirmation_bound_run_ids"),
             bound_target=state.get("confirmation_target"),
             last_recovery=recovery,
+            **extra,
         )
         return _apply_conclusion(state, conclusion, latest, recovery)
 
@@ -142,10 +156,10 @@ def reflector_node(state: AgentState) -> dict:
         last_result=state.get("last_result") if not this_attempt_failed or latest is not None else None,
         confirmation_decision=state.get("confirmation_decision"),
         repeat_ledgers=state.get("repeat_ledgers"),
-        primary_metric=WORKLOAD_PRIMARY_METRIC[state["workload_name"]],
         bound_run_ids=state.get("confirmation_bound_run_ids"),
         bound_target=state.get("confirmation_target"),
         last_recovery=recovery,
+        **extra,
     )
     return _apply_conclusion(state, conclusion, latest, recovery)
 
@@ -174,7 +188,7 @@ def _apply_conclusion(
         decision = resolve_confirmation(
             repeat_ledgers=state.get("repeat_ledgers"),
             confirmation_decision=state.get("confirmation_decision"),
-            metric=WORKLOAD_PRIMARY_METRIC[state["workload_name"]],
+            metric=primary_metric_of(state),
         )
         new_best, promoted = maybe_promote_best(
             state.get("last_result"),

@@ -49,6 +49,8 @@ class ExperimentSummary(TypedDict):
 class AgentState(TypedDict):
     workload_name: str
     session_prefix: str          # all experiment_ids share this prefix
+    optimization_task: dict[str, Any] | None  # confirmed OptimizationTask dump
+    started_at_s: float | None
 
     # Hypothesis stack
     hypotheses: list[Hypothesis]
@@ -133,10 +135,13 @@ def initial_state(
     workload_name: str,
     session_prefix: str,
     max_experiments: int = 8,
+    optimization_task: dict[str, Any] | None = None,
 ) -> AgentState:
     return {
         "workload_name":         workload_name,
         "session_prefix":        session_prefix,
+        "optimization_task":     optimization_task,
+        "started_at_s":          None,
         "hypotheses":            [],
         "tried_experiment_ids":  [],
         "experiment_summaries":  [],
@@ -243,6 +248,26 @@ def is_promotable_summary(summary: ExperimentSummary | dict[str, Any] | None) ->
 
 def pending_hypotheses(state: AgentState) -> list[Hypothesis]:
     return [h for h in state["hypotheses"] if h["status"] == "pending"]
+
+
+def task_of(state: AgentState | dict[str, Any]):
+    """Return the confirmed OptimizationTask on state, or None."""
+    from inferops.task import task_from_mapping
+
+    return task_from_mapping(state.get("optimization_task"))
+
+
+def primary_metric_of(state: AgentState | dict[str, Any]) -> str:
+    """Primary metric from the task when present; otherwise the workload default."""
+    task = task_of(state)
+    if task is not None:
+        return task.primary_metric
+    return WORKLOAD_PRIMARY_METRIC[state["workload_name"]]
+
+
+def model_name_of(state: AgentState | dict[str, Any]) -> str | None:
+    task = task_of(state)
+    return task.model_name if task is not None else None
 
 
 def is_duplicate(state: AgentState, param: str, value: Any) -> bool:
