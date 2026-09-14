@@ -30,11 +30,14 @@ are not bugs to be hidden in an interview, they are the scope boundary.
 | Cancellation is ownership-scoped | PR #30: the process-local registry stops registered owned children and releases their leases; foreign/unregistered processes are untouched in CPU tests |
 | Stop during model load fails closed | PR #32: a managed child is registered as owned immediately at spawn, before readiness polling; Stop makes the in-flight experiment never valid, stops the owned child, and releases its lease in CPU tests |
 | Readiness polling aborts after cancellation or Stop | PR #35: `wait_ready_verbose` aborts when `cancel_requested()` is true or `stop()` has cleared `_proc`, rather than polling a dead port until `STARTUP_TIMEOUT_S`; verified by deterministic CPU tests, not a live GPU timing |
+| Readiness abort binds the child handle once | PR #37: `_wait_should_abort` binds `proc = self._proc` once so a racing `stop()` cannot AttributeError on `.poll()`; `test_wait_should_abort_binds_proc_once` in `tests/test_vllm_process.py`; CPU tests, not a live GPU timing |
+| Identity and ledger leftovers stay untracked | PR #38: `.gitignore` includes `logs/*.json` so identity/ledger JSON under `logs/` stays untracked; repo hygiene, not a GPU measurement |
+| Crash/exit helpers bind the child handle once | PR #39: `is_crashed()` and `exit_code()` bind `proc = self._proc` once so a racing `stop()` cannot AttributeError on `.poll()`; `test_is_crashed_binds_proc_once` and `test_exit_code_binds_proc_once` in `tests/test_vllm_process.py`; CPU tests, not a live GPU timing |
 | Stale-child adoption is not automatic | `INFEROPS_ADOPT_STALE_MANAGED` is opt-in and defaults off; adoption also requires the stale lease record, child PID, dead owner, and recorded argv checks to match |
 
-These rows describe code paths and deterministic CPU tests merged on master at
-`1a119e7`. They are not additional RTX 3060 trials and add no throughput,
-latency, or `confirmed_gain` result.
+These rows describe code paths, deterministic CPU tests, and repo hygiene
+merged on master at `c20997c`. They are not additional RTX 3060 trials and add
+no throughput, latency, or `confirmed_gain` result.
 
 ## Known limits
 
@@ -118,5 +121,10 @@ observe-after-pick protocol score), no adoption-level winner can be declared.
   and do not establish cross-process persistence.
 - `external` service mode cannot prove config application, so results there
   fall back to weaker evidence kinds.
-- Ledgers stay in each run's own `logs/` directory and are not committed, so
-  full re-audit requires access to the original machine.
+- Ledgers stay in each run's own `logs/` directory and are not committed
+  (`.gitignore` also ignores `logs/*.json`, PR #38), so full re-audit requires
+  access to the original machine.
+- `_wait_should_abort`, `is_crashed()`, and `exit_code()` bind `_proc` once
+  (PRs #37 and #39), but `pid` and `stop()` still double-read `self._proc`.
+  A concurrent `stop()` can still race those paths. Do not describe that as
+  fixed.
