@@ -54,6 +54,8 @@ interview SHA and do not retarget the demo.
 | PR #62 closeout small-fixes | Merged at `5cb9e20` — resume copy / history attribution / index version / hardware fingerprint. **After** the freeze; not claimed in the interview SHA |
 | PR #65 interview note for #62 | Merged at `287297f` (docs hygiene after freeze) |
 | PR #64 memory pre-experiment | Merged at `cec13ef` — **After** the freeze; CPU fixture result only; **not** part of the interview claim surface |
+| PR #85 stop synthetic CI | Merged at `1a14a6d` — **After** the freeze; on master, **not** in interview SHA `2731bed` |
+| PR #86 lasting config filter | Merged at `e069f22` — **After** the freeze; on master, **not** in interview SHA `2731bed` |
 
 ### PR #64 CPU pre-experiment (honest result only)
 
@@ -68,11 +70,16 @@ Goal: `valid` + SLO and `throughput_rps >= 17.2` — not “a valid baseline exi
 |---|---|---|
 | A — no cross-session memory | 1 extra execute | Baseline waste |
 | B — exact lasting config-failure filter | 0 | Timeout/spawn are **not** lasting blacklists; OOM **is** lasting |
-| C — `query_compatible_history` + `is_history_failure` | 0 | On the transient-timeout scenario, C **wrongly filters a feasible goal config** (`is_history_failure` treats failed timeout as history failure). Over-filter is a disclosed result |
+| C — `query_compatible_history` + `is_history_failure` | 0 | On the transient-timeout scenario, C **wrongly filters a feasible goal config** (pre-#86 production-style `is_history_failure` treated failed timeout as history failure). Over-filter is a disclosed result |
 
 **Continue-threshold decision:** B is enough. C adds no extra help and over-filters
 transients → keep the simple lasting exact-config filter; do **not** upgrade RAG;
 do **not** start a GPU memory rerun.
+
+**After freeze (master only):** PR #86 aligned production with that lasting
+identical full-config filter (generic `failed` / timeout-cancel / evidence
+mismatch are not permanent blacklists). That does **not** make C a live win, and
+it does **not** prove memory reduces live wasted trials.
 
 ## Still not claimed
 

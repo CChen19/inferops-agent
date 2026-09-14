@@ -60,8 +60,8 @@ are not bugs to be hidden in an interview, they are the scope boundary.
 | Remaining `vs_baseline_pct` printers preserve stored precision | PR #54: Chainlit live-result and all-experiments displays use tested helpers from `inferops.tools.final_report`; graph run summary, executor completion, and `scripts/run_agent.py` result print `+3.77%` rather than `+3.8%`; missing is `n/a` or `unavailable`, never invented `+0.0%`; CPU tests, not a new GPU report |
 | Chat can resume a persisted task without redrafting it | PR #57: Chainlit-independent helpers in `inferops/resume.py` parse `resume <12-hex>`, `resume-task <12-hex>`, and bare 12-hex ids; valid commands call `run_agent(..., resume_task_id=...)`, while a missing id spends no GPU budget; `tests/test_resume.py` does not import `app.py` |
 | Reflector actions are distinct in UI text | PR #57: `format_reflector_update` distinguishes `continue`, `remeasure`, `rollback`, and `stop`; CPU formatting tests, not a GPU run |
-| Compatible history is scoped and hint-only | PRs #58/#62: `query_compatible_history` requires another session with the same model and workload plus a complete matching fingerprint (`gpu_name`, total VRAM, model, engine, and vLLM version); mismatch or unknown fingerprints rank zero but remain in SQLite; results carry `claim_level=prior_session_hint` and cannot be this-run metric citations or enter experiment summaries, best selection, or promotion |
-| Compatible history cannot bypass confirmation | PR #58: failed, invalid, and OOM parameter pairs count as duplicates, but a prior success does not short-circuit confirmation; CLI `run_agent` passes `db_path`; eval goldens remain `MemorySaver` and disk-free |
+| Compatible history is scoped and hint-only | PRs #58/#62/#86: `query_compatible_history` requires another session with the same model, matching `workload_hash`, and a complete matching fingerprint (`gpu_name`, total VRAM, model, engine, and vLLM version); missing/`workload_hash` or fingerprint mismatch ranks the row out of hints (SQLite retains it); results carry `claim_level=prior_session_hint` and cannot be this-run metric citations or enter experiment summaries, best selection, or promotion |
+| Compatible history cannot bypass confirmation | PRs #58/#86: this-session `(param, value)` already-tried still skips retries. Cross-session hard filter is lasting identical **full** search-config failures only (compatible env: model + `workload_hash` + hardware). Missing evidence, actual-config mismatch (`invalid` / `insufficient_evidence`), and timeout/cancel do **not** blacklist. Rows with missing or mismatched `workload_hash` are excluded from hints and the filter. A prior success still does not short-circuit confirmation; CLI `run_agent` passes `db_path`; eval goldens remain `MemorySaver` and disk-free |
 | Resume GPU-spend copy is limited to validation failures | PR #62: only `ResumeValidationError` uses the "No GPU budget was spent" message; a `ValueError` raised after checkpointer/graph work remains a runtime failure and is not relabeled; CPU tests |
 | Ambiguous historical configs do not suppress guessed pairs | PR #62: `_recover_param_value` returns `(None, None)` when zero or multiple search knobs differ from defaults, rather than guessing from id text or an arbitrary first diff; CPU tests |
 | Fingerprint filtering scans beyond newer misses | This PR: `query_compatible_history` pages older SQL rows until it finds `top_k` complete fingerprint matches, exhausts the table, or reaches a 512-row scan cap; CPU regression covers more than the old 32-row limit |
@@ -70,11 +70,13 @@ are not bugs to be hidden in an interview, they are the scope boundary.
 | Retrieval carries stable document identity fields | PR #59: Chroma query results include `chunk_id`, source, and metadata version `inferops-corpus-1`; rendering keeps `[source: {source}] §{section}` and adds `chunk_id=... version=...` on the next line; no checked-in Chroma index |
 | Document citations bind to an exact retrieved chunk | PR #59: with retrieved sources, `valid_structured_citations` requires matching `(chunk_id, source, version)` and rejects forged or missing fields; empty RAG still omits document fields; existence-only, not semantic support |
 | Stale-child adoption is not automatic | `INFEROPS_ADOPT_STALE_MANAGED` is opt-in and defaults off; adoption also requires the stale lease record, child PID, dead owner, and recorded argv checks to match |
+| Compare refuses synthesized throughput / percentile CI | PR #85: throughput metrics are single-run aggregates — no gauss/jitter sample synthesis; CI unavailable and must not be read as tie or “not significant.” Latency bootstrap CI only when raw per-request samples exist. No repeated-run throughput CI. CPU tests in `tests/test_compare_experiments.py`; not a GPU measurement |
+| `input_len` / `output_len` overrides are bounded | PR #85: explicit positive ints within engine-aware bounds; `input_len+output_len` cannot exceed `max_model_len`; CPU tests in `tests/test_optimization_task.py`; not a GPU measurement |
+| Lasting full-config memory filter + usable primary | PR #86: production `is_history_failure` / cross-session suppress match lasting identical full search config only; generic `failed` without OOM/validation is not a permanent blacklist; usable observations require valid + SLO + config evidence + finite primary via `primary_value`; `workload_hash` required for compatible history; CPU tests in `tests/test_compatible_history.py` / `tests/test_eval_protocol.py`; not a live waste-reduction claim |
 
 These rows describe code paths, deterministic CPU tests, and repo hygiene on
-master at `279765e` (through merged PR #66), plus the bounded history scan in
-this PR. They are not additional RTX 3060 trials and add no throughput, latency,
-or `confirmed_gain` result.
+master at `e069f22` (through merged PR #86). They are not additional RTX 3060
+trials and add no throughput, latency, or `confirmed_gain` result.
 
 ## Known limits
 
@@ -153,8 +155,18 @@ observe-after-pick protocol score), no adoption-level winner can be declared.
 
 ### Other gaps worth naming before someone else does
 
+- Still **no repeated-run throughput CI**. Single-aggregate throughput CI is
+  **unavailable** (PR #85); unavailable must not be read as a tie or as “not
+  statistically significant.” Latency may have within-run bootstrap CI only
+  when raw request samples exist — that is not repeated-run CI either.
+- `input_len` is a **generation target** for synthetic workloads, not a
+  tokenizer-measured prompt length.
+- Reaching a `target_qps` measured-throughput goal does **not** imply an
+  immediate stop; existing budget / improvement / confirmation rules still
+  apply. Do not treat unimplemented “satisfice and stop” as a product promise.
 - Each trial is a single 60-request, concurrency-16 run; no per-trial repeats
-  and no confidence intervals outside the confirmation path.
+  and no confidence intervals outside the confirmation path (and PR #85 removed
+  the old synthesized throughput CI path entirely).
 - Per-trial `ttft_p99_ms` is published only for the baseline in the case run;
   for trials 2–4 it is **unknown** in the artifact.
 - Production resume depends on the local SQLite database and its stored
