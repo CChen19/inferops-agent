@@ -17,6 +17,7 @@ import asyncio
 from typing import Any
 
 from dotenv import load_dotenv
+
 load_dotenv()
 
 import chainlit as cl
@@ -39,6 +40,11 @@ from inferops.task import (
     format_task_confirmation,
 )
 from inferops.tools.final_report import FinalReportInput, write_final_report
+from inferops.tools.managed_lifecycle import (
+    cancel_owned_children,
+    clear_cancel,
+    request_cancel,
+)
 
 _WELCOME = """\
 # InferOps — vLLM tuning assistant
@@ -67,6 +73,7 @@ _VLLM_PORT = int(os.getenv("VLLM_PORT", "8000"))
 
 async def _vllm_is_running() -> bool:
     import httpx
+
     try:
         async with httpx.AsyncClient() as client:
             r = await client.get(f"http://{_VLLM_HOST}:{_VLLM_PORT}/health", timeout=2.0)
@@ -79,6 +86,36 @@ async def _vllm_is_running() -> bool:
 async def on_start():
     init_db()
     await cl.Message(content=_WELCOME).send()
+
+
+@cl.on_stop
+async def on_stop():
+    """User pressed Stop: stop only the managed vLLM this process spawned.
+
+    Sets the cancel flag so the running graph refuses to start another
+    experiment, then stops registered owned children and releases the GPU
+    lease. External / unknown services are never touched.
+    """
+    request_cancel()
+    reports = await asyncio.to_thread(cancel_owned_children, "user pressed stop")
+    task_dump = cl.user_session.get("confirmed_task") or {}
+    task_id = task_dump.get("task_id")
+    if task_id:
+        update_task_status(task_id, "cancelled")
+    if reports:
+        lines = ["**Cancelled.** Stopped the managed vLLM InferOps started:"]
+        for rep in reports:
+            lines.append(
+                f"  • pid={rep.get('pid')} experiment=`{rep.get('experiment_id')}` "
+                f"(GPU lease released: {rep.get('lease_released')})"
+            )
+        lines.append("No other process was stopped.")
+    else:
+        lines = [
+            "**Cancelled.** No managed vLLM child was running; nothing was stopped. "
+            "The current experiment will not start."
+        ]
+    await cl.Message(content="\n".join(lines)).send()
 
 
 def _intent_from_session() -> Intent | None:
@@ -154,19 +191,22 @@ async def on_message(message: cl.Message):
 
     if task.service_mode == ServiceControlMode.EXTERNAL and not await _vllm_is_running():
         update_task_status(task.task_id, "blocked_external")
-        await cl.Message(content=(
-            "**External vLLM is not reachable.** This task is `external`, so "
-            "InferOps will not start a managed server.\n\n"
-            f"Start vLLM on port {_VLLM_PORT}, or resend the request with "
-            "`managed` service mode.\n"
-            "```bash\n"
-            "bash scripts/start_vllm.sh 1.5B   # or 0.5B\n"
-            "```"
-        )).send()
+        await cl.Message(
+            content=(
+                "**External vLLM is not reachable.** This task is `external`, so "
+                "InferOps will not start a managed server.\n\n"
+                f"Start vLLM on port {_VLLM_PORT}, or resend the request with "
+                "`managed` service mode.\n"
+                "```bash\n"
+                "bash scripts/start_vllm.sh 1.5B   # or 0.5B\n"
+                "```"
+            )
+        ).send()
         return
 
     # Step 2: Run the agent with streaming step updates
     t_start = time.time()
+    clear_cancel()
 
     try:
         await cl.Message(content="Running/loading baseline experiment…").send()
@@ -181,20 +221,24 @@ async def on_message(message: cl.Message):
 
         baseline = state["baseline_summary"]
         if baseline:
-            await cl.Message(content=(
-                f"**Baseline:** `{baseline['experiment_id']}`\n"
-                f"  • throughput = **{baseline['throughput_rps']:.3f} RPS**\n"
-                f"  • TTFT p99 = {baseline['ttft_p99_ms']:.1f} ms\n"
-                f"  • bottleneck = `{baseline['bottleneck']}`"
-            )).send()
+            await cl.Message(
+                content=(
+                    f"**Baseline:** `{baseline['experiment_id']}`\n"
+                    f"  • throughput = **{baseline['throughput_rps']:.3f} RPS**\n"
+                    f"  • TTFT p99 = {baseline['ttft_p99_ms']:.1f} ms\n"
+                    f"  • bottleneck = `{baseline['bottleneck']}`"
+                )
+            ).send()
 
         graph = build_graph(llm, checkpointer=production_checkpointer())
         config = graph_invoke_config(session_prefix, thread_id=thread_id)
         update_task_status(task.task_id, "running")
-        await cl.Message(content=(
-            f"Starting optimization loop "
-            f"(remaining experiments={state['experiments_remaining']})…"
-        )).send()
+        await cl.Message(
+            content=(
+                f"Starting optimization loop "
+                f"(remaining experiments={state['experiments_remaining']})…"
+            )
+        ).send()
 
         events = graph.stream(
             state,
@@ -213,15 +257,29 @@ async def on_message(message: cl.Message):
             elif mode == "values":
                 final_state = data
     except Exception as exc:
-        update_task_status(task.task_id, "failed")
         err = str(exc)
+        if type(exc).__name__ == "TaskCancelled":
+            # on_stop already stopped owned children and reported them.
+            update_task_status(task.task_id, "cancelled")
+            await cl.Message(content=f"**Run cancelled.** `{err[:300]}`").send()
+            return
+        update_task_status(task.task_id, "failed")
+        if "GPU busy" in err or "Refusing managed start" in err:
+            await cl.Message(
+                content=(
+                    f"**Managed start refused — nothing was started or stopped.**\n\n`{err[:600]}`"
+                )
+            ).send()
+            return
         # Surface a helpful message for the most common failure: vLLM not running
         if any(k in err for k in ("Connection refused", "vllm", "VLLM", "timed out", "OOM")):
-            await cl.Message(content=(
-                "**Executor failed — vLLM server is not running.**\n\n"
-                "Start vLLM first:\n```bash\nbash scripts/start_vllm.sh\n```\n"
-                "Then retry your message. The planner output above was generated successfully."
-            )).send()
+            await cl.Message(
+                content=(
+                    "**Executor failed — vLLM server is not running.**\n\n"
+                    "Start vLLM first:\n```bash\nbash scripts/start_vllm.sh\n```\n"
+                    "Then retry your message. The planner output above was generated successfully."
+                )
+            ).send()
         else:
             await cl.Message(content=f"**Agent error:** `{err[:300]}`").send()
         return
@@ -254,20 +312,44 @@ async def _handle_node_event(node_name: str, patch: dict[str, Any] | None):
                 content=f"⏳ **Executor:** running benchmark for {params} — please wait (~1 min per experiment)…"
             ).send()
         else:
-            await cl.Message(content="**Planner:** no valid hypotheses generated (all rejected or already tried).").send()
+            await cl.Message(
+                content="**Planner:** no valid hypotheses generated (all rejected or already tried)."
+            ).send()
 
     elif node_name == "executor":
         summaries = patch.get("experiment_summaries", [])
+        recovery = patch.get("last_recovery") or {}
+        if recovery.get("reason") and (
+            "GPU busy" in recovery["reason"] or "Refusing managed start" in recovery["reason"]
+        ):
+            # Mutex / unknown-occupant refusal: say so plainly, never a silent skip.
+            await cl.Message(
+                content=(
+                    f"⛔ **Executor refused to start `{recovery.get('experiment_id')}`** "
+                    f"— nothing was started or stopped.\n\n`{recovery['reason'][:600]}`"
+                )
+            ).send()
+            return
         if summaries:
             s = summaries[-1]
+            if s.get("validity_status") == "failed" and s.get("throughput_rps") is None:
+                await cl.Message(
+                    content=(
+                        f"❌ **Failed:** `{s['experiment_id']}` — "
+                        f"{(s.get('failure_reason') or 'no reason recorded')[:400]}"
+                    )
+                ).send()
+                return
             improvement = s.get("vs_baseline_pct", 0)
             icon = "✅" if improvement > 0 else ("➡️" if improvement == 0 else "⬇️")
-            await cl.Message(content=(
-                f"{icon} **Result:** `{s['experiment_id']}`\n"
-                f"  • throughput = **{s['throughput_rps']:.3f} RPS** ({improvement:+.1f}% vs baseline)\n"
-                f"  • TTFT p99 = {s['ttft_p99_ms']:.1f} ms\n"
-                f"  • bottleneck = `{s['bottleneck']}`"
-            )).send()
+            await cl.Message(
+                content=(
+                    f"{icon} **Result:** `{s['experiment_id']}`\n"
+                    f"  • throughput = **{s['throughput_rps']:.3f} RPS** ({improvement:+.1f}% vs baseline)\n"
+                    f"  • TTFT p99 = {s['ttft_p99_ms']:.1f} ms\n"
+                    f"  • bottleneck = `{s['bottleneck']}`"
+                )
+            ).send()
 
     elif node_name == "reflector":
         if patch.get("should_stop"):
@@ -275,10 +357,12 @@ async def _handle_node_event(node_name: str, patch: dict[str, Any] | None):
             await cl.Message(content=f"⏹ **Done.** {reason}").send()
         else:
             streak = patch.get("no_improvement_streak", 0)
-            await cl.Message(content=(
-                f"🔄 **Reflector:** continuing — no-improvement streak {streak}, "
-                "trying next hypothesis…"
-            )).send()
+            await cl.Message(
+                content=(
+                    f"🔄 **Reflector:** continuing — no-improvement streak {streak}, "
+                    "trying next hypothesis…"
+                )
+            ).send()
 
 
 async def _send_final_report(
@@ -294,17 +378,19 @@ async def _send_final_report(
     task_dump = state.get("optimization_task")
 
     try:
-        out = write_final_report(FinalReportInput(
-            workload_name=workload_name,
-            session_prefix=session_prefix,
-            experiment_summaries=summaries,
-            baseline_summary=baseline,
-            best_summary=best,
-            citations=_collect_citations(state),
-            output_path=f"reports/{session_prefix}final_report.md",
-            optimization_task=task_dump,
-            stop_reason=str(state.get("stop_reason") or ""),
-        ))
+        out = write_final_report(
+            FinalReportInput(
+                workload_name=workload_name,
+                session_prefix=session_prefix,
+                experiment_summaries=summaries,
+                baseline_summary=baseline,
+                best_summary=best,
+                citations=_collect_citations(state),
+                output_path=f"reports/{session_prefix}final_report.md",
+                optimization_task=task_dump,
+                stop_reason=str(state.get("stop_reason") or ""),
+            )
+        )
         report_path = out.output_path
     except Exception as exc:
         report_path = f"(failed to write report: {str(exc)[:160]})"
@@ -315,7 +401,7 @@ async def _send_final_report(
         "",
         f"**Session:** `{session_prefix}`  |  "
         f"**Experiments run:** {len(summaries)}  |  "
-        f"**Wall clock:** {elapsed_s/60:.1f} min",
+        f"**Wall clock:** {elapsed_s / 60:.1f} min",
         "",
         f"**Report file:** `{report_path}`",
         "",

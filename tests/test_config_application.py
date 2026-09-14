@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import subprocess
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
 
 from inferops import bench_runner
+from inferops.tools import managed_lifecycle as ml
 from inferops.schemas import (
     ExperimentValidityStatus,
     config_knobs,
@@ -73,6 +75,34 @@ def _patch_common(monkeypatch):
     monkeypatch.delenv("INFEROPS_EXTERNAL_VLLM", raising=False)
 
 
+def _dead_pid() -> int:
+    """PID of an already-reaped process (a crashed InferOps owner)."""
+    p = subprocess.Popen(["true"])
+    p.wait()
+    return p.pid
+
+
+def _record_stale_managed_child(monkeypatch, child_pid: int, launch_cmd=None) -> None:
+    """Leave a never-released lease record from a dead InferOps owner + opt in.
+
+    This is the ONLY situation in which a healthy occupant may be stopped:
+    it is a child InferOps itself spawned, and the operator opted in.
+    """
+    path = ml.gpu_lock_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        ml.LeaseRecord(
+            owner_pid=_dead_pid(),
+            host="127.0.0.1",
+            port=8000,
+            experiment_id="crashed_run",
+            child_pid=child_pid,
+            launch_cmd=launch_cmd,
+        ).to_json()
+    )
+    monkeypatch.setenv(ml.ADOPT_STALE_ENV, "1")
+
+
 def test_parse_and_match_cli_knobs(config):
     cmd = vp._build_cmd(config, "127.0.0.1", 8000)
     parsed = parse_vllm_cli_knobs(cmd)
@@ -95,23 +125,18 @@ def test_cli_actual_is_valid_despite_schema_only_keys(config):
     """Managed CLI actual is valid; unused schema defaults do not block."""
     requested = config_knobs(config)
     actual = cli_evidenced_knobs(config)
-    ev = managed_start_evidence(
-        process_pid=9, host="127.0.0.1", port=8000, observed_params=actual
-    )
+    ev = managed_start_evidence(process_pid=9, host="127.0.0.1", port=8000, observed_params=actual)
     status = derive_status(
         evidence=ev, actual_config=actual, requested_config=requested, successful_requests=2
     )
     assert status == ExperimentValidityStatus.VALID
 
 
-def test_healthy_but_different_must_restart(monkeypatch, config):
-    """Already-healthy server with different knobs → managed restart + bound PID."""
-    _patch_common(monkeypatch)
-
+def _healthy_foreign_probe(config, pid: int = 111) -> LiveProbe:
     old_identity = InstanceIdentity(
-        host="127.0.0.1", port=8000, pid=111, start_token=None, source="proc_probe"
+        host="127.0.0.1", port=8000, pid=pid, start_token=None, source="proc_probe"
     )
-    probe = LiveProbe(
+    return LiveProbe(
         healthy=True,
         identity=old_identity,
         observed_knobs={
@@ -119,16 +144,9 @@ def test_healthy_but_different_must_restart(monkeypatch, config):
             "max_num_batched_tokens": 9999,
         },
     )
-    monkeypatch.setattr(bench_runner, "probe_live_instance", lambda *a, **k: probe)
-    monkeypatch.setattr(
-        bench_runner,
-        "assert_listener_bound_to_child",
-        lambda **k: 222,
-    )
 
-    events: list[str] = []
-    stopped_occupant = {"n": 0}
 
+def _make_restart_fake_proc(events: list[str], stopped_occupant: dict):
     class FakeProc:
         def __init__(self, cfg, host="127.0.0.1", port=8000):
             self.cfg = cfg
@@ -187,8 +205,64 @@ def test_healthy_but_different_must_restart(monkeypatch, config):
         def is_crashed(self):
             return False
 
-    monkeypatch.setattr(bench_runner, "VLLMProcess", FakeProc)
+    return FakeProc
 
+
+def test_healthy_unknown_occupant_refused_and_not_stopped(monkeypatch, config):
+    """Stage C: a healthy listener we did not spawn → failed, occupant untouched."""
+    _patch_common(monkeypatch)
+    probe = _healthy_foreign_probe(config, pid=111)
+    monkeypatch.setattr(bench_runner, "probe_live_instance", lambda *a, **k: probe)
+    monkeypatch.setattr(bench_runner, "assert_listener_bound_to_child", lambda **k: 222)
+    killed: list[int] = []
+    monkeypatch.setattr(vp.os, "kill", lambda pid, sig: killed.append(pid))
+
+    events: list[str] = []
+    stopped_occupant = {"n": 0}
+    monkeypatch.setattr(
+        bench_runner, "VLLMProcess", _make_restart_fake_proc(events, stopped_occupant)
+    )
+
+    progress: list[str] = []
+    with pytest.raises(bench_runner.BenchmarkError, match="did not start") as ei:
+        bench_runner.run_experiment(config, ["p"], on_progress=progress.append, session_id="sess_")
+
+    assert "restart" not in events and "start" not in events
+    assert stopped_occupant["n"] == 0
+    assert killed == []
+    assert any("failed:unknown_occupant" in p for p in progress)
+    assert "pid=111" in str(ei.value)
+    assert "NOT stopping" in str(ei.value)
+    assert ei.value.result is not None
+    assert ei.value.result.status == ExperimentValidityStatus.FAILED
+    # Lease released → a follow-up task can acquire it.
+    with ml.GPULease(host="127.0.0.1", port=8000):
+        pass
+
+
+def test_healthy_recorded_stale_child_adopted_only_with_opt_in(monkeypatch, config, tmp_path):
+    """Recorded InferOps orphan + opt-in → managed restart + bound new PID (valid)."""
+    _patch_common(monkeypatch)
+    monkeypatch.chdir(tmp_path)  # live_identity_*.json goes to tmp, not repo logs/
+    probe = _healthy_foreign_probe(config, pid=111)
+    old_identity = probe.identity
+    monkeypatch.setattr(bench_runner, "probe_live_instance", lambda *a, **k: probe)
+    monkeypatch.setattr(bench_runner, "assert_listener_bound_to_child", lambda **k: 222)
+
+    events: list[str] = []
+    stopped_occupant = {"n": 0}
+    monkeypatch.setattr(
+        bench_runner, "VLLMProcess", _make_restart_fake_proc(events, stopped_occupant)
+    )
+
+    # Same stale record, but WITHOUT the opt-in env → still refused.
+    _record_stale_managed_child(monkeypatch, child_pid=111)
+    monkeypatch.delenv(ml.ADOPT_STALE_ENV, raising=False)
+    with pytest.raises(bench_runner.BenchmarkError, match=ml.ADOPT_STALE_ENV):
+        bench_runner.run_experiment(config, ["p"])
+    assert stopped_occupant["n"] == 0
+
+    _record_stale_managed_child(monkeypatch, child_pid=111)
     progress: list[str] = []
     result = bench_runner.run_experiment(
         config, ["p"], on_progress=progress.append, session_id="sess_"
@@ -196,6 +270,7 @@ def test_healthy_but_different_must_restart(monkeypatch, config):
 
     assert "restart" in events
     assert stopped_occupant["n"] == 1
+    assert any("managed_lifecycle:adopt_stale_managed_child" in p for p in progress)
     assert any("restarting_managed_vllm" in p for p in progress)
     assert any("identity_verified:changed" in p for p in progress)
     assert result.config_evidence is not None
@@ -214,6 +289,9 @@ def test_healthy_but_different_must_restart(monkeypatch, config):
     assert result.ledger_path is None
     assert result.tpot.p50 is None
     assert result.tpot.p99 is None
+    # Lease record shows a clean release after the run.
+    rec = ml.read_lease_record()
+    assert rec is not None and rec.released is True and rec.child_pid == 222
 
 
 def test_legacy_load_does_not_forge_canonical_ledger(monkeypatch, config):
@@ -261,6 +339,7 @@ def test_external_health_only_insufficient_evidence(monkeypatch, config):
 
 def test_identity_change_required_after_restart(monkeypatch, config):
     _patch_common(monkeypatch)
+    _record_stale_managed_child(monkeypatch, child_pid=4242)
 
     old = InstanceIdentity(host="127.0.0.1", port=8000, pid=4242, source="proc_probe")
     monkeypatch.setattr(
@@ -300,9 +379,7 @@ def test_identity_change_required_after_restart(monkeypatch, config):
             )
 
         def restart_after_stop(self, **k):
-            return StopOccupantResult(
-                previous_pid=4242, stop_attempted=True, still_listening=False
-            )
+            return StopOccupantResult(previous_pid=4242, stop_attempted=True, still_listening=False)
 
         def start(self):
             return None
@@ -338,13 +415,12 @@ def test_identity_change_required_after_restart(monkeypatch, config):
 def test_stop_failure_refuses_start(monkeypatch, config):
     """If stop leaves a listener, do not spawn / never mark valid."""
     _patch_common(monkeypatch)
+    _record_stale_managed_child(monkeypatch, child_pid=50)
     old = InstanceIdentity(host="127.0.0.1", port=8000, pid=50, source="proc_probe")
     monkeypatch.setattr(
         bench_runner,
         "probe_live_instance",
-        lambda *a, **k: LiveProbe(
-            healthy=True, identity=old, observed_knobs={"max_num_seqs": 1}
-        ),
+        lambda *a, **k: LiveProbe(healthy=True, identity=old, observed_knobs={"max_num_seqs": 1}),
     )
 
     started = {"n": 0}
@@ -479,6 +555,7 @@ def test_listener_pid_mismatch_fails_and_stops_child(monkeypatch, config):
 def test_stale_occupant_still_healthy_unknown_pid(monkeypatch, config):
     """Stop reports still listening with unknown PID → failed, no valid."""
     _patch_common(monkeypatch)
+    _record_stale_managed_child(monkeypatch, child_pid=7)
     monkeypatch.setattr(
         bench_runner,
         "probe_live_instance",
@@ -787,6 +864,7 @@ def test_live_identity_probe_written_while_child_alive(monkeypatch, config, tmp_
     probe = tmp_path / "logs" / f"live_identity_{config.experiment_id}.json"
     assert probe.exists()
     import json
+
     data = json.loads(probe.read_text())
     assert data["pids_equal"] is True
     assert data["listener_pid"] == data["child_pid"] == 77
@@ -796,13 +874,12 @@ def test_live_identity_probe_written_while_child_alive(monkeypatch, config, tmp_
 def test_simulate_stop_failure_env(monkeypatch, config):
     _patch_common(monkeypatch)
     monkeypatch.setenv("INFEROPS_SIMULATE_STOP_FAILURE", "1")
+    _record_stale_managed_child(monkeypatch, child_pid=50)
     old = InstanceIdentity(host="127.0.0.1", port=8000, pid=50, source="proc_probe")
     monkeypatch.setattr(
         bench_runner,
         "probe_live_instance",
-        lambda *a, **k: LiveProbe(
-            healthy=True, identity=old, observed_knobs={"max_num_seqs": 1}
-        ),
+        lambda *a, **k: LiveProbe(healthy=True, identity=old, observed_knobs={"max_num_seqs": 1}),
     )
     # Use real restart_after_stop path with mocked stop_port_occupant via env
     started = {"n": 0}
@@ -829,6 +906,7 @@ def test_simulate_stop_failure_env(monkeypatch, config):
         def restart_after_stop(self, **k):
             # Delegate to real helper semantics: env forces still_listening
             from inferops.tools.vllm_process import stop_port_occupant
+
             result = stop_port_occupant(self.host, self.port)
             self.last_stop_result = result
             if not result.still_listening:
