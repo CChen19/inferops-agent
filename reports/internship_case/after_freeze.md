@@ -14,6 +14,20 @@ story stay pinned to freeze SHA `2731bed` — do not retarget them here.
 | PR [#65](https://github.com/CChen19/inferops-agent/pull/65) note | `287297f` | Notes PR #62 after freeze |
 | PR [#64](https://github.com/CChen19/inferops-agent/pull/64) memory pre-experiment | `cec13ef` | See below |
 | PR [#66](https://github.com/CChen19/inferops-agent/pull/66) note | `279765e` | Notes PR #64 after freeze |
+| PR [#67](https://github.com/CChen19/inferops-agent/pull/67) history fingerprint scan | `8ebba43` | Page past incompatible history fingerprints (not newest-32 only) |
+| PR [#68](https://github.com/CChen19/inferops-agent/pull/68) task engine fingerprint | `1e6d53f` | Fingerprint the confirmed task engine (not default-vLLM) |
+| PR [#69](https://github.com/CChen19/inferops-agent/pull/69) planner fingerprint fallback | `619e5a1` | Pass task engine into planner fingerprint fallback |
+| PR [#70](https://github.com/CChen19/inferops-agent/pull/70) interview SHA note | `a931790` | Pin PR #65 merge SHA in interview after-freeze table |
+| PR [#71](https://github.com/CChen19/inferops-agent/pull/71) memory scenario note | `3a35714` | Honest t2048 OOM override note for irrelevant scenario too |
+| PR [#72](https://github.com/CChen19/inferops-agent/pull/72) resume token chat | `7033cf7` | Non-id resume tokens stay ordinary chat |
+| PR [#73](https://github.com/CChen19/inferops-agent/pull/73) after-freeze notes | `f871141` | Adds this after-freeze interviewer log |
+| PR [#74](https://github.com/CChen19/inferops-agent/pull/74) resume missing-id copy | `5f88844` | Reuse `format_resume_failure` for bare resume / missing id |
+| PR [#75](https://github.com/CChen19/inferops-agent/pull/75) incomplete hardware | `18ae66f` | Leave omitted experiment hardware unknown (no invented fingerprint) |
+| PR [#76](https://github.com/CChen19/inferops-agent/pull/76) honest README | `4202778` | Keep-baseline product story (does not rewrite live numbers) |
+| PR [#77](https://github.com/CChen19/inferops-agent/pull/77) README zh polish | `f88ab85` | Polish Chinese README tech wording; live claim boundaries unchanged |
+| PR [#78](https://github.com/CChen19/inferops-agent/pull/78) English README homepage | `16754b5` | English README as GitHub homepage; Chinese → `README.zh.md` |
+
+Current `origin/master` tip at time of this update: `16754b5` (through PR #78).
 
 ## PR #64 memory pre-experiment (`cec13ef`)
 
@@ -23,14 +37,6 @@ CPU A/B/C, scripted — **not** live GPU, **not** paid LLM.
 - **C**: over-filters transients; do not keep.
 - Decision: keep **B**; no RAG upgrade; no GPU rerun.
 - Do **not** claim live waste reduction from memory.
-
-## Still open (not merged)
-
-At time of writing — do not treat as landed:
-
-- PR [#67](https://github.com/CChen19/inferops-agent/pull/67) — fingerprint scan of past incompatible history
-- PR [#68](https://github.com/CChen19/inferops-agent/pull/68) — fingerprint the confirmed task engine
-- PR [#69](https://github.com/CChen19/inferops-agent/pull/69) — pass task engine to planner fingerprint fallback
 
 ## Live claims (unchanged)
 

@@ -2,16 +2,16 @@
 
 **Local vLLM Serving Optimization & Experiment-Decision Assistant**
 
-InferOps translates high-level serving requirements into principled, reproducible engine configurations. It explores candidate parameter assignments, benchmarks live workloads under concurrency limits, and evaluates whether proposed changes reliably improve performance before recommending adoption.
+InferOps drafts, tests, and evaluates serving configurations for local vLLM workloads. It benchmarks candidate parameter assignments against your baseline under concurrency limits, and recommends keeping the baseline whenever measured evidence does not reliably demonstrate an improvement.
 
 ---
 
 ### Key Operational Guarantees
 
-- **Confirm-Before-GPU:** Every proposed optimization task requires explicit user confirmation before any GPU budget is allocated or benchmark server is started.
-- **Fail-Closed Lifecycle:** Managed child processes spawned by InferOps are tracked and cleanly stopped on cancellation. External or unmanaged servers are never touched.
-- **Checkpointed & Resumable:** Session states are persisted to SQLite. Interrupted runs can be continued anytime using `resume <task_id>`.
-- **Evidence-Based Evaluation:** Candidates are judged on measured throughput and tail latency SLOs (TTFT/TPOT) against the baseline before recommending adoption.
+- **Confirm-Before-GPU:** Every proposed optimization task requires explicit user confirmation before any GPU budget is spent or benchmark process is started.
+- **Evidence-Based Evaluation:** Candidates must reliably improve throughput while strictly respecting TTFT and TPOT SLOs. If no candidate reliably beats the baseline, InferOps advises keeping the baseline configuration.
+- **Fail-Closed Lifecycle:** Managed child processes spawned by InferOps are tracked and cleanly stopped on cancellation. External or unmanaged servers are never modified.
+- **Checkpointed & Resumable:** Session states are saved to SQLite. Interrupted runs can be resumed anytime using `resume <task_id>`.
 
 ---
 
