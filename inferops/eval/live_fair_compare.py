@@ -21,12 +21,12 @@ from inferops.tools.run_benchmark import (
     RunBenchmarkOutput,
     run_benchmark,
 )
+from inferops.tools.vllm_process import get_vllm_python
 
 LIVE_LLM_BOUNDARY = "live_openrouter"
 SEARCH_LLM_BOUNDARY = "none"
 TOOL_BOUNDARY = "managed_local_vllm"
 CLAIM_LEVEL = "observe_after_pick_protocol_score"
-DEFAULT_VLLM_PYTHON = "/home/chris/miniconda3/envs/vllm-dev/bin/python"
 
 BenchmarkFn = Callable[[RunBenchmarkInput], RunBenchmarkOutput]
 
@@ -40,13 +40,18 @@ def current_sha() -> str:
 
 
 def require_managed_live_conditions(
-    vllm_python: str = DEFAULT_VLLM_PYTHON,
+    vllm_python: str | None = None,
     host: str = "127.0.0.1",
     port: int = 8000,
 ) -> None:
     """Fail before benchmarking if mode is external or the dedicated port is occupied."""
     if os.getenv("INFEROPS_EXTERNAL_VLLM"):
         raise LiveCompareBlocked("INFEROPS_EXTERNAL_VLLM must be unset (managed mode required)")
+    if vllm_python is None:
+        try:
+            vllm_python = get_vllm_python()
+        except RuntimeError as exc:
+            raise LiveCompareBlocked(str(exc)) from exc
     python_path = Path(vllm_python)
     if not python_path.is_absolute() or not python_path.is_file():
         raise LiveCompareBlocked(f"managed vLLM Python is unavailable: {vllm_python}")
