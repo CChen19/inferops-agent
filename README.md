@@ -28,7 +28,8 @@ does **not** retarget the interview/demo SHA to later merges.
   failure filter; it does **not** prove that memory reduces wasted trials in live
   GPU runs.
 - Tool wrappers for configs, benchmarks, bottleneck analysis, comparison,
-  memory, and reports.
+  memory, and reports. Throughput compare has no synthesized CI (single-run
+  aggregates; unavailable ≠ “not significant”); latency CI needs raw samples.
 - A small Chroma + BGE corpus over vLLM documentation. Document citations only
   verify the existence of matching `(chunk_id, source, version)` tuples; they do
   not establish that the planner semantically understood or used the text.
@@ -100,7 +101,7 @@ no GraphRAG.
 - SQLite + MLflow
 - Chroma + `BAAI/bge-base-zh-v1.5` (retrieval and existence citations only)
 - OpenRouter / DeepSeek / Anthropic LLM backends
-- pytest (**641** tests collected in this tree via `pytest --collect-only`)
+- pytest (**664** tests collected in this tree via `pytest --collect-only`)
 
 ## Quick start
 
@@ -163,7 +164,7 @@ baseline** when the gates do not clear.
 
 | Area | Current status |
 |---|---|
-| Unit / CPU tests | **641** collected (`pytest --collect-only` in this worktree) |
+| Unit / CPU tests | **664** collected (`pytest --collect-only` in this worktree) |
 | Golden workloads | 5 |
 | Grid-sweep ground truth | 60 rows |
 | Tool registry | 9 tools |

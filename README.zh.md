@@ -23,7 +23,8 @@ README 描述当前仓库，但不会改变面试和 demo 的冻结 SHA。
 - 使用 SQLite 保存实验记录，并用硬件 fingerprint 筛选可兼容的历史信息。PR #64 的
   CPU 预实验支持保留 B 式 lasting exact-config failure filter；它不能证明 memory 已在
   live GPU 运行中减少 wasted trials。
-- 提供配置、benchmark、瓶颈分析、结果比较、memory 和报告等工具封装。
+- 提供配置、benchmark、瓶颈分析、结果比较、memory 和报告等工具封装。吞吐
+  compare 不做合成 CI（单次聚合不可用 ≠ “不显著”）；延迟 CI 需要原始样本。
 - 使用 Chroma 和 BGE 检索小型 vLLM 文档语料。文档引用只验证
   `(chunk_id, source, version)` 是否存在且匹配，不判断语义是否支持结论。
 - 提供 Chainlit UI，从自然语言目标进入实验流程并生成 session 报告。
@@ -90,7 +91,7 @@ SQLite 历史记录和硬件 fingerprint 已实现。PR #64 只是 CPU A/B/C 预
 - SQLite + MLflow
 - Chroma + `BAAI/bge-base-zh-v1.5`（只用于检索和存在性引用校验）
 - OpenRouter / DeepSeek / Anthropic LLM 后端
-- pytest（本分支通过 `pytest --collect-only` 收集 **641** 个测试；CI 运行同一测试集）
+- pytest（本分支通过 `pytest --collect-only` 收集 **664** 个测试；CI 运行同一测试集）
 
 ## 快速开始
 
@@ -151,7 +152,7 @@ UI 会解析 workload，运行或加载 baseline，展示 agent 步骤，并把 
 
 | 项目 | 当前状态 |
 |---|---|
-| Unit / CPU tests | **641** collected（本分支运行 `pytest --collect-only`） |
+| Unit / CPU tests | **664** collected（本分支运行 `pytest --collect-only`） |
 | Golden workloads | 5 |
 | Grid-sweep ground truth | 60 rows |
 | Tool registry | 9 tools |

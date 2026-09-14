@@ -30,8 +30,12 @@ story stay pinned to freeze SHA `2731bed` — do not retarget them here.
 | PR [#80](https://github.com/CChen19/inferops-agent/pull/80) closeout hygiene | `f04bb41` | After-freeze notes, gitignore live dumps, `.env.example` |
 | PR [#81](https://github.com/CChen19/inferops-agent/pull/81) portable vLLM Python | `a5b66e5` | Fail closed; no machine-local path fallback |
 | PR [#82](https://github.com/CChen19/inferops-agent/pull/82) Chainlit theme | `da95b13` | First visual pass; landing-page follow-up is a later PR |
+| PR [#83](https://github.com/CChen19/inferops-agent/pull/83) docs closeout | `dcf309b` | READMEs + after-freeze through #82; does not retarget freeze `2731bed` |
+| PR [#84](https://github.com/CChen19/inferops-agent/pull/84) landing-page UI | `0af882e` | Developer-tool landing page and wide layout; honesty copy (no statistical-significance claim) |
+| PR [#85](https://github.com/CChen19/inferops-agent/pull/85) stop synthetic CI | `1a14a6d` | No gauss/jitter synthesized bootstrap CI. Throughput CI is unavailable (single aggregates; cannot be read as tie / “not significant”). Latency CI only with real raw samples. No repeated-run CI. Also hardens `input_len` / `output_len` bounds. |
+| PR [#86](https://github.com/CChen19/inferops-agent/pull/86) lasting config memory filter | `e069f22` | Production no longer blacklists generic `failed`. Cross-session hard filter: lasting identical full search config in a compatible env (model + `workload_hash` + hardware). Usable observation = valid + SLO + config evidence + finite primary. |
 
-Current `origin/master` tip at time of this update: `da95b13` (through PR #82).
+Current `origin/master` tip at time of this update: `e069f22` (through PR #86).
 
 ## PR #64 memory pre-experiment (`cec13ef`)
 
