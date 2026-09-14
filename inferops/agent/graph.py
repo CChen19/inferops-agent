@@ -15,9 +15,10 @@ Entry point: run_agent() — handles baseline, builds initial state, invokes gra
 from __future__ import annotations
 
 import os
-import sqlite3
 import time
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -132,8 +133,15 @@ def graph_invoke_config(
     }
 
 
-def production_checkpointer(db_path: Path | str = Path("inferops_memory.db")) -> Any:
-    """Create a disk-backed LangGraph saver sharing the experiment SQLite DB."""
+@contextmanager
+def production_checkpointer(
+    db_path: Path | str = Path("inferops_memory.db"),
+) -> Iterator[Any]:
+    """Yield a disk-backed LangGraph saver sharing the experiment SQLite DB.
+
+    Closes the SQLite connection when the block exits so callers (and tmp_path
+    tests) do not leak fds or WAL files in the worktree root.
+    """
     try:
         from langgraph.checkpoint.sqlite import SqliteSaver
     except ImportError as exc:  # pragma: no cover - dependency error is environment-specific
@@ -141,8 +149,8 @@ def production_checkpointer(db_path: Path | str = Path("inferops_memory.db")) ->
             "Production resume requires the 'langgraph-checkpoint-sqlite' package"
         ) from exc
 
-    conn = sqlite3.connect(str(db_path), check_same_thread=False)
-    return SqliteSaver(conn)
+    with SqliteSaver.from_conn_string(str(db_path)) as saver:
+        yield saver
 
 
 def build_graph(
@@ -417,37 +425,38 @@ def run_agent(
     console.rule(f"[bold cyan]Agent: {workload_name}[/]  prefix={prefix}")
 
     # Build the graph before baseline so a persisted checkpoint can resume directly.
-    graph = build_graph(
-        llm,
-        checkpointer=production_checkpointer(db_file),
-        interrupt_before=interrupt_before,
-    )
-    config = graph_invoke_config(prefix, thread_id=thread_id)
-    snapshot = graph.get_state(config) if hasattr(graph, "get_state") else None
-    has_checkpoint = bool(snapshot and snapshot.values)
-    state = None
-    if not has_checkpoint:
-        state = prepare_initial_state(
-            workload_name,
-            prefix,
-            max_experiments=max_experiments,
-            task=resolved_task,
+    with production_checkpointer(db_file) as checkpointer:
+        graph = build_graph(
+            llm,
+            checkpointer=checkpointer,
+            interrupt_before=interrupt_before,
         )
+        config = graph_invoke_config(prefix, thread_id=thread_id)
+        snapshot = graph.get_state(config) if hasattr(graph, "get_state") else None
+        has_checkpoint = bool(snapshot and snapshot.values)
+        state = None
+        if not has_checkpoint:
+            state = prepare_initial_state(
+                workload_name,
+                prefix,
+                max_experiments=max_experiments,
+                task=resolved_task,
+            )
 
-    update_task_status(resolved_task.task_id, "running", db_path=db_file)
-    clear_cancel()
-    try:
-        final_state = graph.invoke(state, config)
-    except BaseException as exc:
-        abort_agent_run(resolved_task.task_id, exc, db_path=db_file)
-        raise
+        update_task_status(resolved_task.task_id, "running", db_path=db_file)
+        clear_cancel()
+        try:
+            final_state = graph.invoke(state, config)
+        except BaseException as exc:
+            abort_agent_run(resolved_task.task_id, exc, db_path=db_file)
+            raise
 
-    post_run = graph.get_state(config) if hasattr(graph, "get_state") else None
-    final_status = "running" if post_run and post_run.next else "completed"
-    update_task_status(resolved_task.task_id, final_status, db_path=db_file)
+        post_run = graph.get_state(config) if hasattr(graph, "get_state") else None
+        final_status = "running" if post_run and post_run.next else "completed"
+        update_task_status(resolved_task.task_id, final_status, db_path=db_file)
 
-    _print_run_summary(final_state)
-    return final_state
+        _print_run_summary(final_state)
+        return final_state
 
 
 # ---------------------------------------------------------------------------
