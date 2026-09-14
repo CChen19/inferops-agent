@@ -8,7 +8,7 @@
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap');
 
 /* --------------------------------------------------------------------------
-   2. Theme Variables (Precision Dark & Crisp Light)
+   2. Theme Variables (Deep Navy/Obsidian Dark & Crisp Light)
    -------------------------------------------------------------------------- */
 :root {
   --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
@@ -54,48 +54,68 @@
 
 .dark,
 [data-theme="dark"],
+:root[class~="dark"],
 body {
-  /* Dark Theme: Precision Obsidian & Deep Telemetry Slate */
-  --background: 224 45% 6%;
+  /* Dark Theme: Distinctive Near-Black with Cool Navy/Telemetry Tint (#05070c / #070b14) */
+  --background: 225 45% 3.5%;
   --foreground: 210 40% 98%;
-  --card: 222 35% 10%;
+  --card: 222 35% 8.5%;
   --card-foreground: 210 40% 98%;
-  --popover: 222 35% 10%;
+  --popover: 222 35% 8.5%;
   --popover-foreground: 210 40% 98%;
 
   /* High-Contrast Electric Cyan */
   --primary: 199 89% 48%;
   --primary-foreground: 0 0% 100%;
 
-  --secondary: 222 25% 15%;
+  --secondary: 222 25% 10%;
   --secondary-foreground: 210 40% 98%;
-  --muted: 222 25% 15%;
+  --muted: 222 25% 10%;
   --muted-foreground: 215 20% 65%;
-  --accent: 222 25% 18%;
+  --accent: 222 25% 10%;
   --accent-foreground: 210 40% 98%;
 
   --destructive: 0 75% 58%;
   --destructive-foreground: 0 0% 100%;
 
-  --border: 222 25% 16%;
-  --input: 222 25% 16%;
+  --border: 222 25% 14%;
+  --input: 222 25% 14%;
   --ring: 199 89% 48%;
 
-  --sidebar-background: 224 45% 5%;
+  --sidebar-background: 225 45% 2.8%;
   --sidebar-foreground: 210 40% 98%;
   --sidebar-primary: 199 89% 48%;
   --sidebar-primary-foreground: 0 0% 100%;
-  --sidebar-accent: 222 25% 15%;
+  --sidebar-accent: 222 25% 9%;
   --sidebar-accent-foreground: 210 40% 98%;
-  --sidebar-border: 222 25% 16%;
+  --sidebar-border: 222 25% 14%;
   --sidebar-ring: 199 89% 48%;
 }
 
 /* --------------------------------------------------------------------------
-   3. Global Layout & Typography
+   3. Canvas & Deep Background Overrides (Eliminates all washed gray layers)
    -------------------------------------------------------------------------- */
 * {
   box-sizing: border-box;
+}
+
+html,
+body,
+#root,
+#root > div,
+main,
+[role="main"],
+[data-sidebar="inset"],
+.bg-background,
+[class*="bg-background"],
+[data-radix-scroll-area-viewport],
+.scroll-area,
+#welcome-screen,
+.welcome-screen,
+.chat-container {
+  background-color: #05070c !important;
+  background: #05070c !important;
+  color: #f1f5f9;
 }
 
 body {
@@ -104,8 +124,6 @@ body {
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  background-color: #060911 !important;
-  color: #f1f5f9;
 }
 
 code, kbd, samp, pre, .mono {
@@ -121,11 +139,11 @@ code, kbd, samp, pre, .mono {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(148, 163, 184, 0.2);
+  background: rgba(148, 163, 184, 0.18);
   border-radius: 9999px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(148, 163, 184, 0.4);
+  background: rgba(148, 163, 184, 0.35);
 }
 
 /* --------------------------------------------------------------------------
@@ -146,9 +164,8 @@ main,
 /* Ensure message list and composer span the wide container */
 .step,
 [data-step-type],
-#chat-input-container,
-div:has(> #chat-input),
-form:has(#chat-input) {
+#welcome-screen,
+.welcome-screen {
   max-width: 1100px !important;
   width: 100% !important;
   margin-left: auto !important;
@@ -156,19 +173,28 @@ form:has(#chat-input) {
 }
 
 /* --------------------------------------------------------------------------
-   5. Header Polish
+   5. Header Polish & Sidebar Overrides
    -------------------------------------------------------------------------- */
 header,
-.header {
-  background: rgba(6, 9, 17, 0.85) !important;
+.header,
+[data-sidebar="header"] {
+  background: rgba(5, 7, 12, 0.88) !important;
   border-bottom: 1px solid rgba(30, 41, 59, 0.7) !important;
   backdrop-filter: blur(16px) !important;
   -webkit-backdrop-filter: blur(16px) !important;
   height: 3.5rem !important;
 }
 
+[data-sidebar="sidebar"],
+aside,
+nav[data-sidebar="menu"] {
+  background-color: #04060a !important;
+  background: #04060a !important;
+  border-right: 1px solid rgba(30, 41, 59, 0.7) !important;
+}
+
 /* --------------------------------------------------------------------------
-   6. Landing Page Visual Elements
+   6. Landing Page Visual Elements (Crisp Cards on Deep Canvas)
    -------------------------------------------------------------------------- */
 .inferops-landing {
   width: 100%;
@@ -238,12 +264,12 @@ header,
 
 /* Diagram Card Section */
 .diagram-section {
-  background: #090e1a;
+  background: #0b1220;
   border: 1px solid #1e293b;
   border-radius: 1rem;
   padding: 1.25rem 1.5rem;
   margin-bottom: 2rem;
-  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.05);
 }
 
 .diagram-header {
@@ -316,7 +342,7 @@ header,
 }
 
 .pillar-card {
-  background: #0b1120;
+  background: #0b1220;
   border: 1px solid #1e293b;
   border-radius: 0.75rem;
   padding: 1.25rem;
@@ -328,7 +354,7 @@ header,
 .pillar-card:hover {
   transform: translateY(-2px);
   border-color: rgba(56, 189, 248, 0.35);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
 }
 
 .card-amber:hover { border-color: rgba(245, 158, 11, 0.4); }
@@ -395,7 +421,7 @@ header,
 }
 
 .scenario-card {
-  background: #090e1a;
+  background: #0b1220;
   border: 1px solid #1e293b;
   border-radius: 0.65rem;
   padding: 0.9rem 1rem;
@@ -407,7 +433,7 @@ header,
 }
 
 .scenario-card:hover {
-  background: #0f172a;
+  background: #0f182c;
   border-color: #38bdf8;
   transform: translateY(-2px);
   box-shadow: 0 6px 18px rgba(14, 165, 233, 0.15);
@@ -429,7 +455,149 @@ header,
 }
 
 /* --------------------------------------------------------------------------
-   7. Chat Messages & Telemetry Callouts (No Double Frames)
+   7. Composer & Single Chrome Input Box (No Double Frames, No Overflow)
+   -------------------------------------------------------------------------- */
+/* Composer chrome container: EXACTLY ONE framed card layer */
+#message-composer {
+  background: #0b1220 !important;
+  border: 1px solid #1e293b !important;
+  border-radius: 1rem !important;
+  padding: 0.75rem 1rem 0.65rem 1rem !important;
+  min-height: auto !important;
+  max-width: 1080px !important;
+  width: 100% !important;
+  margin: 0 auto !important;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.04) !important;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease !important;
+  display: flex !important;
+  flex-direction: column !important;
+}
+
+#message-composer:focus-within {
+  border-color: #0ea5e9 !important;
+  box-shadow: 0 0 0 1px #0ea5e9, 0 8px 28px rgba(14, 165, 233, 0.18) !important;
+}
+
+/* Strip borders, backgrounds, paddings, and shadows from ALL inner wrappers */
+#message-composer div,
+#message-composer form,
+#chat-input-container,
+div:has(> #chat-input),
+form:has(#chat-input) {
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  border-radius: 0 !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  width: 100% !important;
+}
+
+/* Chat Input Textarea: Precision Typography and Contained Layout */
+#chat-input,
+textarea#chat-input,
+#message-composer textarea,
+[data-sidebar="input"] {
+  font-family: var(--font-sans) !important;
+  font-size: 0.875rem !important; /* ~14px */
+  line-height: 1.45 !important;
+  color: #f8fafc !important;
+  background: transparent !important;
+  border: none !important;
+  outline: none !important;
+  box-shadow: none !important;
+  box-sizing: border-box !important;
+  width: 100% !important;
+  min-height: 2.75rem !important; /* Single line fits comfortably with vertical padding */
+  max-height: 200px !important;
+  padding: 0.35rem 0.25rem !important;
+  resize: none !important;
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
+  word-break: break-word !important;
+  white-space: pre-wrap !important;
+}
+
+#chat-input::placeholder,
+textarea#chat-input::placeholder,
+#message-composer textarea::placeholder {
+  color: #64748b !important;
+  font-size: 0.875rem !important; /* ~14px */
+  line-height: 1.45 !important;
+  font-family: var(--font-sans) !important;
+  opacity: 1 !important;
+}
+
+#chat-input:focus,
+textarea#chat-input:focus,
+#message-composer textarea:focus {
+  outline: none !important;
+  border: none !important;
+  box-shadow: none !important;
+}
+
+/* Action toolbar inside composer */
+#message-composer .flex.items-center.justify-between,
+#message-composer > div:last-child {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  margin-top: 0.4rem !important;
+  padding-top: 0.4rem !important;
+  border-top: 1px solid rgba(30, 41, 59, 0.45) !important;
+  background: transparent !important;
+}
+
+/* Send Button */
+#chat-submit {
+  background: linear-gradient(135deg, #0ea5e9, #0284c7) !important;
+  color: #ffffff !important;
+  border: none !important;
+  border-radius: 9999px !important;
+  width: 2rem !important;
+  height: 2rem !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  box-shadow: 0 2px 8px rgba(14, 165, 233, 0.35) !important;
+  transition: all 0.2s ease !important;
+}
+
+#chat-submit:hover:not(:disabled) {
+  background: linear-gradient(135deg, #38bdf8, #0ea5e9) !important;
+  box-shadow: 0 4px 14px rgba(14, 165, 233, 0.55) !important;
+  transform: scale(1.05);
+}
+
+#chat-submit:disabled {
+  background: #1e293b !important;
+  color: #64748b !important;
+  box-shadow: none !important;
+  opacity: 0.45;
+}
+
+/* Stop Button */
+#stop-button {
+  background: #ef4444 !important;
+  color: #ffffff !important;
+  border: none !important;
+  border-radius: 9999px !important;
+  width: 2rem !important;
+  height: 2rem !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  box-shadow: 0 0 12px rgba(239, 68, 68, 0.5) !important;
+  transition: all 0.2s ease !important;
+}
+
+#stop-button:hover {
+  background: #dc2626 !important;
+  transform: scale(1.05);
+}
+
+/* --------------------------------------------------------------------------
+   8. Chat Messages & Telemetry Callouts
    -------------------------------------------------------------------------- */
 /* User message bubble */
 [data-step-type="user_message"] > div,
@@ -492,7 +660,7 @@ pre {
 }
 
 /* --------------------------------------------------------------------------
-   8. Tables & Optimization Reports
+   9. Tables & Optimization Reports
    -------------------------------------------------------------------------- */
 .prose table,
 .markdown-body table,
@@ -505,13 +673,13 @@ table {
   overflow: hidden !important;
   margin: 1.1rem 0 !important;
   font-size: 0.875rem !important;
-  background: #090e1a !important;
+  background: #0b1220 !important;
 }
 
 .prose th,
 .markdown-body th,
 th {
-  background: #0f172a !important;
+  background: #0f182c !important;
   color: #f8fafc !important;
   font-weight: 600 !important;
   text-align: left !important;
@@ -536,11 +704,11 @@ td {
 
 .prose tr:nth-child(even),
 .markdown-body tr:nth-child(even) {
-  background: rgba(15, 23, 42, 0.4) !important;
+  background: rgba(15, 24, 44, 0.45) !important;
 }
 
 /* --------------------------------------------------------------------------
-   9. Action Buttons (Confirm and run / Cancel)
+   10. Action Buttons (Confirm and run / Cancel)
    -------------------------------------------------------------------------- */
 button#confirm,
 button[name="confirm"],
@@ -584,71 +752,6 @@ button[id*="cancel"]:hover {
   border-color: rgba(239, 68, 68, 0.5) !important;
   color: #fca5a5 !important;
   transform: translateY(-1px);
-}
-
-/* --------------------------------------------------------------------------
-   10. Composer & Command Bar Input
-   -------------------------------------------------------------------------- */
-#chat-input-container,
-div:has(> #chat-input),
-form:has(#chat-input) {
-  background: #0c1220 !important;
-  border: 1px solid #1e293b !important;
-  border-radius: 0.875rem !important;
-  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.4) !important;
-  transition: border-color 0.2s ease, box-shadow 0.2s ease !important;
-  padding: 0.4rem 0.6rem !important;
-}
-
-#chat-input-container:focus-within,
-div:has(> #chat-input:focus),
-form:has(#chat-input:focus) {
-  border-color: #0ea5e9 !important;
-  box-shadow: 0 0 0 2px rgba(14, 165, 233, 0.3), 0 8px 32px rgba(14, 165, 233, 0.15) !important;
-}
-
-#chat-input {
-  font-family: var(--font-sans) !important;
-  font-size: 0.95rem !important;
-  line-height: 1.55 !important;
-  color: #f8fafc !important;
-}
-
-#chat-submit {
-  background: linear-gradient(135deg, #0ea5e9, #0284c7) !important;
-  color: #ffffff !important;
-  border: none !important;
-  border-radius: 9999px !important;
-  box-shadow: 0 2px 10px rgba(14, 165, 233, 0.35) !important;
-  transition: all 0.2s ease !important;
-}
-
-#chat-submit:hover:not(:disabled) {
-  background: linear-gradient(135deg, #38bdf8, #0ea5e9) !important;
-  box-shadow: 0 4px 14px rgba(14, 165, 233, 0.55) !important;
-  transform: scale(1.05);
-}
-
-#chat-submit:disabled {
-  background: #1e293b !important;
-  color: #64748b !important;
-  box-shadow: none !important;
-  opacity: 0.5;
-}
-
-/* Stop Button */
-#stop-button {
-  background: #ef4444 !important;
-  color: #ffffff !important;
-  border: none !important;
-  border-radius: 9999px !important;
-  box-shadow: 0 0 12px rgba(239, 68, 68, 0.5) !important;
-  transition: all 0.2s ease !important;
-}
-
-#stop-button:hover {
-  background: #dc2626 !important;
-  transform: scale(1.05);
 }
 
 /* --------------------------------------------------------------------------
