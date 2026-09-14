@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import sqlite3
+from contextlib import contextmanager
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -11,8 +14,21 @@ from inferops.agent.graph import (
     build_graph,
     make_llm,
     prepare_initial_state,
+    production_checkpointer,
     run_agent,
 )
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+_SQLITE_LEAKS = (
+    "inferops_memory.db",
+    "inferops_memory.db-wal",
+    "inferops_memory.db-shm",
+)
+
+
+def _assert_no_repo_root_sqlite() -> None:
+    for name in _SQLITE_LEAKS:
+        assert not (_REPO_ROOT / name).exists(), f"leaked {name} into repo root"
 
 
 def test_make_llm_rejects_unknown_backend():
@@ -64,7 +80,17 @@ def test_run_agent_initializes_state_and_invokes_graph(tmp_path):
             state["stop_reason"] = "unit_test"
             return state
 
-    with patch("inferops.agent.graph.init_db"), \
+    conns: list[sqlite3.Connection] = []
+    orig = production_checkpointer
+
+    @contextmanager
+    def tracking(db_path=Path("inferops_memory.db")):
+        with orig(db_path) as saver:
+            conns.append(saver.conn)
+            yield saver
+
+    with patch("inferops.agent.graph.production_checkpointer", tracking), \
+         patch("inferops.agent.graph.init_db"), \
          patch("inferops.agent.graph._run_baseline", return_value=(baseline, "compute-bound")), \
          patch("inferops.agent.graph.build_graph", return_value=FakeGraph()), \
          patch("inferops.agent.graph._print_run_summary"):
@@ -80,6 +106,21 @@ def test_run_agent_initializes_state_and_invokes_graph(tmp_path):
     assert captured["state"]["baseline_summary"] == baseline
     assert captured["config"]["configurable"]["thread_id"] == "sess"
     assert final_state["stop_reason"] == "unit_test"
+    assert conns
+    with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+        conns[0].execute("SELECT 1")
+    _assert_no_repo_root_sqlite()
+
+
+def test_production_checkpointer_closes_connection(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    with production_checkpointer() as saver:
+        saver.setup()
+        conn = saver.conn
+        assert conn.execute("SELECT 1").fetchone()[0] == 1
+    with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+        conn.execute("SELECT 1")
+    _assert_no_repo_root_sqlite()
 
 
 def test_prepare_initial_state_includes_baseline_and_best():

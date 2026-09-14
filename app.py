@@ -238,32 +238,33 @@ async def on_message(message: cl.Message):
                 )
             ).send()
 
-        graph = build_graph(llm, checkpointer=production_checkpointer())
-        config = graph_invoke_config(session_prefix, thread_id=thread_id)
-        update_task_status(task.task_id, "running")
-        await cl.Message(
-            content=(
-                f"Starting optimization loop "
-                f"(remaining experiments={state['experiments_remaining']})…"
-            )
-        ).send()
+        with production_checkpointer() as checkpointer:
+            graph = build_graph(llm, checkpointer=checkpointer)
+            config = graph_invoke_config(session_prefix, thread_id=thread_id)
+            update_task_status(task.task_id, "running")
+            await cl.Message(
+                content=(
+                    f"Starting optimization loop "
+                    f"(remaining experiments={state['experiments_remaining']})…"
+                )
+            ).send()
 
-        events = graph.stream(
-            state,
-            config,
-            stream_mode=["updates", "values"],
-        )
-        done = object()
-        while True:
-            item = await asyncio.to_thread(next, events, done)
-            if item is done:
-                break
-            mode, data = item
-            if mode == "updates":
-                for node_name, patch in data.items():
-                    await _handle_node_event(node_name, patch)
-            elif mode == "values":
-                final_state = data
+            events = graph.stream(
+                state,
+                config,
+                stream_mode=["updates", "values"],
+            )
+            done = object()
+            while True:
+                item = await asyncio.to_thread(next, events, done)
+                if item is done:
+                    break
+                mode, data = item
+                if mode == "updates":
+                    for node_name, patch in data.items():
+                        await _handle_node_event(node_name, patch)
+                elif mode == "values":
+                    final_state = data
     except Exception as exc:
         err = str(exc)
         if type(exc).__name__ == "TaskCancelled":
