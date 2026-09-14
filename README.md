@@ -60,7 +60,7 @@ flowchart LR
 从代码重新生成 LangGraph 图：
 
 ```bash
-/home/chris/Projects/inferops-agent/.venv/bin/python scripts/print_agent_graph.py
+.venv/bin/python scripts/print_agent_graph.py
 ```
 
 ## 实测结果：不能据此比较策略优劣
@@ -92,17 +92,12 @@ SQLite 历史记录和硬件 fingerprint 已实现。PR #64 只是 CPU A/B/C 预
 
 ## 快速开始
 
-这台机器上，agent 和 UI 共用以下 Python：
+agent 和 UI 使用项目目录下的 `.venv`。如果尚未创建，可执行：
 
 ```bash
-PYTHON=/home/chris/Projects/inferops-agent/.venv/bin/python
-```
-
-将项目以 editable 模式安装到该环境，或替换成你自己的 `.venv`：
-
-```bash
-# example: project venv already present
-$PYTHON -m pip install -e ".[dev,ui]"
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -e ".[dev,ui]"
 ```
 
 日常运行本项目时不要使用 `uv run`。
@@ -118,7 +113,7 @@ INFEROPS_LLM=openrouter
 构建本地知识索引：
 
 ```bash
-$PYTHON scripts/build_corpus.py
+.venv/bin/python scripts/build_corpus.py
 ```
 
 默认情况下，agent 会启动并管理本地 vLLM 子进程。手工调试或连接外部服务时，可在另一
@@ -136,7 +131,7 @@ VLLM_GPU_MEM=0.65 bash scripts/start_vllm.sh 1.5B
 
 ```bash
 # Terminal 2
-source /home/chris/Projects/inferops-agent/.venv/bin/activate   # or your .venv
+source .venv/bin/activate
 chainlit run app.py --port 8001
 ```
 
@@ -162,13 +157,13 @@ UI 会解析 workload，运行或加载 baseline，展示 agent 步骤，并把 
 运行测试：
 
 ```bash
-PYTHONPATH=. /home/chris/Projects/inferops-agent/.venv/bin/python -m pytest -q
+PYTHONPATH=. python -m pytest -q
 ```
 
 运行 CI-safe eval harness：
 
 ```bash
-PYTHONPATH=. /home/chris/Projects/inferops-agent/.venv/bin/python scripts/run_eval.py \
+PYTHONPATH=. python scripts/run_eval.py \
   --mock --commit-sha $(git rev-parse --short HEAD) \
   --ground-truth tests/fixtures/ground_truth \
   --workloads chat_short long_generation \
@@ -194,8 +189,8 @@ reports/       internship case pack、整理后的报告和本地 session 报告
 
 ## 运行说明
 
-- vLLM 通常运行在单独的 `vllm-dev` conda 环境中；agent 和 UI 使用项目 `.venv`
-  （`/home/chris/Projects/inferops-agent/.venv`）。
+- vLLM 通常运行在单独的 `vllm-dev` conda 环境中，可通过
+  `INFEROPS_VLLM_PYTHON` 或 `VLLM_PYTHON` 指定解释器；agent 和 UI 使用项目 `.venv`。
 - 在 6 GB RTX 3060 上，如果 Windows/WSL 已占用较多显存，可使用
   `VLLM_GPU_MEM=0.65` 或更低的值。
 - Chainlit benchmark 路径使用非流式 vLLM 请求，以避开调试期间观察到的
