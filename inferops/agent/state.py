@@ -31,6 +31,7 @@ class ExperimentSummary(TypedDict):
     e2e_p50_ms: float | None
     bottleneck: str
     vs_baseline_pct: float | None  # None if primary metric missing; never invent 0 gain
+    baseline_primary: NotRequired[float]  # denominator used for vs_baseline_pct; 0.0 if missing, never invent throughput
     # Week-1 contract fields (required for best-candidate gating)
     run_id: str
     validity_status: str        # valid | invalid | failed | insufficient_evidence
@@ -222,6 +223,7 @@ def summary_from_result(
         e2e_p50_ms=_round(result.e2e_latency.p50, 1),
         bottleneck=bottleneck,
         vs_baseline_pct=round(vs_baseline, 2) if vs_baseline is not None else None,
+        baseline_primary=baseline_primary,
         run_id=getattr(result, "run_id", "") or "",
         validity_status=status_value,
         mlflow_run_id=getattr(result, "mlflow_run_id", None),

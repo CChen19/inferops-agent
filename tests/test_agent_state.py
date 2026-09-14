@@ -81,8 +81,30 @@ def test_summary_from_result_uses_primary_metric(result_b):
     assert summary["param_changed"] == "max_num_batched_tokens"
     assert summary["value_changed"] == 4096
     assert summary["throughput_rps"] == 2.38
+    assert summary["baseline_primary"] == 2.0
     assert summary["vs_baseline_pct"] == 19.0
+    assert summary["vs_baseline_pct"] == round(
+        (summary["throughput_rps"] - summary["baseline_primary"])
+        / summary["baseline_primary"]
+        * 100,
+        2,
+    )
     assert summary["validity_status"] == "valid"
     assert summary["has_config_evidence"] is True
     assert summary["run_id"] == result_b.run_id
     assert summary["promotable"] is True
+
+
+def test_summary_from_result_stores_zero_baseline_primary(result_b):
+    """0.0 denominator is persisted as used; vs_baseline_pct stays None (no invented gain)."""
+    summary = summary_from_result(
+        result_b,
+        param_changed="max_num_batched_tokens",
+        value_changed=4096,
+        baseline_primary=0.0,
+        primary_metric="throughput_rps",
+    )
+
+    assert summary["baseline_primary"] == 0.0
+    assert summary["vs_baseline_pct"] is None
+    assert summary["throughput_rps"] == 2.38
