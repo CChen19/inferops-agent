@@ -1,7 +1,7 @@
 # Architecture
 
 One pass through the system, in the order things actually happen. File
-references are to master at `95229d0` (through merged PR #59).
+references are to master at `15d5920` (through merged PR #60).
 
 ## 1. Task confirmation (`inferops/task.py`)
 
@@ -42,9 +42,13 @@ matched. These rows are `prior_session_hint` only: they cannot be cited as a
 this-run `citations.metric.run_id`, enter `experiment_summaries`, promotion, or
 `best_summary`, skip confirmation, or turn a prior success into a confirmed
 result. Failed, invalid, and OOM parameter pairs do count as duplicates. The
-CLI passes its database path into `run_agent`; the Chainlit streaming
-`prepare_initial_state` path at this SHA does not, so the UI does not yet load
-compatible history.
+CLI passes its database path into `run_agent`. PR #60 makes the Chainlit
+streaming path call `prepare_initial_state(..., db_path="inferops_memory.db")`,
+the same default used by `run_agent` and `save_task`, so both CLI and Chainlit
+streaming can load compatible sessions when that SQLite file contains them.
+`tests/test_app_prepare_db_path.py` AST-parses `app.py` without importing
+Chainlit and does not create or touch the database (a pre-existing gitignored
+file is allowed).
 
 ## 3. Planner (`inferops/agent/planner.py`, `inferops/citations.py`, `inferops/rag/`)
 
@@ -232,9 +236,11 @@ as `tool_unavailable` and leaves `vs_baseline_pct` as `None` (PR #49).
   also takes the missing-id error path rather than becoming a task draft.
 - Resume calls `run_agent` without streaming, so reflector updates are not shown
   while a resumed run is in progress.
-- Chainlit's streaming `prepare_initial_state` path does not pass
-  `memory_db_path`, so compatible history is currently CLI-only. GPU SKU is not
-  stored or matched for compatible-history lookup.
+- The PR #60 AST test pins the literal `db_path` keyword in `app.py`; it is not
+  a runtime proof that `prepare_initial_state` threads that value into
+  `memory_db_path`. Graph tests cover that threading, while CI still does not
+  import `app.py` because Chainlit is absent. GPU SKU is not stored or matched
+  for compatible-history lookup.
 - `_recover_param_value` can mis-attribute a failed historical row with two
   non-default knobs when its id has no `_<knob>_` token.
 - A Chroma index built before PR #59 lacks version metadata and fail-closes
