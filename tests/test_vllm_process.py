@@ -261,39 +261,40 @@ def _racey_proc(config):
                 return None  # simulates stop() clearing _proc between former TOCTOU reads
             return super().__getattribute__(name)
 
-    return _RaceyProcVLLMProcess(config, host="127.0.0.1", port=8000), reads
+    return _RaceyProcVLLMProcess(config, host="127.0.0.1", port=8000), reads, child
 
 
 def test_wait_should_abort_binds_proc_once(config):
     """stop() can null _proc on another thread; must not re-read self._proc for poll()."""
-    proc, reads = _racey_proc(config)
+    proc, reads, _ = _racey_proc(config)
     assert proc._wait_should_abort() is False
     assert reads["n"] == 1
 
 
 def test_is_crashed_binds_proc_once(config):
     """stop() can null _proc on another thread; must not re-read self._proc for poll()."""
-    proc, reads = _racey_proc(config)
+    proc, reads, _ = _racey_proc(config)
     assert proc.is_crashed() is False
     assert reads["n"] == 1
 
 
 def test_exit_code_binds_proc_once(config):
     """stop() can null _proc on another thread; must not re-read self._proc for poll()."""
-    proc, reads = _racey_proc(config)
+    proc, reads, _ = _racey_proc(config)
     assert proc.exit_code() is None
     assert reads["n"] == 1
 
 
 def test_pid_binds_proc_once(config):
     """stop() can null _proc on another thread; must not re-read self._proc for .pid."""
-    proc, reads = _racey_proc(config)
+    proc, reads, _ = _racey_proc(config)
     assert proc.pid == 4242
     assert reads["n"] == 1
 
 
 def test_stop_binds_proc_once(config):
-    """A racing second stop() can null _proc; must not re-read for poll/terminate/wait."""
-    proc, reads = _racey_proc(config)
+    """A racing second stop() can null _proc; must still terminate the bound child."""
+    proc, reads, child = _racey_proc(config)
     proc.stop()  # must not AttributeError
     assert reads["n"] == 1
+    assert child.terminated is True
