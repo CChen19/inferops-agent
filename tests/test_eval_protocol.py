@@ -149,13 +149,26 @@ def test_score_run_reports_decomposed_fields_not_composite_only():
     assert scored.gap_pct is not None
     assert "composite" not in scored.__dict__
     assert set(run.score.keys()) == {
-        "success_in_budget",
+        "valid_result_in_budget",
         "first_valid_n",
         "confirmed_gain",
         "wasted_trials",
         "n_paid",
         "gap_pct",
     }
+
+
+def test_valid_result_in_budget_is_not_goal_or_confirmed_gain():
+    """Baseline-only default run is valid-in-budget; that is not a confirmed win."""
+    gt = _gt()
+    fixture = _fixture_with_contract_fields(gt["experiments"])
+    run = run_default_strategy(
+        fixture, BudgetPolicy(total_slots=2), workload_name=gt["workload_name"]
+    )
+    assert run.score["valid_result_in_budget"] is True
+    assert run.score["n_paid"] == 1
+    assert run.score["confirmed_gain"] is None
+    assert "success_in_budget" not in run.score
 
 
 def test_hidden_fixture_reveals_metrics_only_via_observe():

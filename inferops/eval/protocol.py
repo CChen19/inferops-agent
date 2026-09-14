@@ -286,7 +286,15 @@ class TrialLedger:
 
 @dataclass(frozen=True)
 class RunScore:
-    success_in_budget: bool
+    """Decomposed protocol scores. ``valid_result_in_budget`` is not a business win.
+
+    ``valid_result_in_budget`` is True when the ledger has at least one SLO-valid
+    observation and paid slots stayed within the budget. A baseline-only run
+    qualifies. It does **not** mean goals were met or a gain was confirmed.
+    ``confirmed_gain`` stays None unless a caller supplies a confirmation result.
+    """
+
+    valid_result_in_budget: bool
     first_valid_n: int | None
     confirmed_gain: float | None
     wasted_trials: int
@@ -305,7 +313,7 @@ def score_run(
     metric, direction = WORKLOAD_PRIMARY_METRIC[workload_name]
     best = ledger.best_valid(metric, direction)
     first_valid = ledger.first_valid_n(metric, direction)
-    success = best is not None and ledger.n_paid <= ledger.budget.total_slots
+    valid_in_budget = best is not None and ledger.n_paid <= ledger.budget.total_slots
 
     gap_pct: float | None = None
     if gt_optimum is not None and best is not None:
@@ -319,7 +327,7 @@ def score_run(
         gap_pct = round(gap_pct, 2)
 
     return RunScore(
-        success_in_budget=success,
+        valid_result_in_budget=valid_in_budget,
         first_valid_n=first_valid,
         confirmed_gain=confirmed_gain,
         wasted_trials=ledger.wasted_trials(metric, direction),
