@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from inferops.agent.executor import executor_node
+from inferops.agent.executor import _fmt_executor_vs, executor_node
 from inferops.agent.state import AgentState, initial_state
 from inferops.tools.run_benchmark import RunBenchmarkOutput
 
@@ -229,3 +229,49 @@ def test_executor_runs_benchmark_when_no_existing_result(result_b):
     assert patch_out["experiment_summaries"][-1]["throughput_rps"] == 2.38
     assert patch_out["best_summary"]["experiment_id"] == "sess_baseline"
     assert patch_out["trajectory"][-1]["result"]["promoted_to_best"] is False
+
+
+def test_fmt_executor_vs_prints_stored_precision_and_unavailable():
+    assert _fmt_executor_vs(3.77) == "+3.77%"
+    assert "+3.8%" not in _fmt_executor_vs(3.77)
+    assert _fmt_executor_vs(None) == "unavailable"
+    assert _fmt_executor_vs(None) != "+0.0%"
+
+
+def test_executor_done_line_prints_vs_baseline_at_stored_precision(result_b, monkeypatch):
+    from io import StringIO
+
+    from rich.console import Console
+
+    buf = StringIO()
+    monkeypatch.setattr(
+        "inferops.agent.executor.console",
+        Console(file=buf, width=200, no_color=True, highlight=False),
+    )
+    state = _state_with_baseline()
+    state["hypotheses"] = [
+        {
+            "id": "h1",
+            "param": "max_num_batched_tokens",
+            "value": 4096,
+            "rationale": "rps=2.0 suggests batching could help",
+            "status": "pending",
+            "experiment_id": None,
+        }
+    ]
+    result_b = result_b.model_copy(
+        update={"experiment_id": "sess_max_num_batched_tokens_4096"}
+    )
+    analysis = MagicMock(bottleneck="compute-bound")
+    comparison = MagicMock(delta_pct=3.77)
+
+    with patch("inferops.agent.executor.get_result_by_id", return_value=result_b), \
+         patch("inferops.agent.executor.run_benchmark") as mock_run, \
+         patch("inferops.agent.executor.analyze_bottleneck", return_value=analysis), \
+         patch("inferops.agent.executor.compare_experiments", return_value=comparison):
+        executor_node(state)
+
+    mock_run.assert_not_called()
+    text = buf.getvalue()
+    assert "vs_baseline=+3.77%" in text
+    assert "+3.8%" not in text

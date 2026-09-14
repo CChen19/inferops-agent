@@ -28,7 +28,7 @@ from rich.console import Console
 from rich.table import Table
 
 from inferops.agent.executor import executor_node
-from inferops.agent.planner import planner_node
+from inferops.agent.planner import _fmt_vs_baseline, planner_node
 from inferops.agent.recovery import reraise_hard_control
 from inferops.agent.reflector import reflector_node, route_after_reflector
 from inferops.agent.state import (
@@ -478,7 +478,7 @@ def _print_run_summary(state: AgentState) -> None:
         console.print(
             f"  Baseline {primary}: {baseline[primary]:.3f}  →  "
             f"Best {primary}: {best[primary]:.3f}  "
-            f"({best['vs_baseline_pct']:+.1f}%)"
+            f"({_fmt_vs_baseline(best.get('vs_baseline_pct'))})"
         )
 
     if state["experiment_summaries"]:
@@ -498,6 +498,6 @@ def _print_run_summary(state: AgentState) -> None:
                 f"{s[primary]:.3f}",
                 f"{s['ttft_p99_ms']}ms",
                 s["bottleneck"],
-                f"{s['vs_baseline_pct']:+.1f}%",
+                _fmt_vs_baseline(s.get("vs_baseline_pct")),
             )
         console.print(t)
