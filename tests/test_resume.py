@@ -48,8 +48,15 @@ def test_parse_rejects_ordinary_and_partial_messages():
 def test_is_resume_command_without_valid_id():
     assert is_resume_command("resume") is True
     assert is_resume_command("resume-task") is True
-    assert is_resume_command("resume nope") is True
     assert is_resume_command("resume abcdabcdabcd") is True
+    assert is_resume_command("cafebabeface") is True
+    # Non-id extra tokens are ordinary chat (draft a task), not resume.
+    assert is_resume_command("resume nope") is False
+    assert is_resume_command("resume not-an-id") is False
+    assert is_resume_command("resume abcdabcdabc") is False  # 11 hex
+    assert parse_resume_task_id("resume nope") is None
+    assert parse_resume_task_id("resume not-an-id") is None
+    assert parse_resume_task_id("resume abcdabcdabc") is None
     assert is_resume_command("please resume later") is False
     assert is_resume_command("chat_short maximize throughput") is False
 

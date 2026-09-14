@@ -23,6 +23,7 @@ from inferops.agent.state import (
     Hypothesis,
     is_duplicate,
     model_name_of,
+    task_of,
 )
 from inferops.citations import (
     DocumentRef,
@@ -352,8 +353,14 @@ def planner_node(state: AgentState, llm) -> dict:
         if current_fp is None:
             # Resume / legacy checkpoint without a stored fingerprint: production
             # may probe nvidia-smi once. Tests inject state or monkeypatch collect.
+            task = task_of(state)
+            engine = task.engine.value if task is not None else "vllm"
             current_fp = fingerprint_from_hardware(
-                collect_hardware_info(model_name=model_name, probe_nvidia=True)
+                collect_hardware_info(
+                    model_name=model_name,
+                    engine=engine,
+                    probe_nvidia=True,
+                )
             )
         history_rows = query_compatible_history(
             model_name=model_name,
