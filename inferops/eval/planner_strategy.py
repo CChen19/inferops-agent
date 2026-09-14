@@ -17,10 +17,10 @@ Wasted-trial policy (illegal / already-tried proposals):
 from __future__ import annotations
 
 import uuid
-from contextlib import nullcontext
 from typing import Any
 from unittest.mock import patch
 
+from inferops.agent import planner as planner_module
 from inferops.agent.planner import planner_node
 from inferops.agent.state import AgentState, ExperimentSummary, initial_state
 from inferops.eval.metrics import WORKLOAD_PRIMARY_METRIC
@@ -146,20 +146,24 @@ def _pick_config_from_planner(
     use_rag: bool,
 ) -> tuple[dict[str, Any], str, Any] | None:
     """Invoke planner_node and return the first mappable unseen config."""
-    retrieve_ctx = (
-        nullcontext()
-        if use_rag
-        else patch(
+    if use_rag:
+        knowledge_context = planner_module._retrieve_knowledge(
+            bottleneck=state["current_bottleneck"],
+            workload=state["workload_name"],
+        )
+        retrieve_ctx = patch(
+            "inferops.agent.planner._retrieve_knowledge",
+            return_value=knowledge_context,
+        )
+    else:
+        retrieve_ctx = patch(
             "inferops.agent.planner._retrieve_knowledge",
             return_value="(no RAG context — fair compare)",
         )
-    )
     with retrieve_ctx:
         patch_out = planner_node(state, llm)
 
-    candidates = [
-        h for h in patch_out.get("hypotheses", []) if h.get("status") == "pending"
-    ]
+    candidates = [h for h in patch_out.get("hypotheses", []) if h.get("status") == "pending"]
 
     for hyp in candidates:
         param = hyp["param"]

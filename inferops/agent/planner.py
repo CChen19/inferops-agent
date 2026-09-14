@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import json
 import re
-import uuid
 from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
@@ -23,8 +22,8 @@ from inferops.agent.state import (
     AgentState,
     Hypothesis,
     is_duplicate,
-    pending_hypotheses,
 )
+from inferops.citations import sources_from_context, valid_structured_citations
 
 # ---------------------------------------------------------------------------
 # Prompt templates
@@ -36,8 +35,9 @@ serving configuration for a specific workload on an RTX 3060 Laptop (6 GB VRAM, 
 
 You will be shown experiment history, relevant documentation excerpts, and asked to \
 generate hypotheses for the next parameter change. Each hypothesis MUST:
-  1. Cite at least one specific metric value from the history (e.g., "TTFT p99=120ms").
-  2. Include a [source: <document>] tag referencing one of the provided knowledge chunks.
+  1. Cite an exact run_id, metric name, and metric value from the history.
+  2. If knowledge chunks are provided, cite one of their sources and repeat it in \
+the rationale as a [source: <document>] tag. If none are provided, do not invent one.
   3. Change exactly ONE parameter.
   4. Not repeat a (param, value) pair that has already been tried.
   5. Be consistent with the identified bottleneck type.
@@ -82,13 +82,22 @@ KNOWLEDGE CONTEXT (cite these in your rationale using [source: <source>]):
 
 Generate {n_hypotheses} hypothesis/hypotheses. Each rationale MUST include:
   - a specific metric value (e.g., "rps=15.0")
-  - a [source: <source>] tag from the knowledge context above
+  - {source_rationale_requirement}
+Each hypothesis MUST also include structured citations. The metric citation must use \
+an exact run_id, metric field name, and value shown above. {document_requirement}
 
 Respond with:
 {{
   "analysis": "<one paragraph citing specific metric values and explaining the bottleneck>",
   "hypotheses": [
-    {{"param": "...", "value": ..., "rationale": "... metric=X.Y ... [source: <doc>] ..."}},
+    {{
+      "param": "...",
+      "value": ...,
+      "rationale": "{rationale_example}",
+      "citations": {{
+        "metric": {{"run_id": "...", "metric": "throughput_rps", "value": 0.0}}{document_example}
+      }}
+    }},
     ...
   ]
 }}\
@@ -99,19 +108,26 @@ Respond with:
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _fmt_num(v: float | None, spec: str) -> str:
     if v is None:
         return "n/a"
     return format(v, spec)
 
 
+def _fmt_vs_baseline(vs: float | None) -> str:
+    """Render vs_baseline_pct at full precision so the printed value is citable as-is."""
+    if vs is None:
+        return "n/a"
+    return f"{format(vs, '+')}%"
+
+
 def _fmt_summary(s: dict | None) -> str:
     if s is None:
         return "(none yet)"
-    vs = s.get("vs_baseline_pct")
-    vs_s = f"{vs:+.1f}%" if vs is not None else "n/a"
+    vs_s = _fmt_vs_baseline(s.get("vs_baseline_pct"))
     return (
-        f"experiment_id={s['experiment_id']}  "
+        f"experiment_id={s['experiment_id']}  run_id={s.get('run_id', '')}  "
         f"rps={_fmt_num(s.get('throughput_rps'), '')}  "
         f"ttft_p99={_fmt_num(s.get('ttft_p99_ms'), '')}ms  "
         f"e2e_p50={_fmt_num(s.get('e2e_p50_ms'), '')}ms  "
@@ -123,16 +139,19 @@ def _fmt_summary(s: dict | None) -> str:
 def _build_history_table(summaries: list[dict]) -> str:
     if not summaries:
         return "  (no experiments yet)"
-    lines = ["  param_changed          value   rps     ttft_p99  e2e_p50  bottleneck      vs_baseline"]
-    for s in reversed(summaries[-8:]):   # last 8, most recent first
-        vs = s.get("vs_baseline_pct")
-        vs_s = f"{vs:+.1f}%" if vs is not None else "n/a"
+    lines = [
+        "  run_id                 param_changed          value   throughput_rps  "
+        "ttft_p99_ms  e2e_p50_ms  bottleneck      vs_baseline_pct"
+    ]
+    for s in reversed(summaries[-8:]):  # last 8, most recent first
+        vs_s = _fmt_vs_baseline(s.get("vs_baseline_pct"))
         lines.append(
-            f"  {str(s.get('param_changed') or 'baseline'):<22} "
+            f"  {str(s.get('run_id') or ''):<22} "
+            f"{str(s.get('param_changed') or 'baseline'):<22} "
             f"{str(s.get('value_changed', '')):<7} "
-            f"{_fmt_num(s.get('throughput_rps'), '.3f'):<7} "
-            f"{_fmt_num(s.get('ttft_p99_ms'), '.1f'):<9} "
-            f"{_fmt_num(s.get('e2e_p50_ms'), '.1f'):<8} "
+            f"{_fmt_num(s.get('throughput_rps'), ''):<7} "
+            f"{_fmt_num(s.get('ttft_p99_ms'), ''):<9} "
+            f"{_fmt_num(s.get('e2e_p50_ms'), ''):<8} "
             f"{s['bottleneck']:<15} "
             f"{vs_s}"
         )
@@ -141,21 +160,43 @@ def _build_history_table(summaries: list[dict]) -> str:
 
 def _tried_pairs(summaries: list[dict]) -> str:
     pairs = [
-        f"  {s['param_changed']}={s['value_changed']}"
-        for s in summaries
-        if s.get("param_changed")
+        f"  {s['param_changed']}={s['value_changed']}" for s in summaries if s.get("param_changed")
     ]
     return "\n".join(pairs) if pairs else "  (none)"
 
 
-def _validate_hypotheses(raw_hyps: list[dict], state: AgentState) -> list[dict]:
+def _citation_summaries(state: AgentState) -> list[dict]:
+    """Collect each summary visible in the prompt once, keyed by run_id."""
+    candidates = [
+        *state["experiment_summaries"],
+        state.get("baseline_summary"),
+        state.get("best_summary"),
+    ]
+    by_run_id: dict[str, dict] = {}
+    for summary in candidates:
+        if summary and summary.get("run_id"):
+            by_run_id.setdefault(summary["run_id"], summary)
+    return list(by_run_id.values())
+
+
+def _validate_hypotheses(
+    raw_hyps: list[dict],
+    state: AgentState,
+    available_sources: set[str] | None = None,
+) -> list[dict]:
     """Filter out invalid hypotheses (wrong param, out-of-range, already tried)."""
+    available_sources = available_sources or set()
+    citation_summaries = _citation_summaries(state)
     valid = []
     for h in raw_hyps:
+        if not isinstance(h, dict):
+            continue
         param = h.get("param", "")
         value = h.get("value")
         rationale = h.get("rationale", "")
 
+        if not isinstance(rationale, str):
+            continue
         if param not in AGENT_SEARCH_SPACE:
             continue
         allowed_vals = AGENT_SEARCH_SPACE[param]
@@ -180,10 +221,11 @@ def _validate_hypotheses(raw_hyps: list[dict], state: AgentState) -> list[dict]:
             continue
         if is_duplicate(state, param, value):
             continue
-        # Evidence check: rationale must contain a number AND a [source:] citation
+        # The prose still carries a human-readable number. Structured evidence
+        # below is authoritative for run/metric/value/source existence.
         if not re.search(r"\d+(\.\d+)?", rationale):
             continue
-        if not re.search(r"\[source:", rationale, re.IGNORECASE):
+        if not valid_structured_citations(h, citation_summaries, available_sources):
             continue
         h["param"] = param
         h["value"] = value
@@ -204,6 +246,7 @@ def _parse_llm_response(content: str) -> dict[str, Any]:
 # RAG helpers
 # ---------------------------------------------------------------------------
 
+
 def _retrieve_knowledge(bottleneck: str, workload: str, top_k: int = 4) -> str:
     """
     Query the corpus for chunks relevant to the current bottleneck + workload.
@@ -214,6 +257,7 @@ def _retrieve_knowledge(bottleneck: str, workload: str, top_k: int = 4) -> str:
             KnowledgeRetrieverInput,
             knowledge_retriever,
         )
+
         query = f"{bottleneck} optimization {workload} vLLM"
         result = knowledge_retriever(KnowledgeRetrieverInput(query=query, top_k=top_k))
         if result.index_empty or not result.chunks:
@@ -230,18 +274,40 @@ def _retrieve_knowledge(bottleneck: str, workload: str, top_k: int = 4) -> str:
 # Node
 # ---------------------------------------------------------------------------
 
+
 def planner_node(state: AgentState, llm) -> dict:
     """
     Generate 1–3 hypotheses using the LLM, with RAG-grounded evidence citation.
     Returns a state patch with updated hypotheses and messages.
     """
     # How many hypotheses to request (fewer when budget is tight)
-    n = 1 if state["experiments_remaining"] <= 2 else (2 if state["experiments_remaining"] <= 4 else 3)
+    n = (
+        1
+        if state["experiments_remaining"] <= 2
+        else (2 if state["experiments_remaining"] <= 4 else 3)
+    )
 
     knowledge_context = _retrieve_knowledge(
         bottleneck=state["current_bottleneck"],
         workload=state["workload_name"],
     )
+    available_sources = sources_from_context(knowledge_context)
+    if available_sources:
+        source_rationale_requirement = "a [source: <source>] tag from the knowledge context above"
+        document_requirement = (
+            "The document source must exactly match a source shown in KNOWLEDGE CONTEXT."
+        )
+        document_example = ',\n        "document": {"source": "<doc>"}'
+        rationale_example = "... metric=X.Y ... [source: <doc>] ..."
+    else:
+        source_rationale_requirement = (
+            "no [source:] tag, because KNOWLEDGE CONTEXT has no retrieved sources"
+        )
+        document_requirement = (
+            "Omit the document citation because KNOWLEDGE CONTEXT has no retrieved sources."
+        )
+        document_example = ""
+        rationale_example = "... metric=X.Y ..."
 
     user_msg = _USER_TEMPLATE.format(
         workload_name=state["workload_name"],
@@ -256,6 +322,10 @@ def planner_node(state: AgentState, llm) -> dict:
         batched_values=str(AGENT_SEARCH_SPACE["max_num_batched_tokens"]),
         seqs_values=str(AGENT_SEARCH_SPACE["max_num_seqs"]),
         knowledge_context=knowledge_context,
+        source_rationale_requirement=source_rationale_requirement,
+        document_requirement=document_requirement,
+        document_example=document_example,
+        rationale_example=rationale_example,
         n_hypotheses=n,
     )
 
@@ -265,38 +335,58 @@ def planner_node(state: AgentState, llm) -> dict:
     # Token tracking
     tokens_used = 0
     if hasattr(response, "usage_metadata") and response.usage_metadata:
-        tokens_used = (
-            response.usage_metadata.get("input_tokens", 0)
-            + response.usage_metadata.get("output_tokens", 0)
+        tokens_used = response.usage_metadata.get("input_tokens", 0) + response.usage_metadata.get(
+            "output_tokens", 0
         )
 
-    # Parse response
+    # Parse and validate response. Invalid/forged evidence gets the same single
+    # retry as malformed JSON.
     raw_hyps: list[dict] = []
+    valid: list[dict] = []
     analysis = ""
+    needs_retry = False
     try:
         data = _parse_llm_response(response.content)
         raw_hyps = data.get("hypotheses", [])
+        if not isinstance(raw_hyps, list):
+            raise ValueError("hypotheses must be a list")
         analysis = data.get("analysis", "")
+        valid = _validate_hypotheses(raw_hyps, state, available_sources)
+        needs_retry = bool(raw_hyps) and len(valid) != len(raw_hyps)
     except (json.JSONDecodeError, ValueError):
-        # Retry once with explicit instruction
+        needs_retry = True
+
+    if needs_retry:
         retry_msg = HumanMessage(
-            content="Your response was not valid JSON. Respond with ONLY the JSON object, no other text."
+            content=(
+                "Your response was invalid JSON or contained a hypothesis with unverifiable "
+                "citations. Retry once with ONLY the JSON object. Use the structured citation "
+                "shape requested above; cite only an exact run_id/metric/value from the shown "
+                "summaries. Cite a document only when KNOWLEDGE CONTEXT provides sources."
+            )
         )
         retry_response = llm.invoke(messages_in + [response, retry_msg])
         tokens_used += (
-            retry_response.usage_metadata.get("input_tokens", 0)
-            + retry_response.usage_metadata.get("output_tokens", 0)
-        ) if hasattr(retry_response, "usage_metadata") and retry_response.usage_metadata else 0
+            (
+                retry_response.usage_metadata.get("input_tokens", 0)
+                + retry_response.usage_metadata.get("output_tokens", 0)
+            )
+            if hasattr(retry_response, "usage_metadata") and retry_response.usage_metadata
+            else 0
+        )
         try:
             data = _parse_llm_response(retry_response.content)
             raw_hyps = data.get("hypotheses", [])
+            if not isinstance(raw_hyps, list):
+                raise ValueError("hypotheses must be a list")
             analysis = data.get("analysis", "")
             response = retry_response
+            valid = _validate_hypotheses(raw_hyps, state, available_sources)
         except (json.JSONDecodeError, ValueError):
             raw_hyps = []
+            valid = []
 
-    # Validate and convert to Hypothesis TypedDicts
-    valid = _validate_hypotheses(raw_hyps, state)
+    # Convert to Hypothesis TypedDicts
     new_hypotheses: list[Hypothesis] = [
         Hypothesis(
             id=f"h{len(state['hypotheses']) + i + 1}",

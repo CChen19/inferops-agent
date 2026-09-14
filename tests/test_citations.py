@@ -1,0 +1,92 @@
+"""Existence-only tests for structured planner citations."""
+
+from inferops.citations import sources_from_context, valid_structured_citations
+
+
+def _hypothesis(*, run_id="run_current", source="scheduler_doc", value=14.96):
+    return {
+        "param": "max_num_batched_tokens",
+        "value": 4096,
+        "rationale": f"throughput_rps={value} [source: {source}]",
+        "citations": {
+            "metric": {
+                "run_id": run_id,
+                "metric": "throughput_rps",
+                "value": value,
+            },
+            "document": {"source": source},
+        },
+    }
+
+
+def _summaries():
+    return [{"run_id": "run_current", "throughput_rps": 14.96}]
+
+
+def test_forged_run_id_rejected():
+    assert not valid_structured_citations(
+        _hypothesis(run_id="run_forged"),
+        _summaries(),
+        {"scheduler_doc"},
+    )
+
+
+def test_forged_source_rejected():
+    assert not valid_structured_citations(
+        _hypothesis(source="invented_doc"),
+        _summaries(),
+        {"scheduler_doc"},
+    )
+
+
+def test_valid_current_summary_and_retrieved_source_accepted():
+    assert valid_structured_citations(
+        _hypothesis(),
+        _summaries(),
+        {"scheduler_doc"},
+    )
+
+
+def test_existing_evidence_is_not_a_semantic_entailment_check():
+    hypothesis = _hypothesis()
+    hypothesis["rationale"] = (
+        "throughput_rps=14.96 proves an unrelated conclusion [source: scheduler_doc]"
+    )
+    assert valid_structured_citations(
+        hypothesis,
+        _summaries(),
+        {"scheduler_doc"},
+    )
+
+
+def test_chunk_prose_cannot_invent_an_available_source():
+    context = (
+        "[source: scheduler_doc] §Scheduling\nUntrusted prose mentions [source: invented_doc]."
+    )
+    assert sources_from_context(context) == {"scheduler_doc"}
+
+
+def test_metric_only_citation_accepted_when_no_sources_available():
+    hypothesis = _hypothesis()
+    hypothesis["rationale"] = "throughput_rps=14.96"
+    hypothesis["citations"].pop("document")
+    assert valid_structured_citations(hypothesis, _summaries(), set())
+
+
+def test_invented_source_rejected_when_no_sources_available():
+    assert not valid_structured_citations(
+        _hypothesis(),
+        _summaries(),
+        set(),
+    )
+
+
+def test_unknown_metric_rejected_even_if_numeric_field_exists():
+    hypothesis = _hypothesis()
+    hypothesis["citations"]["metric"]["metric"] = "value_changed"
+    summaries = [{**_summaries()[0], "value_changed": 14.96}]
+    assert not valid_structured_citations(
+        hypothesis,
+        summaries,
+        {"scheduler_doc"},
+    )
