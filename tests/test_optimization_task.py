@@ -118,6 +118,54 @@ def test_offered_rps_is_recorded_but_flagged_unsupported():
     assert any("arrival-rate" in w for w in task.warnings)
 
 
+@pytest.mark.parametrize(
+    "kwargs,match",
+    [
+        ({"input_len": 0}, "input_len"),
+        ({"input_len": -1}, "input_len"),
+        ({"output_len": 0}, "output_len"),
+        ({"output_len": -5}, "output_len"),
+        ({"input_len": True}, "input_len"),
+        ({"output_len": False}, "output_len"),
+        ({"input_len": 128.9}, "input_len"),
+        ({"output_len": 32.5}, "output_len"),
+        ({"input_len": 5000}, "input_len"),
+        ({"output_len": 5000}, "output_len"),
+        ({"input_len": 1800, "output_len": 500}, "max_model_len"),
+    ],
+)
+def test_input_output_len_overrides_rejected(kwargs, match):
+    task = build_optimization_task(workload_name="chat_short", budget=4, **kwargs)
+    assert task.status == TaskStatus.NEEDS_CLARIFICATION
+    assert any(match in c for c in task.clarification_needed)
+
+
+def test_legal_input_output_len_override_accepted():
+    task = build_optimization_task(
+        workload_name="chat_short",
+        input_len=256,
+        output_len=128,
+        budget=4,
+    )
+    assert task.status == TaskStatus.READY
+    assert task.workload.input_len == 256
+    assert task.workload.output_len == 128
+
+
+def test_catalog_workloads_still_build():
+    from workloads.definitions import ALL_WORKLOADS
+
+    for wl in ALL_WORKLOADS:
+        task = build_optimization_task(workload_name=wl.name, budget=4)
+        assert task.workload.name == wl.name
+        assert task.workload.input_len == wl.input_len
+        assert task.workload.output_len == wl.output_len
+        assert task.status in (TaskStatus.READY, TaskStatus.NEEDS_CLARIFICATION)
+        # Defaults still resolve to READY when model warning only
+        if wl.name == "chat_short":
+            assert task.status == TaskStatus.READY
+
+
 def test_unconfirmed_task_cannot_spend_budget():
     task = build_optimization_task(workload_name="chat_short", budget=4)
     with pytest.raises(ValueError, match="confirmed"):

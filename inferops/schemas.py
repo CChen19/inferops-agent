@@ -105,8 +105,22 @@ class WorkloadSpec(BaseModel):
     prompt_template: str
     num_requests: int = Field(ge=1)
     concurrency: int = Field(default=1, ge=1)
-    input_len: int = Field(default=128, ge=1, description="Approx tokens per prompt")
-    output_len: int = Field(default=128, ge=1, description="Max new tokens")
+    input_len: int = Field(
+        default=128,
+        ge=1,
+        description=(
+            "Target prompt length in tokens for synthetic workload generation. "
+            "This is a generation target, not a measured tokenizer length."
+        ),
+    )
+    output_len: int = Field(
+        default=128,
+        ge=1,
+        description=(
+            "Target max new tokens for generation. "
+            "This is a generation target, not a measured tokenizer length."
+        ),
+    )
     distribution: str = Field(default="uniform", description="poisson | uniform | fixed")
     rps: float | None = Field(default=None, description="Target requests-per-second (None = as fast as possible)")
 
